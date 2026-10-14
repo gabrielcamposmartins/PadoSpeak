@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, RunEvent, State, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WindowEvent};
 use tauri_plugin_notification::NotificationExt;
 
 type Host = Arc<HostManager>;
@@ -97,6 +97,37 @@ fn show_main(app: &AppHandle) {
     }
 }
 
+/// Notificação do Windows (pop-up na tela e na central de notificações). Clicar traz a janela de volta
+/// e abre o lugar da notificação (`url`, ex.: `/?dm=<id>`). O som é o do próprio app (o do Messenger).
+#[tauri::command]
+fn notify_windows(app: AppHandle, title: String, body: String, url: String) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use tauri_winrt_notification::{Duration, Toast};
+        // Instalado: o ID do app (o atalho do menu Iniciar registra o nome e o ícone). Rodando de
+        // target/ (desenvolvimento), o Windows só mostra notificações com o ID do PowerShell.
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let dev = exe.parent().is_some_and(|d| d.ends_with("target/debug") || d.ends_with("target/release"));
+        let app_id = if dev { Toast::POWERSHELL_APP_ID.to_string() } else { app.config().identifier.clone() };
+        let handle = app.clone();
+        Toast::new(&app_id)
+            .title(&title)
+            .text1(&body)
+            .sound(None)
+            .duration(Duration::Short)
+            .on_activated(move |_| {
+                show_main(&handle);
+                let _ = handle.emit("notification-open", url.clone());
+                Ok(())
+            })
+            .show()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(windows))]
+    let _ = (app, title, body, url);
+    Ok(())
+}
+
 /// Ícone na bandeja: clique abre a janela; botão direito tem "Abrir" e "Fechar o PadoSpeak".
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Abrir o PadoSpeak", true, None::<&str>)?;
@@ -173,7 +204,7 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, local_node])
+        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, local_node, notify_windows])
         .build(tauri::generate_context!())
         .expect("erro ao iniciar o PadoSpeak");
 

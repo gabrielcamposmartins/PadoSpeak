@@ -30,6 +30,8 @@ pub struct App {
     pub lan: Option<Arc<crate::lan::Lan>>,
     /// Notificações push (só no servidor de comunidade; o nó local usa as do Windows).
     pub push: Option<Arc<crate::push::Push>>,
+    /// Pasta de dados (arquivos enviados nas conversas ficam em `arquivos/`).
+    pub data_dir: PathBuf,
 }
 
 struct Running {
@@ -201,6 +203,7 @@ impl HostManager {
             urls: urls.clone(),
             lan: lan.clone(),
             push,
+            data_dir: self.data_dir.clone(),
         });
         if let Some(lan) = &lan {
             app.hub.set_lan_mode();
@@ -212,6 +215,7 @@ impl HostManager {
             .merge(crate::lan::router())
             .merge(crate::stickers::router())
             .merge(crate::push::router())
+            .merge(crate::files::router())
             .route("/ws", get(crate::hub::ws_handler))
             .route("/api/music/stream/{id}", get(crate::music::stream::handler))
             .fallback(crate::assets::static_handler)

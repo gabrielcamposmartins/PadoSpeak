@@ -123,11 +123,22 @@ pub struct Guild {
     pub icon_color: String,
     pub owner_id: String,
     pub invite_code: String,
+    /// Imagem do ícone (com versão para o cache), ou `None` para as iniciais coloridas.
+    pub icon_url: Option<String>,
 }
 
-pub const GUILD_COLS: &str = "g.id, g.name, g.icon_color, g.owner_id, g.invite_code";
+pub const GUILD_COLS: &str = "g.id, g.name, g.icon_color, g.owner_id, g.invite_code, g.icon_at";
 pub fn guild_from_row(r: &Row) -> DbResult<Guild> {
-    Ok(Guild { id: r.get(0)?, name: r.get(1)?, icon_color: r.get(2)?, owner_id: r.get(3)?, invite_code: r.get(4)? })
+    let id: String = r.get(0)?;
+    let icon_at: Option<i64> = r.get(5)?;
+    Ok(Guild {
+        icon_url: icon_at.map(|v| format!("/api/guilds/{id}/icon?v={v}")),
+        id,
+        name: r.get(1)?,
+        icon_color: r.get(2)?,
+        owner_id: r.get(3)?,
+        invite_code: r.get(4)?,
+    })
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -155,15 +166,52 @@ pub struct Message {
     pub created_at: i64,
     pub edited_at: Option<i64>,
     pub author: User,
+    /// Mensagem respondida (id), mesmo que ela tenha sido apagada depois.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
+    /// Trecho da mensagem respondida, para mostrar acima da resposta.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reply: Option<ReplyRef>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplyRef {
+    pub id: String,
+    pub author_id: String,
+    pub author_name: String,
+    /// Começo do texto (sem formatação); sticker e arquivo viram uma descrição curta.
+    pub preview: String,
+}
+
+/// Como a mensagem aparece citada numa resposta.
+pub fn reply_preview(content: &str) -> String {
+    if content.starts_with("[sticker:") {
+        return "Sticker".into();
+    }
+    if let Some(rest) = content.strip_prefix("[arquivo:") {
+        let name = rest.trim_end_matches(']').splitn(4, ':').nth(3).unwrap_or("arquivo");
+        return format!("📎 {name}");
+    }
+    let text = plain_text(content);
+    let mut out: String = text.chars().take(120).collect();
+    if text.chars().count() > 120 {
+        out.push('…');
+    }
+    out
 }
 
 pub const MESSAGE_SELECT: &str = "SELECT m.id, m.channel_id, m.content, m.created_at, m.edited_at, \
-     u.id, u.username, u.display_name, u.avatar_color, u.avatar_at, u.bio, u.name_color, u.bio_color, u.origin, u.banner_color \
-     FROM messages m JOIN users u ON u.id = m.author_id";
+     u.id, u.username, u.display_name, u.avatar_color, u.avatar_at, u.bio, u.name_color, u.bio_color, u.origin, u.banner_color, \
+     m.reply_to, r.id, r.content, ru.id, ru.display_name \
+     FROM messages m JOIN users u ON u.id = m.author_id \
+     LEFT JOIN messages r ON r.id = m.reply_to LEFT JOIN users ru ON ru.id = r.author_id";
 /// Mesmo formato para mensagens diretas (`channel_id` = id da conversa).
 pub const DM_MESSAGE_SELECT: &str = "SELECT m.id, m.dm_id, m.content, m.created_at, m.edited_at, \
-     u.id, u.username, u.display_name, u.avatar_color, u.avatar_at, u.bio, u.name_color, u.bio_color, u.origin, u.banner_color \
-     FROM dm_messages m JOIN users u ON u.id = m.author_id";
+     u.id, u.username, u.display_name, u.avatar_color, u.avatar_at, u.bio, u.name_color, u.bio_color, u.origin, u.banner_color, \
+     m.reply_to, r.id, r.content, ru.id, ru.display_name \
+     FROM dm_messages m JOIN users u ON u.id = m.author_id \
+     LEFT JOIN dm_messages r ON r.id = m.reply_to LEFT JOIN users ru ON ru.id = r.author_id";
 pub fn message_from_row(r: &Row) -> DbResult<Message> {
     Ok(Message {
         id: r.get(0)?,
@@ -172,7 +220,27 @@ pub fn message_from_row(r: &Row) -> DbResult<Message> {
         created_at: r.get(3)?,
         edited_at: r.get(4)?,
         author: user_at(r, 5)?,
+        reply_to: r.get(5 + USER_COLS_LEN)?,
+        // O texto citado ainda está cifrado aqui; `open_message` abre e resume.
+        reply: match r.get::<Option<String>>(6 + USER_COLS_LEN)? {
+            Some(id) => Some(ReplyRef {
+                id,
+                preview: r.get(7 + USER_COLS_LEN)?,
+                author_id: r.get(8 + USER_COLS_LEN)?,
+                author_name: r.get::<Option<String>>(9 + USER_COLS_LEN)?.unwrap_or_default(),
+            }),
+            None => None,
+        },
     })
+}
+
+/// Decifra o texto (e o trecho citado) de uma mensagem lida do banco.
+pub fn open_message(db: &crate::db::Db, m: &mut Message) {
+    m.content = db.cipher.reveal(&m.content);
+    if let Some(r) = &mut m.reply {
+        r.preview = reply_preview(&db.cipher.reveal(&r.preview));
+        r.author_name = plain_text(&r.author_name);
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]

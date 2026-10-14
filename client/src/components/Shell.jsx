@@ -235,6 +235,7 @@ export function GuildRail() {
     states.reduce((n, st) => n + Object.values(st.unread).reduce((a, b) => a + b, 0), 0),
   );
   const pending = useStore((s) => Object.values(s.friends).filter((f) => f.status === 'incoming').length);
+  const base = useStore((s) => s.baseUrl);
   const badge = unread + pending;
   return (
     <nav className="guild-rail glass" aria-label="Servidores">
@@ -253,13 +254,13 @@ export function GuildRail() {
       {guilds.map((g) => (
         <div key={g.id} className={`gel-slot${g.id === current ? ' active' : ''}`}>
           <button
-            className="gel guild guild-icon"
+            className={`gel guild guild-icon${g.iconUrl ? ' has-img' : ''}`}
             style={{ '--c': g.iconColor }}
             title={g.name}
             aria-label={g.name}
             onClick={() => selectGuild(g.id)}
           >
-            <span>{initials(g.name)}</span>
+            {g.iconUrl ? <img src={base + g.iconUrl} alt="" /> : <span>{initials(g.name)}</span>}
           </button>
         </div>
       ))}
@@ -422,6 +423,16 @@ export function ChannelSidebar() {
             <UserPlus size={14} />
             Convidar
           </button>
+          {isOwner && (
+            <button
+              className="gloss"
+              title="Configurações do servidor"
+              aria-label="Configurações do servidor"
+              onClick={() => openModal({ type: 'guildSettings', guildId: guild.id })}
+            >
+              <Settings size={14} />
+            </button>
+          )}
           <button
             className="gloss danger-ico"
             title={isOwner ? 'Excluir servidor' : 'Sair do servidor'}
@@ -501,7 +512,7 @@ export function VoiceStatus() {
         >
           <Video size={16} />
         </button>
-        {navigator.mediaDevices?.getDisplayMedia && !isTouch && (
+        {!isTouch && (
         <button
           className={voice.screen ? 'go' : 'gloss'}
           onClick={() => toggleScreen()}

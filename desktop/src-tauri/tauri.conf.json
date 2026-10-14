@@ -1,7 +1,7 @@
 {
   "$schema": "../../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "PadoSpeak",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "identifier": "dev.padospeak.desktop",
   "build": {
     "frontendDist": "../../client/dist",
@@ -21,7 +21,8 @@
         "dragDropEnabled": false,
         "label": "main",
         "decorations": false,
-        "shadow": true
+        "shadow": true,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required"
       }
     ],
     "security": {

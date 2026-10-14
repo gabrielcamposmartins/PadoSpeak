@@ -190,6 +190,34 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);
 "#,
     ),
+    (
+        8,
+        r#"
+-- Responder: a mensagem guarda a que ela responde.
+ALTER TABLE messages ADD COLUMN reply_to TEXT;
+ALTER TABLE dm_messages ADD COLUMN reply_to TEXT;
+-- Arquivos enviados nas conversas (o conteúdo fica no disco, cifrado).
+CREATE TABLE IF NOT EXISTS files (
+  id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  guild_id TEXT,
+  channel_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_files_guild ON files(guild_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_files_channel ON files(channel_id);
+-- Ícone do servidor (imagem escolhida pelo dono).
+ALTER TABLE guilds ADD COLUMN icon_at INTEGER;
+CREATE TABLE IF NOT EXISTS guild_icons (
+  guild_id TEXT PRIMARY KEY,
+  mime TEXT NOT NULL,
+  data BLOB NOT NULL
+);
+"#,
+    ),
 ];
 
 impl Db {

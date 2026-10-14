@@ -466,7 +466,7 @@ pub async fn dm_messages(app: &App, dm_id: &str, before: i64, limit: i64) -> Api
     let sql = format!("{DM_MESSAGE_SELECT} WHERE m.dm_id = ?1 AND m.created_at < ?2 ORDER BY m.created_at DESC LIMIT ?3");
     let mut list = app.db.query_all(&sql, libsql::params![dm_id, before, limit], message_from_row).await?;
     for m in &mut list {
-        m.content = app.db.cipher.reveal(&m.content);
+        open_message(&app.db, m);
     }
     list.reverse();
     Ok(list)

@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { AlertTriangle, Info, Download } from 'lucide-react';
-import { useStore, primaryConn } from './store.js';
+import { useStore, primaryConn, openFromUrl } from './store.js';
 import { isPanel } from './lib/env.js';
 import { useUpdate, runAutoUpdate } from './lib/update.js';
 import AuthPage from './components/AuthPage.jsx';
@@ -16,9 +16,19 @@ import { useAcross } from './components/conn.jsx';
 /** Aviso que sobe no canto, como o "fulano acabou de entrar" do Messenger. */
 function Toast({ toast }) {
   return (
-    <div className={`toast window ${toast.kind}`} role="status" key={toast.id}>
+    <div className={`toast window ${toast.kind}${toast.url ? ' clickable' : ''}`} role="status" key={toast.id}>
       <TitleBar title="PadoSpeak" onClose={useStore.getState().dismissToast} />
-      <div className="toast-body">
+      <div
+        className="toast-body"
+        onClick={
+          toast.url
+            ? () => {
+                useStore.getState().dismissToast();
+                openFromUrl(toast.url);
+              }
+            : undefined
+        }
+      >
         {toast.user ? (
           <Avatar user={toast.user} base={toast.base} size={38} frame />
         ) : toast.kind === 'error' ? (

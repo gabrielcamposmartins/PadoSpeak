@@ -6,7 +6,7 @@ import { MusicPlayer } from './lib/music.js';
 import { isPanel, isDesktop, localNodeUrl } from './lib/env.js';
 import { playSound, loopSound, setSoundsEnabled } from './lib/sounds.js';
 import { shakeWindow, flashTaskbar } from './lib/attention.js';
-import { systemNotify, showAppWindow } from './lib/background.js';
+import { systemNotify, showAppWindow, appHasFocus } from './lib/background.js';
 import { currentLayout } from './lib/layout.js';
 import { syncPush, disablePush } from './lib/pwa.js';
 
@@ -110,7 +110,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
   /** Store da interface (este mesmo, se for o principal). */
   const ui = () => (primary ? store : useStore);
   const prefs = () => ui().getState().prefs;
-  const notify = (text, kind2, user) => ui().getState().notify(text, kind2, user, baseUrl);
+  const notify = (text, kind2, user, url) => ui().getState().notify(text, kind2, user, baseUrl, url);
   /** A tela aberta é da interface; nos stores secundários ela leva a chave da conexão. */
   const setView = (patch) => {
     if (primary) return store.setState(patch);
@@ -180,12 +180,13 @@ export function createConnStore({ key, kind, base, primary = false }) {
     openModal: (modal) => ui().setState({ modal }),
     closeModal: () => ui().setState({ modal: null }),
     /** Aviso no canto. `kind`: error | info | presence (com a foto de `user`, servida por `base`). */
-    notify(text, kind2 = 'error', user = null, base = null) {
-      if (!primary) return notify(text, kind2, user);
+    /** `url`: para onde o aviso leva ao ser clicado (ex.: `/?dm=<id>`), aqui e na notificação do Windows. */
+    notify(text, kind2 = 'error', user = null, base = null, url = null) {
+      if (!primary) return notify(text, kind2, user, url);
       const id = Date.now() + Math.random();
-      set({ toast: { text, kind: kind2, user, base: base || baseUrl, id } });
-      // App na bandeja ou minimizado: também avisa pelo Windows.
-      if (kind2 === 'presence') systemNotify(text);
+      set({ toast: { text, kind: kind2, user, base: base || baseUrl, id, url } });
+      // App fora de foco (atrás de outro programa, minimizado ou na bandeja): também avisa pelo Windows.
+      if (kind2 === 'presence') systemNotify(text, user, url);
       setTimeout(() => {
         if (get().toast?.id === id) set({ toast: null });
       }, 4500);
@@ -401,7 +402,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
         playSound('nudge');
         shakeWindow();
         flashTaskbar();
-        notify(`${from.displayName} chamou a sua atenção!`, 'presence', from);
+        notify(`${from.displayName} chamou a sua atenção!`, 'presence', from, dm ? `/?dm=${channelId}` : `/?channel=${channelId}`);
       });
       rt.on('user:updated', (u) =>
         set((s) => {
@@ -426,7 +427,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
         });
         if (status === 'incoming' && prev !== 'incoming') {
           playSound('message');
-          notify(`${user.displayName} quer ser seu amigo.`, 'presence', user);
+          notify(`${user.displayName} quer ser seu amigo.`, 'presence', user, '/?friends=pending');
         } else if (status === 'friend' && prev === 'outgoing') {
           notify(`${user.displayName} aceitou seu pedido de amizade.`, 'presence', user);
         }
@@ -439,7 +440,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
         if (isDm || !isGuild) {
           // Só conta como lida se a pessoa está mesmo olhando: conversa aberta e janela em foco (com a
           // janela atrás de outro programa ou na bandeja, a mensagem avisa e fica como não lida).
-          const viewing = isViewing(m.channelId) && !document.hidden && document.hasFocus();
+          const viewing = isViewing(m.channelId) && appHasFocus();
           set((st) => ({
             dms: st.dms
               .map((d) => (d.id === m.channelId ? { ...d, lastMessageAt: m.createdAt } : d))
@@ -456,6 +457,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
               STICKER_RE.test(m.content) ? `${m.author.displayName} enviou um sticker.` : `${m.author.displayName} diz: ${text}`,
               'presence',
               m.author,
+              `/?dm=${m.channelId}`,
             );
           }
         }
@@ -576,6 +578,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
           };
         }),
       );
+      rt.on('guild:updated', (g) => get().applyGuild(g));
       rt.on('guild:deleted', ({ guildId }) =>
         get().forgetGuild(guildId, 'Um servidor do qual você participava foi excluído'),
       );
@@ -888,8 +891,9 @@ export function createConnStore({ key, kind, base, primary = false }) {
     deleteChannel: (channelId) => api.del(`/api/channels/${channelId}`).catch((e) => notify(e.message)),
 
     // ---------- Mensagens ----------
-    async sendMessage(channelId, content) {
-      const res = await rt?.request('message:send', { channelId, content });
+    /** `replyTo`: id da mensagem respondida (aparece citada acima da resposta). */
+    async sendMessage(channelId, content, replyTo) {
+      const res = await rt?.request('message:send', replyTo ? { channelId, content, replyTo } : { channelId, content });
       if (!res || res.error) {
         notify(res?.error || 'Sem conexão');
         return false;
@@ -1107,6 +1111,58 @@ export function createConnStore({ key, kind, base, primary = false }) {
 
     /** URL do áudio de uma faixa (o `<audio>` não manda cabeçalho, o token vai na query). */
     musicUrl: (id) => `${baseUrl}/api/music/stream/${id}?token=${encodeURIComponent(token || '')}`,
+    /** Link de um arquivo enviado na conversa (imagens e vídeos não mandam cabeçalho: o token vai na URL). */
+    fileUrl: (id, download = false) =>
+      `${baseUrl}/api/files/${id}?token=${encodeURIComponent(token || '')}${download ? '&download=1' : ''}`,
+    /**
+     * Envia um arquivo para a conversa/canal e devolve { id, name, mime, size }. `onProgress(0..1)`.
+     * Usa XHR para acompanhar o envio (o fetch não informa o progresso do upload).
+     */
+    uploadFile(channelId, file, onProgress) {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `${baseUrl}/api/files?channel=${encodeURIComponent(channelId)}&name=${encodeURIComponent(file.name)}`);
+        if (token) xhr.setRequestHeader('authorization', `Bearer ${token}`);
+        xhr.setRequestHeader('content-type', file.type || 'application/octet-stream');
+        xhr.upload.onprogress = (e) => e.lengthComputable && onProgress?.(e.loaded / e.total);
+        xhr.onload = () => {
+          let data = null;
+          try {
+            data = JSON.parse(xhr.responseText);
+          } catch {
+            /* sem corpo */
+          }
+          if (xhr.status >= 200 && xhr.status < 300) resolve(data);
+          else
+            reject(
+              new Error(
+                data?.error || (xhr.status === 413 ? 'Arquivo grande demais para este servidor' : `Erro ${xhr.status}`),
+              ),
+            );
+        };
+        xhr.onerror = () => reject(new Error(`Não foi possível enviar para ${baseUrl}`));
+        xhr.send(file);
+      });
+    },
+    deleteFile: (id) => api.del(`/api/files/${id}`),
+    guildFiles: (guildId) => api.get(`/api/guilds/${guildId}/files`),
+    /** Configuração do servidor (dono): nome e ícone. */
+    async updateGuild(guildId, patch) {
+      get().applyGuild(await api.patch(`/api/guilds/${guildId}`, patch));
+    },
+    async uploadGuildIcon(guildId, blob) {
+      get().applyGuild(await api.put(`/api/guilds/${guildId}/icon`, blob));
+    },
+    async removeGuildIcon(guildId) {
+      get().applyGuild(await api.del(`/api/guilds/${guildId}/icon`));
+    },
+    applyGuild(g) {
+      if (!g) return;
+      set((s) => ({
+        guilds: s.guilds.map((x) => (x.id === g.id ? { ...x, ...g } : x)),
+        guildData: s.guildData[g.id] ? { ...s.guildData, [g.id]: { ...s.guildData[g.id], ...g } } : s.guildData,
+      }));
+    },
   }));
 
   connRegistry.set(key, store);
@@ -1205,7 +1261,8 @@ export function openFromUrl(url = location.href) {
   const q = new URL(url, location.origin).searchParams;
   const dm = q.get('dm');
   const friends = q.get('friends');
-  if (!dm && !friends) return;
+  const channel = q.get('channel');
+  if (!dm && !friends && !channel) return;
   if (new URL(url, location.origin).href === location.href) history.replaceState(null, '', '/');
   const ui = useStore.getState();
   if (dm) {
@@ -1219,7 +1276,14 @@ export function openFromUrl(url = location.href) {
         .catch(() => {});
   } else if (friends) {
     ui.setFriendsTab(friends === 'pending' ? 'pending' : 'online');
+    ui.goHome();
     ui.setMobileTab('friends');
+  } else if (channel) {
+    const guildId = Object.entries(ui.guildData).find(([, g]) => g.channels.some((c) => c.id === channel))?.[0];
+    if (guildId)
+      ui.selectGuild(guildId).then(() => {
+        useStore.getState().selectTextChannel(channel);
+      });
   }
 }
 
@@ -1263,7 +1327,7 @@ export function initBackNavigation() {
 /** Voltou para a janela: a conversa que está aberta foi lida (some o número vermelho). */
 function markViewedRead() {
   const v = useStore.getState().view;
-  if (v?.type !== 'dm' || document.hidden) return;
+  if (v?.type !== 'dm' || !appHasFocus()) return;
   const store = getConn(v.conn);
   if (store.getState().unread[v.channelId]) store.setState((s) => ({ unread: { ...s.unread, [v.channelId]: 0 } }));
 }
@@ -1272,9 +1336,11 @@ if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
     const visible = document.visibilityState === 'visible';
     for (const c of connRegistry.values()) c.getState().sendVisibility(visible);
-    if (visible && document.hasFocus()) markViewedRead();
+    if (visible && appHasFocus()) markViewedRead();
   });
   window.addEventListener('focus', markViewedRead);
+  // App do Windows: a janela voltou ao foco (aviso do Tauri; o WebView nem sempre dispara "focus").
+  window.addEventListener('padospeak:focus', markViewedRead);
 }
 
 /** Fecha e esquece uma conexão secundária. */
@@ -1626,6 +1692,18 @@ export const stickerHome = () => primaryConn();
  * Manda um sticker numa conversa de qualquer conexão. Se a conversa for em outro servidor (ou num PC
  * da rede), a imagem é copiada para lá antes — cada servidor guarda os stickers que circulam nele.
  */
+/**
+ * Envia um arquivo numa conversa/canal: sobe para o servidor da conversa e manda a mensagem
+ * `[arquivo:<id>:<tamanho>:<tipo>:<nome>]`. Programas e scripts só dentro de um .zip.
+ */
+export const FILE_RE = /^\[arquivo:([0-9a-f]{32}):(\d+):([^:\]]*):([^\]]*)\]$/;
+export async function sendFile(connKey, channelId, file, { onProgress, replyTo } = {}) {
+  const target = getConn(connKey);
+  const info = await target.getState().uploadFile(channelId, file, onProgress);
+  const name = info.name.replace(/[\]\n]/g, '_');
+  return target.getState().sendMessage(channelId, `[arquivo:${info.id}:${info.size}:${info.mime}:${name}]`, replyTo);
+}
+
 export async function sendSticker(connKey, channelId, sticker) {
   const target = getConn(connKey);
   try {

@@ -27,8 +27,11 @@ import { useServerPing } from './hooks.js';
 import { useLayout, isTouch } from '../lib/layout.js';
 import { MobileBack } from './Mobile.jsx';
 
-/** Celular e tablet não compartilham tela (o navegador não oferece). */
-const canShareScreen = typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices?.getDisplayMedia) && !isTouch;
+/**
+ * Celular e tablet não compartilham tela (o navegador não oferece). No computador o botão fica sempre:
+ * sem HTTPS, ele explica por que não dá.
+ */
+const canShareScreen = !isTouch;
 
 /** Celular: a faixa com a sua câmera fica num canto e dá para arrastar com o dedo. */
 function useDraggable(enabled) {

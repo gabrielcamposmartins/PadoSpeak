@@ -45,6 +45,21 @@ function tone(ac, out, t, freq, dur, { type = 'sine', volume = 0.12, attack = 0.
   osc.stop(t + dur + 0.02);
 }
 
+/**
+ * Nota com timbre de marimba/sino: fundamental e parciais inarmônicos que somem rápido, como uma
+ * lâmina batida. `echo` repete a nota mais baixa logo depois (o "brilho" dos avisos do Messenger).
+ */
+function mallet(ac, out, t, freq, dur, { volume = 0.12, echo = 0 } = {}) {
+  for (const [ratio, level, decay] of [
+    [1, 1, dur],
+    [2.76, 0.35, dur * 0.35],
+    [5.4, 0.12, dur * 0.18],
+  ]) {
+    tone(ac, out, t, freq * ratio, decay, { volume: volume * level, attack: 0.004 });
+  }
+  if (echo) tone(ac, out, t + 0.09, freq, dur * 0.8, { volume: volume * echo, attack: 0.004 });
+}
+
 /** Sequência de notas [frequência Hz, duração s]; devolve quando termina. */
 function notes(ac, out, t, seq, { gap = 0.015, ...opts } = {}) {
   for (const [freq, dur] of seq) {
@@ -223,18 +238,11 @@ export const SOUND_DEFS = {
       ],
       { type: 'triangle', volume: 0.14 },
     ),
-  // Mensagem direta nova.
-  message: (ac, out, t) =>
-    notes(
-      ac,
-      out,
-      t,
-      [
-        [880, 0.06],
-        [1174.66, 0.12],
-      ],
-      { volume: 0.08 },
-    ),
+  // Mensagem nova: duas notas curtas subindo, de marimba, com um eco leve (no estilo do Messenger).
+  message: (ac, out, t) => {
+    mallet(ac, out, t, 1046.5, 0.22, { volume: 0.11 });
+    mallet(ac, out, t + 0.11, 1568, 0.42, { volume: 0.12, echo: 0.25 });
+  },
   // Chamada recusada / encerrada.
   callEnd: (ac, out, t) =>
     notes(
@@ -275,10 +283,16 @@ export const SOUND_DEFS = {
   nudge: (ac, out, t) => NUDGE_VARIANTS[NUDGE_SOUND].play(ac, out, t),
 };
 
+/** Últimos sons tocados (diagnóstico e testes): nome, quando e se o áudio estava liberado. */
+export const soundLog = [];
+if (typeof globalThis !== 'undefined') globalThis.__padospeakSounds = soundLog;
+
 export function playSound(name) {
   if (!enabled || !SOUND_DEFS[name]) return;
   try {
     const ac = audio();
+    soundLog.push({ name, at: Date.now(), state: ac.state });
+    if (soundLog.length > 50) soundLog.shift();
     SOUND_DEFS[name](ac, ac.destination, ac.currentTime + 0.01);
   } catch {
     /* sem áudio disponível */

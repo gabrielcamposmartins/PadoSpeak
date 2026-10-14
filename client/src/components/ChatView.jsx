@@ -7,8 +7,12 @@ import {
   PenLine,
   Vibrate,
   Sticker,
+  CornerUpLeft,
+  Paperclip,
+  X,
 } from 'lucide-react';
-import { useStore, sendSticker } from '../store.js';
+import { useStore, sendSticker, sendFile } from '../store.js';
+import { FileView, UploadList, parseFile, isBlockedFile } from './Files.jsx';
 import { StickerPicker, StickerView, parseSticker } from './Stickers.jsx';
 import FormatTools from './FormatTools.jsx';
 import { useConn, useConnKey } from './conn.jsx';
@@ -58,13 +62,33 @@ function Notice({ n, dm, name }) {
 }
 
 /** Barra acima da caixa de texto: formatação, cor, emoticons e chamar atenção. */
-function ComposerTools({ inputRef, text, setText, channelId }) {
+function ComposerTools({ inputRef, text, setText, channelId, onFiles }) {
   const [open, setOpen] = useState(false);
   const useC = useConn();
   const connKey = useConnKey();
   const stickerBtn = useRef(null);
+  const fileInput = useRef(null);
   return (
     <FormatTools inputRef={inputRef} text={text} setText={setText} maxRaw={MAX}>
+      <button
+        type="button"
+        className="gloss tool-sq"
+        title="Enviar arquivo (imagem, vídeo, texto, .zip…)"
+        aria-label="Enviar arquivo"
+        onClick={() => fileInput.current?.click()}
+      >
+        <Paperclip size={15} className="ico-blue" />
+      </button>
+      <input
+        ref={fileInput}
+        type="file"
+        multiple
+        hidden
+        onChange={(e) => {
+          onFiles([...e.target.files]);
+          e.target.value = '';
+        }}
+      />
       <span className="tool-wrap">
         <button
           ref={stickerBtn}
@@ -101,9 +125,34 @@ function ComposerTools({ inputRef, text, setText, channelId }) {
   );
 }
 
-function Message({ m, head, canEdit: canEditText, canDelete }) {
+/** Trecho da mensagem respondida, acima da resposta; clicar leva até ela. */
+function ReplyQuote({ m }) {
+  if (!m.reply)
+    return (
+      <div className="reply-quote gone">
+        <CornerUpLeft size={13} /> Mensagem original apagada
+      </div>
+    );
+  const jump = () => {
+    const el = document.getElementById(`msg-${m.reply.id}`);
+    if (!el) return useStore.getState().notify('A mensagem original é mais antiga: carregue as anteriores para vê-la.', 'info');
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    el.classList.add('flash');
+    setTimeout(() => el.classList.remove('flash'), 1600);
+  };
+  return (
+    <button type="button" className="reply-quote" onClick={jump} title="Ir para a mensagem respondida">
+      <CornerUpLeft size={13} />
+      <b>{m.reply.authorName}</b>
+      <span>{m.reply.preview}</span>
+    </button>
+  );
+}
+
+function Message({ m, head, canEdit: canEditText, canDelete, onReply }) {
   const sticker = parseSticker(m.content);
-  const canEdit = canEditText && !sticker;
+  const file = !sticker && parseFile(m.content);
+  const canEdit = canEditText && !sticker && !file;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(m.content);
   const useC = useConn();
@@ -113,7 +162,7 @@ function Message({ m, head, canEdit: canEditText, canDelete }) {
   const [toolsOpen, setToolsOpen] = useState(false);
   const rowRef = useRef(null);
   const press = useRef(null);
-  const hasTools = canEdit || canDelete;
+  const hasTools = true; // responder vale para todas as mensagens
   // Toque: segurar a mensagem mostra "editar" e "excluir"; tocar fora esconde.
   useEffect(() => {
     if (!toolsOpen) return;
@@ -145,6 +194,7 @@ function Message({ m, head, canEdit: canEditText, canDelete }) {
   return (
     <div
       ref={rowRef}
+      id={`msg-${m.id}`}
       className={`msg${head ? ' head' : ''}${toolsOpen ? ' tools-open' : ''}`}
       {...longPress}
     >
@@ -153,6 +203,7 @@ function Message({ m, head, canEdit: canEditText, canDelete }) {
         {head && <Avatar user={m.author} size={30} onClick={() => openProfile(m.author.id)} />}
       </div>
       <div className="body">
+        {m.replyTo && <ReplyQuote m={m} />}
         {head && (
           <div className="meta">
             <span className="say">
@@ -179,13 +230,24 @@ function Message({ m, head, canEdit: canEditText, canDelete }) {
           </div>
         ) : (
           <p className="content" title={head ? undefined : hhmm(m.createdAt)}>
-            {sticker ? <StickerView sticker={sticker} /> : <RichText text={m.content} />}
+            {sticker ? <StickerView sticker={sticker} /> : file ? <FileView file={file} /> : <RichText text={m.content} />}
             {m.editedAt && <span className="edited">(editado)</span>}
           </p>
         )}
       </div>
-      {(canEdit || canDelete) && !editing && (
+      {!editing && (
         <div className="tools">
+          <button
+            className="icon-btn"
+            title="Responder"
+            aria-label="Responder"
+            onClick={() => {
+              setToolsOpen(false);
+              onReply(m);
+            }}
+          >
+            <CornerUpLeft size={14} />
+          </button>
           {canEdit && (
             <button
               className="icon-btn"
@@ -268,6 +330,10 @@ export default function ChatView({ channel, variant = 'channel' }) {
   const isOwner = useC((s) => s.guilds.find((g) => g.id === channel.guildId)?.ownerId === s.me?.id);
   const users = useC((s) => s.users);
   const [text, setText] = useState('');
+  const [reply, setReply] = useState(null); // mensagem sendo respondida
+  const [uploads, setUploads] = useState([]); // arquivos sendo enviados
+  const [dragging, setDragging] = useState(false);
+  const connKey = useConnKey();
   const listRef = useRef(null);
   const stickToBottom = useRef(true);
   const prevHeight = useRef(0);
@@ -278,8 +344,38 @@ export default function ChatView({ channel, variant = 'channel' }) {
   useEffect(() => {
     stickToBottom.current = true;
     setText('');
+    setReply(null);
     inputRef.current?.focus();
   }, [channel.id]);
+
+  /** Envia arquivos (botão, arrastar ou colar), um de cada vez, com o progresso acima da caixa. */
+  async function sendFiles(files) {
+    for (const file of files) {
+      if (isBlockedFile(file.name)) {
+        useStore.getState().notify(`"${file.name}" é um programa: coloque dentro de um .zip para enviar.`);
+        continue;
+      }
+      const key = `${Date.now()}-${Math.random()}`;
+      setUploads((u) => [...u, { key, name: file.name, progress: 0 }]);
+      stickToBottom.current = true;
+      try {
+        await sendFile(connKey, channel.id, file, {
+          replyTo: reply?.id,
+          onProgress: (p) => setUploads((u) => u.map((x) => (x.key === key ? { ...x, progress: p } : x))),
+        });
+        setReply(null);
+      } catch (e) {
+        useStore.getState().notify(`${file.name}: ${e.message}`);
+      } finally {
+        setUploads((u) => u.filter((x) => x.key !== key));
+      }
+    }
+  }
+
+  const startReply = (m) => {
+    setReply(m);
+    inputRef.current?.focus();
+  };
 
   // Mantém o fim da conversa visível; ao carregar antigas, preserva a posição de leitura.
   useLayoutEffect(() => {
@@ -310,7 +406,9 @@ export default function ChatView({ channel, variant = 'channel' }) {
     if (!content) return;
     setText('');
     stickToBottom.current = true;
-    const ok = await useC.getState().sendMessage(channel.id, content);
+    const replyTo = reply?.id;
+    setReply(null);
+    const ok = await useC.getState().sendMessage(channel.id, content, replyTo);
     if (!ok) setText(content);
   }
 
@@ -336,7 +434,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
       </span>
     </>
   );
-  const tools = <ComposerTools inputRef={inputRef} text={text} setText={setText} channelId={channel.id} />;
+  const tools = <ComposerTools inputRef={inputRef} text={text} setText={setText} channelId={channel.id} onFiles={sendFiles} />;
   const lastReceived = [...messages].reverse().find((m) => !m.notice && m.author.id !== me.id);
   const placeholder = dm ? `Conversar com ${channel.name}` : `Conversar em #${channel.name}`;
 
@@ -392,9 +490,10 @@ export default function ChatView({ channel, variant = 'channel' }) {
             )}
             <Message
               m={m}
-              head={head}
+              head={head || Boolean(m.replyTo)}
               canEdit={m.author.id === me.id}
               canDelete={m.author.id === me.id || isOwner}
+              onReply={startReply}
             />
           </Fragment>
         );
@@ -415,10 +514,50 @@ export default function ChatView({ channel, variant = 'channel' }) {
         if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
           e.preventDefault();
           send();
+        } else if (e.key === 'Escape' && reply) setReply(null);
+      }}
+      onPaste={(e) => {
+        // Colar uma imagem (print) ou arquivos copiados envia como arquivo.
+        const files = [...(e.clipboardData?.files || [])];
+        if (files.length) {
+          e.preventDefault();
+          sendFiles(files);
         }
       }}
     />
   );
+  // Respondendo: o trecho da mensagem acima da caixa (Esc ou × cancela).
+  const replyBar = reply && (
+    <div className="reply-bar">
+      <CornerUpLeft size={14} />
+      <span>
+        Respondendo a <b>{plain(reply.author.displayName) || reply.author.username}</b>
+      </span>
+      <span className="reply-bar-text">{parseFile(reply.content)?.name || plain(reply.content).slice(0, 120)}</span>
+      <button className="gloss mini" onClick={() => setReply(null)} title="Cancelar resposta" aria-label="Cancelar resposta">
+        <X size={13} />
+      </button>
+    </div>
+  );
+  // Arrastar arquivos para a conversa envia.
+  const dropProps = {
+    onDragOver: (e) => {
+      if (![...e.dataTransfer.types].includes('Files')) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      setDragging(true);
+    },
+    onDragLeave: (e) => {
+      if (!e.currentTarget.contains(e.relatedTarget)) setDragging(false);
+    },
+    onDrop: (e) => {
+      if (!e.dataTransfer.files?.length) return;
+      e.preventDefault();
+      setDragging(false);
+      sendFiles([...e.dataTransfer.files]);
+    },
+  };
+  const dropHint = dragging && <div className="drop-overlay">Solte para enviar à conversa</div>;
   const sendBtn = (
     <button className="go send-btn" onClick={send} disabled={!text.trim()}>
       <Send size={16} />
@@ -428,12 +567,15 @@ export default function ChatView({ channel, variant = 'channel' }) {
 
   if (dm) {
     return (
-      <section className="chat dm">
+      <section className="chat dm" {...dropProps}>
         <div className="panel log-panel">
           <DmHeader recipient={channel.recipient} />
           {log}
+          {dropHint}
         </div>
         <div className="panel composer">
+          <UploadList uploads={uploads} />
+          {replyBar}
           {showTools && (
             <div className="panel-head tools-head">
               {tools}
@@ -460,12 +602,15 @@ export default function ChatView({ channel, variant = 'channel' }) {
   }
 
   return (
-    <section className="chat">
+    <section className="chat" {...dropProps}>
       {log}
+      {dropHint}
       <div className="composer">
         <div className="typing" aria-live="polite">
           {typingLine}
         </div>
+        <UploadList uploads={uploads} />
+        {replyBar}
         {showTools && tools}
         <div className="compose-row">
           {aaBtn}

@@ -75,6 +75,29 @@ impl Cipher {
         format!("{PREFIX}{}", B64.encode(out))
     }
 
+    /// Bytes → `nonce ‖ cifrado ‖ tag` (arquivos, em pedaços).
+    pub fn seal_bytes(&self, plain: &[u8]) -> Vec<u8> {
+        let mut nonce = [0u8; NONCE_LEN];
+        self.rng.fill(&mut nonce).expect("gerador aleatório do sistema");
+        let mut data = plain.to_vec();
+        self.key
+            .seal_in_place_append_tag(Nonce::assume_unique_for_key(nonce), Aad::empty(), &mut data)
+            .expect("cifrar arquivo");
+        let mut out = nonce.to_vec();
+        out.extend_from_slice(&data);
+        out
+    }
+
+    pub fn open_bytes(&self, sealed: &[u8]) -> Option<Vec<u8>> {
+        if sealed.len() < NONCE_LEN {
+            return None;
+        }
+        let (nonce, data) = sealed.split_at(NONCE_LEN);
+        let mut data = data.to_vec();
+        let nonce = Nonce::try_assume_unique_for_key(nonce).ok()?;
+        Some(self.key.open_in_place(nonce, Aad::empty(), &mut data).ok()?.to_vec())
+    }
+
     /// Forma guardada → texto. Mensagens antigas (sem prefixo) passam direto.
     pub fn reveal(&self, stored: &str) -> String {
         let Some(body) = stored.strip_prefix(PREFIX) else { return stored.to_string() };

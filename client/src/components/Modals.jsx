@@ -12,6 +12,7 @@ import {
   Vibrate,
   BellOff,
   X,
+  Download,
 } from 'lucide-react';
 import {
   useStore,
@@ -30,6 +31,7 @@ import LatencyChart from './LatencyChart.jsx';
 import { TitleBar } from './Aero.jsx';
 import { FormattedText } from './Emotes.jsx';
 import FormatTools from './FormatTools.jsx';
+import { fmtSize } from './Files.jsx';
 import { plain, visibleLength } from '../lib/text.js';
 
 const TITLES = {
@@ -43,6 +45,7 @@ const TITLES = {
   confirm: 'Confirmar',
   settings: 'Configurações',
   serverLogin: 'Entrar no servidor',
+  guildSettings: 'Configurações do servidor',
 };
 
 /** Fundo do banner do perfil (acima da foto) a partir de uma cor. */
@@ -1066,7 +1069,134 @@ function ServerLoginModal({ close }) {
 }
 
 /** Janelas mais largas que o padrão. */
-const SIZES = { diagnostics: 'wide', settings: 'settings' };
+/** Configuração do servidor (só o dono): nome, ícone e os arquivos enviados nos canais. */
+function GuildSettingsModal({ guildId, close }) {
+  const guild = useStore((s) => s.guilds.find((g) => g.id === guildId));
+  const base = useStore((s) => s.baseUrl);
+  const [name, setName] = useState(guild?.name || '');
+  const [files, setFiles] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const iconInput = useRef(null);
+  const st = useStore.getState();
+  const load = () =>
+    st
+      .guildFiles(guildId)
+      .then(setFiles)
+      .catch((e) => st.notify(e.message));
+  useEffect(() => {
+    load();
+  }, [guildId]);
+  if (!guild) return null;
+  const run = async (fn) => {
+    setBusy(true);
+    try {
+      await fn();
+    } catch (e) {
+      st.notify(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const pickIcon = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (file) run(async () => st.uploadGuildIcon(guildId, await prepareAvatar(file)));
+  };
+  const when = (ms) => new Date(ms).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' });
+  return (
+    <>
+      <div className="modal-body guild-settings">
+        <h2>Configurações do servidor</h2>
+        <p className="sub">Só você, como dono, vê esta tela.</p>
+        <div className="gs-top">
+          <div className="gs-icon">
+            <span className={`gel guild guild-icon big${guild.iconUrl ? ' has-img' : ''}`} style={{ '--c': guild.iconColor }}>
+              {guild.iconUrl ? <img src={base + guild.iconUrl} alt="" /> : <span>{guild.name.slice(0, 2).toUpperCase()}</span>}
+            </span>
+            <div className="gs-icon-actions">
+              <button className="btn secondary" disabled={busy} onClick={() => iconInput.current?.click()}>
+                <Camera size={16} /> Escolher ícone
+              </button>
+              {guild.iconUrl && (
+                <button className="btn ghost" disabled={busy} onClick={() => run(() => st.removeGuildIcon(guildId))}>
+                  <Trash2 size={16} /> Remover ícone
+                </button>
+              )}
+              <small>PNG, JPEG, WebP ou GIF. A imagem é recortada em quadrado.</small>
+              <input ref={iconInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={pickIcon} />
+            </div>
+          </div>
+          <form
+            className="field gs-name"
+            onSubmit={(e) => {
+              e.preventDefault();
+              run(() => st.updateGuild(guildId, { name }));
+            }}
+          >
+            <label htmlFor="gs-name">Nome do servidor</label>
+            <div className="gs-name-row">
+              <input id="gs-name" value={name} maxLength={48} onChange={(e) => setName(e.target.value)} required />
+              <button className="btn" disabled={busy || !name.trim() || name.trim() === guild.name}>
+                Salvar
+              </button>
+            </div>
+          </form>
+        </div>
+        <div className="settings-sec gs-files-head">
+          <span>Arquivos no servidor</span>
+          {files && (
+            <small>
+              {files.files.length} {files.files.length === 1 ? 'arquivo' : 'arquivos'} · {fmtSize(files.total)} · até{' '}
+              {fmtSize(files.maxFile)} por arquivo
+            </small>
+          )}
+        </div>
+        {!files ? (
+          <p className="kv">Carregando…</p>
+        ) : files.files.length === 0 ? (
+          <p className="kv">Nenhum arquivo enviado nos canais ainda.</p>
+        ) : (
+          <div className="gs-files" role="table" aria-label="Arquivos no servidor">
+            {files.files.map((f) => (
+              <div className="gs-file" role="row" key={f.id}>
+                <a href={st.fileUrl(f.id)} target="_blank" rel="noreferrer" className="gs-file-name" title={f.name}>
+                  {f.name}
+                </a>
+                <span className="gs-file-meta">
+                  {fmtSize(f.size)} · #{f.channelName || 'canal apagado'} · {plain(f.by) || f.byUsername} · {when(f.createdAt)}
+                </span>
+                <a className="gloss mini" href={st.fileUrl(f.id, true)} download={f.name} title="Baixar" aria-label={`Baixar ${f.name}`}>
+                  <Download size={14} />
+                </a>
+                <button
+                  className="gloss mini danger-ico"
+                  title="Apagar arquivo"
+                  aria-label={`Apagar ${f.name}`}
+                  disabled={busy}
+                  onClick={() =>
+                    run(async () => {
+                      await st.deleteFile(f.id);
+                      await load();
+                    })
+                  }
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="modal-foot">
+        <button className="btn" onClick={close}>
+          Pronto
+        </button>
+      </div>
+    </>
+  );
+}
+
+const SIZES = { diagnostics: 'wide', settings: 'settings', guildSettings: 'wide' };
 
 const MODALS = {
   serverLogin: ServerLoginModal,
@@ -1079,6 +1209,7 @@ const MODALS = {
   invite: InviteModal,
   confirm: ConfirmModal,
   settings: SettingsModal,
+  guildSettings: GuildSettingsModal,
 };
 
 export default function Modals() {

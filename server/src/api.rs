@@ -155,7 +155,14 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/me", get(me))
         .route("/api/guilds", get(list_guilds).post(create_guild))
         .route("/api/guilds/join", post(join_guild))
-        .route("/api/guilds/{id}", get(get_guild).delete(delete_guild))
+        .route("/api/guilds/{id}", get(get_guild).delete(delete_guild).patch(update_guild))
+        .route(
+            "/api/guilds/{id}/icon",
+            get(guild_icon)
+                .put(upload_guild_icon)
+                .delete(remove_guild_icon)
+                .layer(axum::extract::DefaultBodyLimit::max(MAX_GUILD_ICON + 64 * 1024)),
+        )
         .route("/api/guilds/{id}/leave", post(leave_guild))
         .route("/api/guilds/{id}/channels", post(create_channel))
         .route("/api/channels/{id}", delete(delete_channel))
@@ -361,6 +368,8 @@ async fn delete_guild(State(app): AppState, AuthUser(user, _): AuthUser, Path(id
     }
     app.hub.to_guild(&id, "guild:deleted", json!({ "guildId": id }));
     app.hub.drop_guild(&id);
+    crate::files::delete_files(&app, "SELECT id FROM files WHERE guild_id = ?1", &id).await?;
+    app.db.execute("DELETE FROM guild_icons WHERE guild_id = ?1", [id.as_str()]).await?;
     // Exclusão explícita (não depende de ON DELETE CASCADE, que exige PRAGMA por conexão em modo remoto).
     let conn = app.db.conn().await?;
     let tx = conn.transaction().await?;
@@ -370,6 +379,96 @@ async fn delete_guild(State(app): AppState, AuthUser(user, _): AuthUser, Path(id
     tx.execute("DELETE FROM guilds WHERE id = ?1", [id.as_str()]).await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Ícone do servidor: até 512 KB (o app já manda redimensionado).
+const MAX_GUILD_ICON: usize = 512 * 1024;
+
+/// Servidor do qual o usuário é dono (para quem não é, ele "não existe" ou é proibido mexer).
+async fn owned_guild(app: &App, id: &str, user_id: &str) -> ApiResult<GuildFull> {
+    let g = member_guild(app, id, user_id).await?;
+    if g.guild.owner_id != user_id {
+        return Err(forbidden("Apenas o dono pode mudar o servidor"));
+    }
+    Ok(g)
+}
+
+/// Avisa todos do servidor que nome/ícone mudaram.
+async fn announce_guild(app: &App, id: &str) -> ApiResult<Guild> {
+    let sql = format!("SELECT {GUILD_COLS} FROM guilds g WHERE g.id = ?1");
+    let guild = app.db.query_one(&sql, [id], guild_from_row).await?.ok_or_else(|| not_found("Servidor não encontrado"))?;
+    app.hub.to_guild(id, "guild:updated", &guild);
+    Ok(guild)
+}
+
+#[derive(Deserialize)]
+struct GuildPatch {
+    name: Option<String>,
+}
+
+async fn update_guild(
+    State(app): AppState,
+    AuthUser(user, _): AuthUser,
+    Path(id): Path<String>,
+    Json(body): Json<GuildPatch>,
+) -> ApiResult<Json<Guild>> {
+    owned_guild(&app, &id, &user.id).await?;
+    if let Some(name) = body.name {
+        let name: String = name.trim().chars().take(48).collect();
+        if name.is_empty() {
+            return Err(bad("O nome do servidor não pode ficar vazio"));
+        }
+        app.db.execute("UPDATE guilds SET name = ?1 WHERE id = ?2", [name.as_str(), id.as_str()]).await?;
+    }
+    Ok(Json(announce_guild(&app, &id).await?))
+}
+
+async fn upload_guild_icon(
+    State(app): AppState,
+    AuthUser(user, _): AuthUser,
+    Path(id): Path<String>,
+    body: axum::body::Bytes,
+) -> ApiResult<Json<Guild>> {
+    owned_guild(&app, &id, &user.id).await?;
+    if body.is_empty() || body.len() > MAX_GUILD_ICON {
+        return Err(bad("O ícone deve ter até 512 KB"));
+    }
+    let mime = crate::social::sniff_image(&body).ok_or_else(|| bad("Use uma imagem PNG, JPEG, WebP ou GIF"))?;
+    app.db
+        .execute(
+            "INSERT INTO guild_icons (guild_id, mime, data) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(guild_id) DO UPDATE SET mime = excluded.mime, data = excluded.data",
+            libsql::params![id.as_str(), mime, body.to_vec()],
+        )
+        .await?;
+    app.db.execute("UPDATE guilds SET icon_at = ?1 WHERE id = ?2", libsql::params![crate::now_ms(), id.as_str()]).await?;
+    Ok(Json(announce_guild(&app, &id).await?))
+}
+
+async fn remove_guild_icon(State(app): AppState, AuthUser(user, _): AuthUser, Path(id): Path<String>) -> ApiResult<Json<Guild>> {
+    owned_guild(&app, &id, &user.id).await?;
+    app.db.execute("DELETE FROM guild_icons WHERE guild_id = ?1", [id.as_str()]).await?;
+    app.db.execute("UPDATE guilds SET icon_at = NULL WHERE id = ?1", [id.as_str()]).await?;
+    Ok(Json(announce_guild(&app, &id).await?))
+}
+
+/// O ícone é público como as fotos de perfil (o link só existe para quem vê o servidor).
+async fn guild_icon(State(app): AppState, Path(id): Path<String>) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    match app
+        .db
+        .query_one("SELECT mime, data FROM guild_icons WHERE guild_id = ?1", [id.as_str()], |r| {
+            Ok((r.get::<String>(0)?, r.get::<Vec<u8>>(1)?))
+        })
+        .await
+    {
+        Ok(Some((mime, data))) => (
+            [(axum::http::header::CONTENT_TYPE, mime), (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable".into())],
+            data,
+        )
+            .into_response(),
+        _ => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn leave_guild(State(app): AppState, AuthUser(user, _): AuthUser, Path(id): Path<String>) -> ApiResult<StatusCode> {
@@ -427,6 +526,7 @@ async fn delete_channel(State(app): AppState, AuthUser(user, _): AuthUser, Path(
         return Err(forbidden("Apenas o dono pode excluir canais"));
     }
     app.hub.close_voice_channel(&ch.id);
+    crate::files::delete_files(&app, "SELECT id FROM files WHERE channel_id = ?1", &id).await?;
     let conn = app.db.conn().await?;
     let tx = conn.transaction().await?;
     tx.execute("DELETE FROM messages WHERE channel_id = ?1", [id.as_str()]).await?;
@@ -459,7 +559,7 @@ async fn list_messages(
     let sql = format!("{MESSAGE_SELECT} WHERE m.channel_id = ?1 AND m.created_at < ?2 ORDER BY m.created_at DESC LIMIT ?3");
     let mut list = app.db.query_all(&sql, libsql::params![ch.id.as_str(), before, limit], message_from_row).await?;
     for m in &mut list {
-        m.content = app.db.cipher.reveal(&m.content);
+        open_message(&app.db, m);
     }
     list.reverse();
     Ok(Json(list))

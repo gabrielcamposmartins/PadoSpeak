@@ -6,7 +6,7 @@
 //! - evento:             `{ "ev": "...", "d": {...} }`
 use crate::api::{channel_with_access, guild_ids_of};
 use crate::host::App;
-use crate::models::{plain_text, user_from_row, Message, User, USER_COLS};
+use crate::models::{plain_text, reply_preview, user_from_row, Message, ReplyRef, User, USER_COLS};
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -621,7 +621,10 @@ impl Hub {
                     created_at: crate::now_ms(),
                     edited_at: None,
                     author: user.clone(),
+                    reply_to: None,
+                    reply: None,
                 };
+                let reply_to = str_field("replyTo");
                 let ch = channel_with_access(app, &channel_id, &user.id).await;
                 let Some(ch) = ch.filter(|c| c.kind == "text") else {
                     // Não é canal de servidor: talvez seja uma conversa direta.
@@ -629,11 +632,11 @@ impl Hub {
                         return err("Sem acesso ao canal");
                     };
                     msg.channel_id = dm.id.clone();
-                    let preview = if msg.content.starts_with("[[sticker:") {
-                        "enviou um sticker".to_string()
-                    } else {
-                        plain_text(&msg.content).chars().take(160).collect()
-                    };
+                    if !reply_to.is_empty() {
+                        msg.reply = reply_ref(app, "dm_messages", "dm_id", &reply_to, &dm.id).await;
+                        msg.reply_to = msg.reply.as_ref().map(|r| r.id.clone());
+                    }
+                    let preview = reply_preview(&msg.content);
                     app.push_to(
                         dm.other(&user.id),
                         crate::push::Note {
@@ -646,8 +649,8 @@ impl Hub {
                     let res = app
                         .db
                         .execute(
-                            "INSERT INTO dm_messages (id, dm_id, author_id, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                            libsql::params![msg.id.as_str(), dm.id.as_str(), user.id.as_str(), app.db.cipher.seal(&msg.content), msg.created_at],
+                            "INSERT INTO dm_messages (id, dm_id, author_id, content, created_at, reply_to) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                            libsql::params![msg.id.as_str(), dm.id.as_str(), user.id.as_str(), app.db.cipher.seal(&msg.content), msg.created_at, msg.reply_to.clone()],
                         )
                         .await;
                     if let Err(e) = res {
@@ -661,11 +664,15 @@ impl Hub {
                     self.to_users(&dm.users(), "message:new", &msg);
                     return Some(json!({ "message": msg }));
                 };
+                if !reply_to.is_empty() {
+                    msg.reply = reply_ref(app, "messages", "channel_id", &reply_to, &ch.id).await;
+                    msg.reply_to = msg.reply.as_ref().map(|r| r.id.clone());
+                }
                 let res = app
                     .db
                     .execute(
-                        "INSERT INTO messages (id, channel_id, author_id, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                        libsql::params![msg.id.as_str(), msg.channel_id.as_str(), user.id.as_str(), app.db.cipher.seal(&msg.content), msg.created_at],
+                        "INSERT INTO messages (id, channel_id, author_id, content, created_at, reply_to) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        libsql::params![msg.id.as_str(), msg.channel_id.as_str(), user.id.as_str(), app.db.cipher.seal(&msg.content), msg.created_at, msg.reply_to.clone()],
                     )
                     .await;
                 if let Err(e) = res {
@@ -970,4 +977,19 @@ mod tests {
         hub.set_status("ana", "busy");
         assert_eq!(hub.presence_of("ana").as_deref(), Some("busy"));
     }
+}
+
+/// A mensagem respondida, se ela estiver na mesma conversa/canal (o texto citado já decifrado).
+async fn reply_ref(app: &App, table: &str, place_col: &str, id: &str, place: &str) -> Option<ReplyRef> {
+    let sql = format!(
+        "SELECT m.id, m.content, u.id, u.display_name FROM {table} m JOIN users u ON u.id = m.author_id \
+         WHERE m.id = ?1 AND m.{place_col} = ?2"
+    );
+    let (rid, content, author_id, author_name) = app
+        .db
+        .query_one(&sql, [id, place], |r| Ok((r.get::<String>(0)?, r.get::<String>(1)?, r.get::<String>(2)?, r.get::<String>(3)?)))
+        .await
+        .ok()
+        .flatten()?;
+    Some(ReplyRef { id: rid, author_id, author_name: plain_text(&author_name), preview: reply_preview(&app.db.cipher.reveal(&content)) })
 }
