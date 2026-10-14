@@ -1,0 +1,290 @@
+import { useEffect, useState } from 'react';
+import { Play, Pause, SkipForward, Music, X, LoaderCircle, Volume2, ArrowLeft } from 'lucide-react';
+import { useStore } from '../store.js';
+import { MusicPlayer } from '../lib/music.js';
+
+const fmt = (sec) => {
+  if (!Number.isFinite(sec)) return '--:--';
+  const s = Math.max(0, Math.floor(sec));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+};
+
+/** Links soltos/colados: aceita vários, separados por linha ou espaço (ignora comentários do text/uri-list). */
+export function extractLinks(text) {
+  return [
+    ...new Set(
+      String(text || '')
+        .split(/\s+/)
+        .map((s) => s.trim())
+        .filter((s) => /^(https?:\/\/|spotify:)/i.test(s)),
+    ),
+  ];
+}
+
+const isSpotify = (track) => /spotify/i.test(track.pageUrl || '');
+
+function Source({ track }) {
+  return isSpotify(track) ? <span className="src sp">Spotify</span> : <span className="src yt">YouTube</span>;
+}
+
+/** Arte padrão do player quando a faixa não tem capa: céu, colina, bolhas e a nota musical. */
+function CoverArt() {
+  return (
+    <svg viewBox="0 0 270 120" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+      <defs>
+        <radialGradient id="npBub" cx=".5" cy=".5" r=".5">
+          <stop offset=".55" stopColor="#fff" stopOpacity="0" />
+          <stop offset=".92" stopColor="#fff" stopOpacity=".55" />
+          <stop offset="1" stopColor="#fff" stopOpacity=".9" />
+        </radialGradient>
+      </defs>
+      <path d="M0 120 C 60 90, 140 92, 200 104 S 260 98, 270 94 L270 120 Z" fill="#9be86a" opacity=".85" />
+      <path d="M40 -10 L90 120 L60 120 Z" fill="#fff" opacity=".12" />
+      <circle cx="210" cy="36" r="20" fill="url(#npBub)" />
+      <circle cx="203" cy="28" r="5" fill="#fff" opacity=".8" />
+      <circle cx="244" cy="70" r="10" fill="url(#npBub)" />
+      <circle cx="176" cy="74" r="7" fill="url(#npBub)" />
+      <g
+        transform="translate(46 26)"
+        fill="none"
+        stroke="#fff"
+        strokeWidth="5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        opacity=".95"
+      >
+        <path d="M18 52V12l36-6v40" />
+        <circle cx="10" cy="52" r="8" fill="#fff" />
+        <circle cx="46" cy="46" r="8" fill="#fff" />
+      </g>
+    </svg>
+  );
+}
+
+function NowPlaying({ state }) {
+  const { current } = state;
+  const { track } = current;
+  const offset = useStore((s) => s.serverOffset);
+  const volume = useStore((s) => s.prefs.musicVolume ?? 0.5);
+  const { musicControl, setMusicVolume } = useStore.getState();
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => tick((n) => n + 1), 500);
+    return () => clearInterval(t);
+  }, []);
+  const loading = current.startedAt == null;
+  const paused = current.pausedAt != null;
+  const pos = MusicPlayer.position(state, Date.now() + offset);
+  const dur = track.durationMs ? track.durationMs / 1000 : NaN;
+
+  return (
+    <div className="now-playing">
+      <div className="np-cover">
+        {track.thumbnail ? <img src={track.thumbnail} alt="" /> : <CoverArt />}
+        <span className="np-gloss" />
+      </div>
+      <div className="np-body">
+        <div className="np-src">
+          <Source track={track} />
+          {track.addedBy && <span>adicionado por {track.addedBy.displayName}</span>}
+        </div>
+        <a className="np-title" href={track.pageUrl} target="_blank" rel="noreferrer" title={track.title}>
+          {track.title}
+        </a>
+        {track.artist && <div className="np-artist">{track.artist}</div>}
+        <div
+          className="np-progress"
+          role="progressbar"
+          aria-label="Progresso da música"
+          aria-valuemin={0}
+          aria-valuemax={Number.isFinite(dur) ? Math.round(dur) : undefined}
+          aria-valuenow={Math.round(pos)}
+        >
+          <div style={{ width: `${Number.isFinite(dur) ? Math.min(100, (pos / dur) * 100) : 0}%` }} />
+        </div>
+        <div className="np-time">
+          <span>{loading ? 'carregando…' : fmt(pos)}</span>
+          <span>{fmt(dur)}</span>
+        </div>
+        <div className="np-controls">
+          <button
+            className="ball aqua"
+            title={paused ? 'Retomar' : 'Pausar'}
+            aria-label={paused ? 'Retomar' : 'Pausar'}
+            disabled={loading}
+            onClick={() => musicControl(paused ? 'resume' : 'pause')}
+          >
+            {paused ? <Play /> : <Pause />}
+          </button>
+          <button className="ball small" title="Pular" aria-label="Pular faixa" onClick={() => musicControl('skip')}>
+            <SkipForward />
+          </button>
+          <label className="np-volume">
+            Volume da música (só você)
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={volume}
+              onChange={(e) => setMusicVolume(Number(e.target.value))}
+            />
+          </label>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function MusicPanel() {
+  const voice = useStore((s) => s.voice);
+  const guildId = useStore((s) => s.currentGuildId);
+  const channels = useStore((s) => s.guildData[s.currentGuildId]?.channels) || [];
+  const music = useStore((s) => s.music);
+  const adding = useStore((s) => s.musicAdding);
+  const { addMusic, musicControl, joinVoice, toggleMusicPanel } = useStore.getState();
+  const [dragging, setDragging] = useState(false);
+  const [link, setLink] = useState('');
+
+  const channelId = voice && voice.guildId === guildId ? voice.channelId : null;
+  const channel = channels.find((c) => c.id === channelId);
+  const state = channelId ? music[channelId] : null;
+  const elsewhere = Object.values(music).filter((m) => m.guildId === guildId && m.channelId !== channelId && m.current);
+
+  const add = (urls) => {
+    if (!urls.length) return useStore.getState().notify('Nenhum link do YouTube ou Spotify encontrado');
+    addMusic(urls);
+  };
+
+  return (
+    <div
+      className={`music-panel${dragging ? ' dragging' : ''}`}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = channelId ? 'copy' : 'none';
+        setDragging(true);
+      }}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget)) setDragging(false);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragging(false);
+        if (!channelId) return useStore.getState().notify('Entre em um canal de voz para tocar música');
+        add(extractLinks(e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain')));
+      }}
+    >
+      <div className="side-head music-head">
+        <button className="gloss mini" title="Voltar aos canais" aria-label="Voltar aos canais" onClick={toggleMusicPanel}>
+          <ArrowLeft size={14} />
+        </button>
+        <div>
+          <div className="side-title">Fila de música</div>
+          <div className="side-sub">{channel ? `${channel.name} · todos ouvem juntos` : 'Toca no seu canal de voz'}</div>
+        </div>
+      </div>
+
+      <div className="music-scroll">
+        {!channelId ? (
+          <div className="music-empty">
+            <Music size={28} />
+            <p>Entre em um canal de voz para tocar música. A fila toca para todos que estiverem nele.</p>
+            {channels
+              .filter((c) => c.type === 'voice')
+              .map((c) => (
+                <button key={c.id} className="btn secondary block" onClick={() => joinVoice(c.id)}>
+                  <Volume2 size={16} /> {c.name}
+                </button>
+              ))}
+          </div>
+        ) : (
+          <>
+            {state?.current ? (
+              <NowPlaying state={state} />
+            ) : (
+              <div className="music-idle">
+                <Music size={26} />
+                <p>Nada tocando. Arraste links do YouTube ou do Spotify para cá.</p>
+                <small>Vídeos, playlists, faixas e álbuns</small>
+              </div>
+            )}
+
+            {adding > 0 && (
+              <div className="music-adding">
+                <LoaderCircle size={14} className="spin" /> Buscando {adding > 1 ? `${adding} links` : 'link'}…
+              </div>
+            )}
+
+            {state?.queue.length > 0 && (
+              <>
+                <div className="queue-head">
+                  <span>A seguir ({state.queue.length})</span>
+                  <button className="gloss tiny danger-text" onClick={() => musicControl('clear')}>
+                    Limpar fila
+                  </button>
+                </div>
+                <ol className="music-queue">
+                  {state.queue.map((t, i) => (
+                    <li key={t.id} title={`${t.title}${t.addedBy ? ` · por ${t.addedBy.displayName}` : ''}`}>
+                      <span className="q-n">{i + 1}</span>
+                      <div className="mq-text">
+                        <span className="mq-title">{t.title}</span>
+                        <span className="mq-sub">
+                          <Source track={t} />
+                          {t.addedBy?.displayName || t.artist}
+                          {t.durationMs ? ` · ${fmt(t.durationMs / 1000)}` : ''}
+                        </span>
+                      </div>
+                      <button
+                        className="gloss mini mq-del"
+                        title="Remover da fila"
+                        aria-label="Remover da fila"
+                        onClick={() => musicControl('remove', t.id)}
+                      >
+                        <X size={12} />
+                      </button>
+                    </li>
+                  ))}
+                </ol>
+              </>
+            )}
+          </>
+        )}
+
+        {elsewhere.length > 0 && (
+          <>
+            <div className="queue-head">
+              <span>Tocando em outros canais</span>
+            </div>
+            {elsewhere.map((m) => (
+              <div className="music-elsewhere" key={m.channelId}>
+                <Volume2 size={14} /> {channels.find((c) => c.id === m.channelId)?.name}: {m.current.track.title}
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+
+      {channelId && (
+        <form
+          className="music-drop music-add"
+          onSubmit={(e) => {
+            e.preventDefault();
+            add(extractLinks(link));
+            setLink('');
+          }}
+        >
+          <label htmlFor="musicLink">Cole ou arraste um link do YouTube ou Spotify</label>
+          <div className="music-add-row">
+            <input id="musicLink" value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://..." />
+            <button className="go" disabled={!link.trim()}>
+              Adicionar
+            </button>
+          </div>
+        </form>
+      )}
+
+      {dragging && channelId && <div className="drop-overlay">Solte para adicionar à fila</div>}
+    </div>
+  );
+}

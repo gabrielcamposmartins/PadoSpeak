@@ -1,0 +1,489 @@
+import { useEffect, useRef, useState } from 'react';
+import {
+  Mic,
+  MicOff,
+  Headphones,
+  HeadphoneOff,
+  Video,
+  VideoOff,
+  MonitorUp,
+  MonitorOff,
+  PhoneOff,
+  Maximize,
+  Settings,
+  Volume2,
+  Activity,
+  AudioWaveform,
+  VolumeX,
+  X,
+} from 'lucide-react';
+import { useStore } from '../store.js';
+import { useConn } from './conn.jsx';
+import { SCREEN_PRESETS } from '../lib/voice.js';
+import Avatar from './Avatar.jsx';
+import { useServerPing } from './hooks.js';
+
+/** <video> que acompanha o MediaStream e mede o que é de fato desenhado (resolução/fps). */
+function StreamVideo({ stream, mirror, cover, onStats }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (el && el.srcObject !== stream) el.srcObject = stream;
+  }, [stream]);
+  useEffect(() => {
+    if (!onStats) return;
+    let lastFrames = 0;
+    const t = setInterval(() => {
+      const el = ref.current;
+      if (!el?.videoWidth) return;
+      const frames = el.getVideoPlaybackQuality?.().totalVideoFrames ?? 0;
+      onStats({ w: el.videoWidth, h: el.videoHeight, fps: lastFrames ? frames - lastFrames : null });
+      lastFrames = frames;
+    }, 1000);
+    return () => clearInterval(t);
+  }, [onStats]);
+  return <video ref={ref} autoPlay playsInline muted className={`${mirror ? 'mirror' : ''} ${cover ? 'cover' : ''}`} />;
+}
+
+const LIMIT = { bandwidth: 'banda', cpu: 'CPU', other: 'outro' };
+
+function fmtStats(st, self) {
+  const rate = st.kbps == null ? '' : st.kbps >= 1000 ? ` · ${(st.kbps / 1000).toFixed(1)} Mbps` : ` · ${st.kbps} kbps`;
+  const limit =
+    self && st.limitedBy && st.limitedBy !== 'none' ? ` · limitado por ${LIMIT[st.limitedBy] || st.limitedBy}` : '';
+  return `${st.w}×${st.h} · ${st.fps} fps · ${st.codec}${rate}${limit}`;
+}
+
+/** Explica por que um vídeo recebido está preto, a partir do estado da conexão e do getStats. */
+function videoProblem(tile, rendered) {
+  if (tile.self || !tile.stream) return null;
+  const c = tile.connection;
+  if (c === 'failed' || c === 'disconnected' || c === 'closed')
+    return 'A conexão de mídia com esta pessoa falhou. Em redes diferentes é preciso um servidor TURN; na mesma rede, verifique o firewall.';
+  if (c !== 'connected') return 'Conectando mídia…';
+  const st = tile.stats;
+  if (!st) return null;
+  if (st.bytes === 0) return 'Conectado, mas nenhum dado de vídeo está chegando.';
+  if (st.frames === 0)
+    return `Dados chegando, mas o vídeo não decodifica (${st.codec}${st.decoder ? `, ${st.decoder}` : ''}).`;
+  if (rendered && rendered.fps === 0 && st.fps > 0)
+    return 'O vídeo chega e decodifica, mas não está sendo desenhado — provável problema de aceleração de vídeo/GPU.';
+  return null;
+}
+
+function Tile({ tile, focused, onFocus }) {
+  const [rendered, setRendered] = useState(null);
+  const ref = useRef(null);
+  const { setPeerVolume, setStreamAudio, setScreenAudioMuted } = useConn().getState();
+  const isScreen = tile.kind === 'screen';
+  const problem = videoProblem(tile, rendered);
+  const badge = tile.stats?.w
+    ? `${tile.self ? 'enviando ' : ''}${fmtStats(tile.stats, tile.self)}`
+    : rendered?.w
+      ? `${rendered.w}×${rendered.h}${rendered.fps != null ? ` · ${rendered.fps} fps` : ''}`
+      : null;
+  return (
+    <div
+      ref={ref}
+      className={`tile${tile.speaking ? ' speaking' : ''}${tile.live ? ' streaming' : ''}${isScreen ? ' screen' : ''}`}
+      onClick={onFocus}
+      title={focused ? 'Clique para voltar à grade' : 'Clique para destacar'}
+    >
+      {tile.stream ? (
+        <StreamVideo
+          stream={tile.stream}
+          mirror={tile.self && !isScreen}
+          cover={!isScreen && !focused}
+          onStats={setRendered}
+        />
+      ) : tile.pending ? (
+        <span className="waiting">Aguardando transmissão…</span>
+      ) : (
+        <Avatar
+          user={tile.user}
+          size={focused ? 96 : 54}
+          status={tile.live ? 'live' : 'voice'}
+          speaking={tile.speaking}
+        />
+      )}
+      {problem && <div className="tile-problem">{problem}</div>}
+      {isScreen && (
+        <div className="tile-badges">
+          <span className="live">AO VIVO</span>
+          {badge && <span className="res">{badge}</span>}
+        </div>
+      )}
+      {!isScreen && badge && (focused || problem) && (
+        <div className="tile-badges">
+          <span className="res">{badge}</span>
+        </div>
+      )}
+      <span className="tag">
+        {tile.muted && <MicOff size={13} />}
+        {isScreen && tile.hasAudio && tile.audioMuted && <VolumeX size={13} />}
+        <span>
+          {isScreen
+            ? tile.self
+              ? 'Sua tela'
+              : `Tela de ${tile.user?.displayName || '…'}`
+            : tile.self
+              ? 'Você'
+              : tile.user?.displayName || 'Conectando…'}
+        </span>
+      </span>
+      <div className="tile-tools" onClick={(e) => e.stopPropagation()}>
+        {!tile.self && !isScreen && (
+          <label className="tool-pill" title="Volume deste usuário">
+            <Volume2 size={14} />
+            <span className="sr-only">Volume de {tile.user?.displayName}</span>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={tile.volume}
+              onChange={(e) => setPeerVolume(tile.peerId, Number(e.target.value))}
+            />
+          </label>
+        )}
+        {isScreen && tile.hasAudio && !tile.self && (
+          <span className="tool-pill">
+            <button
+              title={tile.audioMuted ? 'Ativar áudio da transmissão' : 'Silenciar áudio da transmissão'}
+              onClick={() => setStreamAudio(tile.peerId, { muted: !tile.audioMuted })}
+            >
+              {tile.audioMuted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+            </button>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              aria-label="Volume da transmissão"
+              value={tile.audioMuted ? 0 : tile.streamVolume}
+              onChange={(e) => setStreamAudio(tile.peerId, { volume: Number(e.target.value), muted: false })}
+              title="Volume da transmissão"
+            />
+          </span>
+        )}
+        {isScreen && tile.hasAudio && tile.self && (
+          <button
+            className="tool-btn"
+            title={tile.audioMuted ? 'Enviar áudio da transmissão' : 'Parar de enviar o áudio da transmissão'}
+            onClick={() => setScreenAudioMuted(!tile.audioMuted)}
+          >
+            {tile.audioMuted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+          </button>
+        )}
+        {tile.stream && (
+          <button
+            className="tool-btn"
+            title="Tela cheia"
+            aria-label="Tela cheia"
+            onClick={() => ref.current?.querySelector('video')?.requestFullscreen()}
+          >
+            <Maximize size={14} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Mini gráfico de latência até o servidor + RTT atual com cada pessoa, sobre o palco. */
+function DiagCard({ onClose }) {
+  const useC = useConn();
+  const [data, setData] = useState(() => useC.getState().latencyHistory());
+  useEffect(() => {
+    const t = setInterval(() => setData(useC.getState().latencyHistory()), 2000);
+    return () => clearInterval(t);
+  }, []);
+  const recent = data.samples.slice(-30);
+  const values = recent.map((s) => s.server).filter((v) => v != null);
+  const max = Math.max(20, ...values) * 1.2;
+  const pts = recent
+    .map((s, i) => (s.server == null ? null : `${(i / Math.max(1, recent.length - 1)) * 200},${50 - (s.server / max) * 46}`))
+    .filter(Boolean);
+  const last = data.samples.at(-1);
+  const fmt = (v) => (v == null ? '—' : `${Math.round(v)} ms`);
+  return (
+    <div className="diag-card glass" onClick={(e) => e.stopPropagation()}>
+      <div className="diag-head">
+        <Activity size={14} />
+        <b>Diagnóstico da chamada</b>
+        <button className="tool-x" aria-label="Fechar diagnóstico" onClick={onClose}>
+          <X size={12} />
+        </button>
+      </div>
+      <svg
+        viewBox="0 0 200 50"
+        className="diag-spark"
+        role="img"
+        aria-label={`Latência até o servidor nos últimos ${recent.length * 2} segundos`}
+      >
+        {pts.length > 1 && (
+          <>
+            <path d={`M0,50 L${pts.join(' L')} L200,50 Z`} className="spark-fill" />
+            <path d={`M${pts.join(' L')}`} className="spark-line" />
+          </>
+        )}
+      </svg>
+      <div className="diag-rows">
+        {data.series.map((s) => (
+          <span key={s.id}>
+            {s.label} <b>{fmt(s.id === 'server' ? last?.server : last?.peers[s.id])}</b>
+          </span>
+        ))}
+      </div>
+      <button className="gloss diag-more" onClick={() => useStore.getState().openModal({ type: 'diagnostics' })}>
+        Ver gráfico completo
+      </button>
+    </div>
+  );
+}
+
+export default function VoiceView({ channel }) {
+  const useC = useConn();
+  const voice = useC((s) => s.voice);
+  const me = useC((s) => s.me);
+  const muted = useStore((s) => s.selfMuted);
+  const deafened = useStore((s) => s.selfDeafened);
+  const [focusId, setFocusId] = useState(null);
+  const [preset, setPreset] = useState('1080p30');
+  const [showDiag, setShowDiag] = useState(false);
+  const seenScreens = useRef(new Set());
+  const store = useC.getState();
+  const inCall = voice?.channelId === channel.id;
+  const nsOn = useStore((s) => s.prefs.noiseSuppression !== false);
+  const ping = useServerPing(inCall, useC);
+
+  const tiles = [];
+  if (inCall) {
+    tiles.push({
+      id: 'me',
+      self: true,
+      user: me,
+      stream: voice.localCamera,
+      stats: voice.localCameraStats,
+      speaking: voice.speaking.me,
+      muted: muted || deafened,
+      live: Boolean(voice.localScreen),
+    });
+    if (voice.localScreen)
+      tiles.push({
+        id: 'me:screen',
+        kind: 'screen',
+        self: true,
+        user: me,
+        stream: voice.localScreen,
+        stats: voice.localScreenStats,
+        hasAudio: voice.screenHasAudio,
+        audioMuted: voice.screenAudioMuted,
+      });
+    for (const p of voice.peers) {
+      tiles.push({
+        id: p.peerId,
+        peerId: p.peerId,
+        user: p.user,
+        stream: p.cameraStream,
+        stats: p.cameraStats,
+        connection: p.connectionState,
+        speaking: voice.speaking[p.peerId],
+        muted: p.muted || p.deafened,
+        volume: p.volume,
+        live: Boolean(p.screenAnnounced),
+      });
+      if (p.screenAnnounced) {
+        tiles.push({
+          id: `${p.peerId}:screen`,
+          kind: 'screen',
+          user: p.user,
+          stream: p.screenStream,
+          stats: p.screenStats,
+          peerId: p.peerId,
+          hasAudio: p.screenHasAudio,
+          audioMuted: p.streamMuted,
+          streamVolume: p.streamVolume,
+          connection: p.connectionState,
+          pending: !p.screenStream,
+        });
+      }
+    }
+  }
+
+  // Destaca automaticamente uma tela compartilhada nova.
+  useEffect(() => {
+    for (const t of tiles) {
+      if (t.kind === 'screen' && !seenScreens.current.has(t.id)) {
+        seenScreens.current.add(t.id);
+        if (!t.self) setFocusId(t.id);
+      }
+    }
+  });
+
+  if (!inCall) {
+    return (
+      <div className="voice-view stage">
+        <div className="stage-empty">
+          <h2>{channel.name}</h2>
+          <p>Ninguém está ouvindo você ainda.</p>
+          <button className="btn green" onClick={() => store.joinVoice(channel.id)}>
+            Entrar na chamada
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const focused = tiles.find((t) => t.id === focusId);
+  const others = tiles.filter((t) => t !== focused);
+  const pickFocus = () =>
+    setFocusId((tiles.find((t) => t.kind === 'screen') || tiles.find((t) => !t.self) || tiles[0]).id);
+  const connectedCount = voice.peers.length + 1;
+
+  return (
+    <div className="voice-view stage">
+      {!channel.dm && (
+        <header className="stage-head">
+          <Volume2 size={20} />
+          <div className="stage-title">
+            <b>{channel.name}</b>
+            <span>
+              {connectedCount} {connectedCount === 1 ? 'conectado' : 'conectados'} · P2P
+              {ping != null ? ` · ${ping} ms` : ''}
+            </span>
+          </div>
+          <div className="seg" role="group" aria-label="Layout">
+            <button aria-pressed={Boolean(focused)} className={focused ? 'on' : ''} onClick={pickFocus}>
+              Foco
+            </button>
+            <button aria-pressed={!focused} className={focused ? '' : 'on'} onClick={() => setFocusId(null)}>
+              Grade
+            </button>
+          </div>
+        </header>
+      )}
+
+      <div className="voice-stage">
+        {focused ? (
+          <>
+            <div className="voice-focus">
+              <Tile tile={focused} focused onFocus={() => setFocusId(null)} />
+            </div>
+            {others.length > 0 && (
+              <div className="voice-strip">
+                {others.map((t) => (
+                  <Tile key={t.id} tile={t} onFocus={() => setFocusId(t.id)} />
+                ))}
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="voice-grid">
+            {tiles.map((t) => (
+              <Tile key={t.id} tile={t} onFocus={() => setFocusId(t.id)} />
+            ))}
+          </div>
+        )}
+        {showDiag && <DiagCard onClose={() => setShowDiag(false)} />}
+      </div>
+
+      <div className="voice-controls">
+        <div className="dock">
+          <button
+            className={`ball${muted || deafened ? ' red' : ''}`}
+            onClick={store.toggleMute}
+            title={muted ? 'Ativar microfone' : 'Silenciar'}
+            aria-label={muted ? 'Ativar microfone' : 'Silenciar'}
+            aria-pressed={muted}
+          >
+            {muted || deafened ? <MicOff /> : <Mic />}
+          </button>
+          <button
+            className={`ball${deafened ? ' red' : ''}`}
+            onClick={store.toggleDeafen}
+            title={deafened ? 'Ativar áudio' : 'Ensurdecer'}
+            aria-label={deafened ? 'Ativar áudio' : 'Ensurdecer'}
+            aria-pressed={deafened}
+          >
+            {deafened ? <HeadphoneOff /> : <Headphones />}
+          </button>
+          <button
+            className={`ball${voice.video ? ' on' : ''}`}
+            onClick={store.toggleCamera}
+            title="Câmera"
+            aria-label="Câmera"
+            aria-pressed={voice.video}
+          >
+            {voice.video ? <Video /> : <VideoOff />}
+          </button>
+          <div className="ctrl-group">
+            <button
+              className={`ball${voice.screen ? ' on' : ''}`}
+              onClick={() => store.toggleScreen(preset)}
+              title={voice.screen ? 'Parar transmissão' : 'Compartilhar tela'}
+              aria-label={voice.screen ? 'Parar transmissão' : 'Compartilhar tela'}
+            >
+              {voice.screen ? <MonitorOff /> : <MonitorUp />}
+            </button>
+            {voice.screen && voice.screenHasAudio && (
+              <button
+                className={`ball${voice.screenAudioMuted ? ' red' : ''}`}
+                onClick={() => store.setScreenAudioMuted(!voice.screenAudioMuted)}
+                title={voice.screenAudioMuted ? 'Enviar áudio da transmissão' : 'Silenciar áudio da transmissão'}
+              >
+                {voice.screenAudioMuted ? <VolumeX /> : <Volume2 />}
+              </button>
+            )}
+            <label className="quality">
+              Qualidade
+              <select
+                value={voice.screen ? voice.screenPreset : preset}
+                onChange={(e) => {
+                  setPreset(e.target.value);
+                  if (voice.screen) store.setScreenPreset(e.target.value);
+                }}
+                title="Qualidade da transmissão de tela"
+              >
+                {Object.entries(SCREEN_PRESETS).map(([k, p]) => (
+                  <option key={k} value={k}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <button
+            className={`ball${nsOn ? ' aqua' : ''}`}
+            onClick={() => store.setNoiseSuppression(!nsOn)}
+            title={nsOn ? 'Supressão de ruído: ligada' : 'Supressão de ruído: desligada'}
+            aria-label="Supressão de ruído por IA"
+            aria-pressed={nsOn}
+          >
+            <AudioWaveform />
+          </button>
+          <button
+            className={`ball${showDiag ? ' pressed' : ''}`}
+            onClick={() => setShowDiag((v) => !v)}
+            title="Diagnóstico da chamada"
+            aria-label="Diagnóstico da chamada"
+            aria-pressed={showDiag}
+          >
+            <Activity />
+          </button>
+          <button
+            className="ball"
+            onClick={() => store.openModal({ type: 'settings' })}
+            title="Dispositivos"
+            aria-label="Dispositivos"
+          >
+            <Settings />
+          </button>
+          <button className="ball red hangup" onClick={store.leaveVoice} title="Desconectar" aria-label="Desconectar">
+            <PhoneOff />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

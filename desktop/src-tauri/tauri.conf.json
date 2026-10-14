@@ -1,0 +1,77 @@
+{
+  "$schema": "../../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "PadoSpeak",
+  "version": "1.1.0",
+  "identifier": "dev.padospeak.desktop",
+  "build": {
+    "frontendDist": "../../client/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev --workspace @padospeak/client",
+    "beforeBuildCommand": "npm run build --workspace @padospeak/client"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "PadoSpeak",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 940,
+        "minHeight": 560,
+        "backgroundColor": "#d4ecfb",
+        "dragDropEnabled": false,
+        "label": "main"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "publisher": "PadoSpeak",
+    "copyright": "© 2026 PadoSpeak",
+    "category": "SocialNetworking",
+    "shortDescription": "Chat, voz, vídeo e compartilhamento de tela em 1080p",
+    "longDescription": "PadoSpeak: chat estilo Discord com servidores, canais de texto e voz, chamadas de vídeo e compartilhamento de tela em 1080p. Inclui servidor embutido para hospedar com um clique.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "PortugueseBR",
+          "English"
+        ],
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "headerImage": "installer/header.bmp",
+        "sidebarImage": "installer/sidebar.bmp",
+        "startMenuFolder": "PadoSpeak",
+        "compression": "lzma"
+      }
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU1OTAxOTVGQzlDN0Q1ODcKUldTSDFjZkpYeG1RNWVHakJqTGtDdndHaUJhcjc3VnMrK2RXR1pFV3dsZDZEUE5BNDdHWDFNOXgK",
+      "endpoints": [
+        "https://github.com/gabrielcamposmartins/PadoSpeak/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "quiet"
+      }
+    }
+  }
+}

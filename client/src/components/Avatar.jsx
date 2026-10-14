@@ -1,0 +1,135 @@
+import { useState } from 'react';
+import { EmojiText } from './Emotes.jsx';
+import { useConn } from './conn.jsx';
+
+/** Dados mais recentes de um usuário (nome/foto podem ter mudado depois que a mensagem chegou). */
+export function useUser(user) {
+  const useC = useConn();
+  const fresh = useC((s) => (user ? s.users[user.id] : null));
+  return fresh || user;
+}
+
+/** Endereço da foto: as relativas são do servidor de onde o usuário veio (`base`). */
+export const avatarSrc = (url, base) => (url ? (/^https?:/.test(url) ? url : (base || '') + url) : null);
+
+/** Cor escolhida para o nome / mensagem pessoal (fica mais clara no tema escuro, pela classe `tc`). */
+export const colorStyle = (c) => (c ? { '--tc': c } : undefined);
+export const colorClass = (c, base = '') => `${base}${c ? `${base ? ' ' : ''}tc` : ''}`;
+
+/** Status escolhido → classe da moldura/orbe e nome em português. */
+export const STATUS_INFO = {
+  online: { cls: 'on', label: 'Online' },
+  away: { cls: 'away', label: 'Ausente' },
+  busy: { cls: 'busy', label: 'Ocupado' },
+  invisible: { cls: 'off', label: 'Offline' },
+};
+
+/** Situação de alguém para a moldura: ao vivo, em voz, ou o status escolhido (online, ausente, ocupado, offline). */
+export function usePresence(userId) {
+  const useC = useConn();
+  return useC((s) => {
+    if (!userId) return 'off';
+    for (const list of Object.values(s.voiceStates)) {
+      const p = list.find((x) => x.user.id === userId);
+      if (p) return p.screen ? 'live' : 'voice';
+    }
+    if (userId === s.me?.id) return s.rtStatus === 'connected' ? STATUS_INFO[s.myStatus]?.cls || 'on' : 'off';
+    if (!s.online[userId]) return 'off';
+    return STATUS_INFO[s.statuses[userId]]?.cls || 'on';
+  });
+}
+
+/** Onde a pessoa está agora ("em Sala de Estar"), para a linha abaixo do nome. */
+export function useActivity(userId) {
+  const useC = useConn();
+  return useC((s) => {
+    for (const [channelId, list] of Object.entries(s.voiceStates)) {
+      if (!list.some((x) => x.user.id === userId)) continue;
+      for (const [guildId, g] of Object.entries(s.guildData)) {
+        const ch = g.channels.find((c) => c.id === channelId);
+        if (ch) return `em ${ch.name} · ${s.guilds.find((x) => x.id === guildId)?.name || ''}`;
+      }
+      return s.dms.some((d) => d.id === channelId) ? 'em uma chamada' : 'em um canal de voz';
+    }
+    return null;
+  });
+}
+
+/** Fundo da foto sem imagem: a cor da pessoa com brilho, como as fotos de exibição do Messenger. */
+const picBackground = (c) => `linear-gradient(135deg, color-mix(in srgb, ${c} 50%, #fff), ${c})`;
+
+/**
+ * Foto com moldura de presença (verde online, cinza offline, azul em voz, vermelho ao vivo).
+ * `status` força a moldura; `frame={false}` mostra só a foto.
+ */
+export default function Avatar({ user: given, size = 40, status, frame = true, speaking, onClick, online, base }) {
+  const user = useUser(given);
+  const connBase = useConn()((s) => s.baseUrl);
+  const auto = usePresence(frame && status == null && online == null ? user?.id : null);
+  const [broken, setBroken] = useState(null);
+  const name = user?.displayName || user?.username || '?';
+  const src = avatarSrc(user?.avatarUrl, base || connBase);
+  const showImg = src && broken !== src;
+  const radius = Math.max(3, Math.round(size * 0.09));
+  const pad = size >= 48 ? 3 : 2;
+  const st = status ?? (online != null ? (online ? 'on' : 'off') : auto);
+
+  const pic = (
+    <span
+      className="pic"
+      style={{
+        width: size,
+        height: size,
+        borderRadius: radius,
+        fontSize: Math.round(size * 0.42),
+        background: picBackground(user?.avatarColor || '#3a8ee0'),
+      }}
+    >
+      {showImg ? (
+        <img src={src} alt="" onError={() => setBroken(src)} draggable={false} />
+      ) : (
+        name.slice(0, 1).toUpperCase()
+      )}
+    </span>
+  );
+
+  const interactive = onClick
+    ? {
+        onClick,
+        role: 'button',
+        tabIndex: 0,
+        onKeyDown: (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), onClick(e)),
+      }
+    : {};
+
+  return (
+    <span
+      className={`avatar${frame ? ` frame ${st}` : ''}${speaking ? ' talk' : ''}${onClick ? ' clickable' : ''}`}
+      style={frame ? { padding: pad, borderRadius: radius + pad } : undefined}
+      title={name}
+      {...interactive}
+    >
+      {pic}
+    </span>
+  );
+}
+
+/** Nome de exibição sempre atualizado. */
+export function UserName({ user, className, style, onClick }) {
+  const u = useUser(user);
+  return (
+    <span
+      className={colorClass(u?.nameColor, className || '')}
+      style={{ ...style, ...colorStyle(u?.nameColor) }}
+      onClick={onClick}
+      role={onClick ? 'button' : undefined}
+    >
+      <EmojiText text={u?.displayName || u?.username} />
+    </span>
+  );
+}
+
+/** Bolinha de status (versão compacta da moldura). */
+export function Orb({ status = 'on', size }) {
+  return <span className={`orb ${status}`} style={size ? { width: size, height: size } : undefined} />;
+}

@@ -1,0 +1,29 @@
+{
+  "name": "padospeak",
+  "private": true,
+  "version": "1.1.0",
+  "description": "Clone do Discord self-hosted em Rust: chat, voz, vídeo e tela em 1080p, com Turso (libSQL) como banco.",
+  "workspaces": [
+    "client"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n server,client -c blue,magenta \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "cargo run -p padospeak-server -- --host",
+    "dev:client": "npm run dev --workspace client",
+    "build": "npm run build --workspace client && cargo build --release -p padospeak-server",
+    "build:client": "npm run build --workspace client",
+    "desktop:dev": "cd desktop && tauri dev",
+    "desktop:build": "cd desktop && tauri build",
+    "installer": "cd desktop && tauri build --bundles nsis",
+    "version:set": "node scripts/version.mjs",
+    "test": "cargo test -p padospeak-server"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.2",
+    "concurrently": "^10.0.6"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gabrielcamposmartins/PadoSpeak.git"
+  }
+}

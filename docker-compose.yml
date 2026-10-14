@@ -1,0 +1,43 @@
+# Uso:
+#   docker compose up -d --build                 # só o PadoSpeak
+#   docker compose --profile turn up -d --build  # PadoSpeak + TURN (coturn) para chamadas entre redes/NAT
+services:
+  padospeak:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+      # - "3001:3001"   # painel "Hostear" (exige PANEL_PASSWORD abaixo)
+    volumes:
+      - padospeak-data:/data
+    environment:
+      SERVER_NAME: ${SERVER_NAME:-PadoSpeak}
+      PORT: 3000
+      # Navegadores exigem HTTPS para microfone/câmera/tela fora de localhost.
+      # self-signed = certificado gerado automaticamente; troque por "custom" + TLS_CERT/TLS_KEY se tiver domínio.
+      HTTPS: ${HTTPS:-self-signed}
+      # Banco: arquivo local em /data por padrão. Para Turso Cloud ou `turso dev`, descomente:
+      # DATABASE_URL: libsql://seu-banco.turso.io
+      # TURSO_AUTH_TOKEN: ${TURSO_AUTH_TOKEN}
+      # Painel web de hospedagem acessível pela rede:
+      # PANEL: "true"
+      # PANEL_HOST: 0.0.0.0
+      # PANEL_PASSWORD: ${PANEL_PASSWORD}
+      # STUN público por padrão; para TURN, defina ICE_SERVERS no .env (veja o serviço coturn abaixo).
+      # ICE_SERVERS: ${ICE_SERVERS}
+
+  # Servidor TURN opcional. Defina EXTERNAL_IP e TURN_PASSWORD no .env e use
+  # ICE_SERVERS=[{"urls":"stun:stun.l.google.com:19302"},{"urls":"turn:<EXTERNAL_IP>:3478","username":"padospeak","credential":"<TURN_PASSWORD>"}]
+  coturn:
+    image: coturn/coturn:4.6
+    profiles: ["turn"]
+    restart: unless-stopped
+    network_mode: host
+    command: >-
+      -n --listening-port=3478 --fingerprint --lt-cred-mech
+      --user=padospeak:${TURN_PASSWORD:-troque-esta-senha} --realm=padospeak
+      --min-port=49160 --max-port=49200 --external-ip=${EXTERNAL_IP:-127.0.0.1}
+      --no-cli --no-tls --no-dtls
+
+volumes:
+  padospeak-data:

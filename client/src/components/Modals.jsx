@@ -1,0 +1,1092 @@
+import { useEffect, useRef, useState } from 'react';
+import {
+  Hash,
+  Volume2,
+  MessageSquare,
+  Phone,
+  UserPlus,
+  UserMinus,
+  UserCheck,
+  Camera,
+  Trash2,
+  Smile,
+  Vibrate,
+  BellOff,
+  X,
+} from 'lucide-react';
+import {
+  useStore,
+  getConn,
+  primaryConn,
+  activeVoiceConn,
+  connRegistry,
+  syncProfileEverywhere,
+  localLogout,
+  serverAuthenticate,
+} from '../store.js';
+import { isDesktop } from '../lib/env.js';
+import { TEXT_COLORS } from './Emotes.jsx';
+import { ConnProvider, useConn } from './conn.jsx';
+import Avatar, { useUser, UserName, colorClass, colorStyle } from './Avatar.jsx';
+import LatencyChart from './LatencyChart.jsx';
+import { TitleBar } from './Aero.jsx';
+import { EmojiText, EmojiPicker, insertText } from './Emotes.jsx';
+
+const TITLES = {
+  profile: 'Perfil',
+  editProfile: 'Meu perfil',
+  newDm: 'Nova conversa',
+  diagnostics: 'Diagnóstico da chamada',
+  guild: 'Servidor',
+  channel: 'Novo canal',
+  invite: 'Convite',
+  confirm: 'Confirmar',
+  settings: 'Configurações',
+  serverLogin: 'Entrar no servidor',
+};
+
+/** Paleta pronta da cor do sistema (todas combinam com o visual Aero). */
+export const ACCENTS = [
+  ['#1a8fd6', 'Céu'],
+  ['#18aab2', 'Aqua'],
+  ['#3c9c15', 'Grama'],
+  ['#d93f3a', 'Pado'],
+  ['#e8a317', 'Sol'],
+  ['#8c63e0', 'Ametista'],
+  ['#f07a3c', 'Coral'],
+  ['#4c6d86', 'Grafite'],
+];
+
+/** Escolha de cor: paleta pronta, seletor livre e "padrão". */
+function ColorChoice({ value, onChange, palette, label, defaultLabel = 'Padrão' }) {
+  const custom = value && !palette.some(([hex]) => hex.toLowerCase() === value.toLowerCase());
+  return (
+    <div className="color-choice" role="radiogroup" aria-label={label}>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={!value}
+        className={`swatch-btn none${!value ? ' on' : ''}`}
+        title={defaultLabel}
+        onClick={() => onChange(null)}
+      >
+        {defaultLabel}
+      </button>
+      {palette.map(([hex, name]) => (
+        <button
+          key={hex}
+          type="button"
+          role="radio"
+          aria-checked={value?.toLowerCase() === hex.toLowerCase()}
+          aria-label={name}
+          title={name}
+          className={`swatch-btn${value?.toLowerCase() === hex.toLowerCase() ? ' on' : ''}`}
+          style={{ '--sw': hex }}
+          onClick={() => onChange(hex)}
+        />
+      ))}
+      <label className={`swatch-btn picker${custom ? ' on' : ''}`} title="Escolher outra cor" style={custom ? { '--sw': value } : undefined}>
+        <input
+          type="color"
+          aria-label={`${label}: outra cor`}
+          value={value || palette[0][0]}
+          onChange={(e) => onChange(e.target.value)}
+        />
+        <span aria-hidden="true">+</span>
+      </label>
+    </div>
+  );
+}
+
+function Modal({ children, onClose, wide, title }) {
+  useEffect(() => {
+    const onKey = (e) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return (
+    <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className={`modal${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
+        <TitleBar title={`PadoSpeak — ${title}`} onClose={onClose} />
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** Formulário com estado de envio e erro, comum aos modais. */
+function useAction(fn, close) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const run = async (e) => {
+    e?.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      await fn();
+      close();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return { busy, error, run };
+}
+
+function GuildModal({ close }) {
+  const me = useStore((s) => s.me);
+  if (!me)
+    return (
+      <>
+        <div className="modal-body">
+          <h2>Servidores ficam num servidor</h2>
+          <p className="sub">
+            Para criar ou entrar em servidores (como o “padoru”), conecte-se a um servidor de comunidade — ou hospede o
+            seu neste PC e convide a galera.
+          </p>
+        </div>
+        <div className="modal-foot">
+          <button className="btn ghost" onClick={close}>
+            Agora não
+          </button>
+          <button
+            className="btn"
+            onClick={() => {
+              close();
+              useStore.getState().goHost();
+            }}
+          >
+            Abrir Hostear
+          </button>
+        </div>
+      </>
+    );
+  return <GuildForm close={close} me={me} />;
+}
+
+function GuildForm({ close, me }) {
+  const [tab, setTab] = useState('create');
+  const [name, setName] = useState(`Servidor de ${me.displayName}`);
+  const [code, setCode] = useState('');
+  const { busy, error, run } = useAction(
+    () => (tab === 'create' ? useStore.getState().createGuild(name) : useStore.getState().joinGuild(code)),
+    close,
+  );
+  return (
+    <form onSubmit={run}>
+      <div className="modal-body">
+        <h2>{tab === 'create' ? 'Crie seu servidor' : 'Entre em um servidor'}</h2>
+        <p className="sub">
+          {tab === 'create'
+            ? 'Seu servidor é onde você e seus amigos se encontram.'
+            : 'Cole abaixo o convite que você recebeu.'}
+        </p>
+        <div className="tabs">
+          <button type="button" className={tab === 'create' ? 'active' : ''} onClick={() => setTab('create')}>
+            Criar
+          </button>
+          <button type="button" className={tab === 'join' ? 'active' : ''} onClick={() => setTab('join')}>
+            Entrar com convite
+          </button>
+        </div>
+        {tab === 'create' ? (
+          <label className="field">
+            <span>Nome do servidor</span>
+            <input autoFocus value={name} onChange={(e) => setName(e.target.value)} maxLength={48} required />
+          </label>
+        ) : (
+          <label className="field">
+            <span>Link ou código do convite</span>
+            <input autoFocus value={code} onChange={(e) => setCode(e.target.value)} placeholder="a1b2c3d4e5" required />
+          </label>
+        )}
+        {error && <p className="error-text">{error}</p>}
+      </div>
+      <div className="modal-foot">
+        <button type="button" className="btn ghost" onClick={close}>
+          Cancelar
+        </button>
+        <button className="btn" disabled={busy}>
+          {tab === 'create' ? 'Criar' : 'Entrar'}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function ChannelModal({ close, guildId, channelType }) {
+  const [type, setType] = useState(channelType || 'text');
+  const [name, setName] = useState('');
+  const { busy, error, run } = useAction(() => useStore.getState().createChannel(guildId, name, type), close);
+  return (
+    <form onSubmit={run}>
+      <div className="modal-body">
+        <h2>Criar canal</h2>
+        <p className="sub">&nbsp;</p>
+        <div className={`radio-card${type === 'text' ? ' active' : ''}`} onClick={() => setType('text')}>
+          <Hash />
+          <div>
+            Texto<small>Mensagens, links e opiniões</small>
+          </div>
+        </div>
+        <div className={`radio-card${type === 'voice' ? ' active' : ''}`} onClick={() => setType('voice')}>
+          <Volume2 />
+          <div>
+            Voz<small>Voz, vídeo e compartilhamento de tela em 1080p</small>
+          </div>
+        </div>
+        <label className="field" style={{ marginTop: 16 }}>
+          <span>Nome do canal</span>
+          <input
+            autoFocus
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={type === 'text' ? 'novo-canal' : 'Sala de jogos'}
+            maxLength={32}
+            required
+          />
+        </label>
+        {error && <p className="error-text">{error}</p>}
+      </div>
+      <div className="modal-foot">
+        <button type="button" className="btn ghost" onClick={close}>
+          Cancelar
+        </button>
+        <button className="btn" disabled={busy || !name.trim()}>
+          Criar canal
+        </button>
+      </div>
+    </form>
+  );
+}
+
+const isLoopback = (url) => /^https?:\/\/(localhost|127\.\d+\.\d+\.\d+|\[::1\])(:|\/|$)/i.test(url);
+
+function InviteModal({ close, guild }) {
+  const serverUrl = useStore((s) => s.serverUrl);
+  const addresses = useStore((s) => s.config?.addresses) || [];
+  // Quem hospeda costuma estar conectado via localhost; o convite precisa do endereço na rede.
+  const options = isLoopback(serverUrl) && addresses.length ? addresses : [serverUrl];
+  const [base, setBase] = useState(options[0]);
+  const [copied, setCopied] = useState(false);
+  const link = `${base}/invite/${guild.inviteCode}`;
+  return (
+    <>
+      <div className="modal-body">
+        <h2>Convide amigos para {guild.name}</h2>
+        <p className="sub">Quem abrir o link (ou colar o código em “Entrar com convite”) entra no servidor.</p>
+        {options.length > 1 && (
+          <label className="field">
+            <span>Endereço do servidor</span>
+            <select
+              value={base}
+              onChange={(e) => {
+                setBase(e.target.value);
+                setCopied(false);
+              }}
+            >
+              {options.map((a) => (
+                <option key={a} value={a}>
+                  {a}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <div className="field">
+          <span>Link de convite</span>
+          <div className="copy-row">
+            <input readOnly value={link} onFocus={(e) => e.target.select()} />
+            <button
+              className={`btn${copied ? ' green' : ''}`}
+              onClick={() => {
+                navigator.clipboard?.writeText(link);
+                setCopied(true);
+              }}
+            >
+              {copied ? 'Copiado' : 'Copiar'}
+            </button>
+          </div>
+          <small>
+            Código: <code>{guild.inviteCode}</code> · No app PadoSpeak, use o endereço <code>{base}</code> na tela de
+            login.
+          </small>
+        </div>
+      </div>
+      <div className="modal-foot">
+        <span />
+        <button className="btn" onClick={close}>
+          Pronto
+        </button>
+      </div>
+    </>
+  );
+}
+
+function ConfirmModal({ close, title, text, action }) {
+  const { busy, error, run } = useAction(action, close);
+  return (
+    <>
+      <div className="modal-body">
+        <h2>{title}</h2>
+        {text && <p className="sub">{text}</p>}
+        {error && <p className="error-text">{error}</p>}
+      </div>
+      <div className="modal-foot">
+        <button className="btn ghost" onClick={close}>
+          Cancelar
+        </button>
+        <button className="btn red" onClick={run} disabled={busy} autoFocus>
+          Confirmar
+        </button>
+      </div>
+    </>
+  );
+}
+
+function DeviceSelect({ k, kind, label, choice, setChoice, devices }) {
+  const list = devices.filter((d) => d.kind === kind && d.deviceId);
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <select value={choice[k]} onChange={(e) => setChoice((c) => ({ ...c, [k]: e.target.value }))}>
+        <option value="">Padrão do sistema</option>
+        {list.map((d, i) => (
+          <option key={d.deviceId} value={d.deviceId}>
+            {d.label || `Dispositivo ${i + 1}`}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+/** Nome das cenas: o mesmo índice vale para o claro e o escuro (Céu↔Noite, Aquário↔Abismo). */
+const SCENES = [
+  ['Céu', 'Céu de dia · Noite no tema escuro'],
+  ['Aquário', 'Aquário · Abismo no tema escuro'],
+  ['Aurora', 'Aurora (nos dois temas)'],
+  ['Sistema', 'Céu na cor do sistema'],
+];
+
+function SettingsModal({ close }) {
+  const prim = primaryConn();
+  const me = prim((s) => s.me);
+  const serverUrl = prim((s) => s.baseUrl);
+  const accent = useStore((s) => s.prefs.accent || null);
+  const saved = useStore((s) => s.prefs.devices) || {};
+  const [devices, setDevices] = useState([]);
+  const [choice, setChoice] = useState({ mic: '', camera: '', output: '', ...saved });
+  const [rnnoise, setRnnoise] = useState(useStore.getState().prefs.noiseSuppression !== false);
+  const [sounds, setSounds] = useState(useStore.getState().prefs.sounds !== false);
+  const [repeatAlerts, setRepeatAlerts] = useState(useStore.getState().prefs.repeatAlerts !== false);
+  const nudge = prim((s) => s.nudgeSettings);
+  const [theme, setTheme] = useState(useStore.getState().prefs.theme || 'light');
+  const [scene, setScene] = useState(useStore.getState().prefs.scene ?? 0);
+  const [needsPermission, setNeedsPermission] = useState(false);
+  const canPickOutput = typeof HTMLMediaElement !== 'undefined' && 'setSinkId' in HTMLMediaElement.prototype;
+
+  useEffect(() => {
+    navigator.mediaDevices
+      ?.enumerateDevices()
+      .then((list) => {
+        setDevices(list);
+        setNeedsPermission(list.some((d) => !d.label));
+      })
+      .catch(() => {});
+  }, []);
+
+  const props = { choice, setChoice, devices };
+
+  return (
+    <>
+      <div className="modal-body">
+        <h2>Configurações</h2>
+        <p className="sub">
+          {isDesktop ? (
+            <>
+              Perfil local <b>@{me.username}</b> neste PC
+            </>
+          ) : (
+            <>
+              Conectado como <b>@{me.username}</b> em {serverUrl}
+            </>
+          )}
+        </p>
+        <div className="settings-sec">Aparência</div>
+        <div className="grid-2">
+          <label className="field">
+            <span>Tema</span>
+            <select
+              value={theme}
+              onChange={(e) => {
+                setTheme(e.target.value);
+                useStore.getState().setAppearance({ theme: e.target.value });
+              }}
+            >
+              <option value="light">Claro (Aero) — padrão</option>
+              <option value="dark">Escuro (Aero noturno)</option>
+              <option value="system">Igual ao sistema</option>
+            </select>
+          </label>
+          <div className="field">
+            <span>Cena do perfil</span>
+            <div className="scene-pick" role="radiogroup" aria-label="Cena do perfil">
+              {SCENES.map(([name, hint], i) => (
+                <button
+                  key={name}
+                  title={hint}
+                  type="button"
+                  role="radio"
+                  aria-checked={scene === i}
+                  className={`scene-swatch s${i}${scene === i ? ' on' : ''}`}
+                  onClick={() => {
+                    setScene(i);
+                    useStore.getState().setAppearance({ scene: i });
+                  }}
+                >
+                  {name}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="field">
+          <span>Cor do sistema</span>
+          <ColorChoice
+            label="Cor do sistema"
+            value={accent}
+            palette={ACCENTS}
+            defaultLabel="Aero"
+            onChange={(hex) => useStore.getState().setAppearance({ accent: hex })}
+          />
+          <small>Seleções, abas, links e o brilho dos botões. A cena “Sistema” pinta o céu do topo com ela.</small>
+        </div>
+        <div className="settings-sec">Voz e áudio</div>
+        <DeviceSelect {...props} k="mic" kind="audioinput" label="Microfone" />
+        <label className="checkbox">
+          <input type="checkbox" checked={rnnoise} onChange={(e) => setRnnoise(e.target.checked)} />
+          <span>
+            Supressão de ruído por IA (RNNoise)
+            <small style={{ display: 'block', color: 'var(--muted)', fontSize: 12 }}>
+              Remove teclado, ventilador e barulho de fundo do seu microfone.
+            </small>
+          </span>
+        </label>
+        <label className="checkbox">
+          <input type="checkbox" checked={sounds} onChange={(e) => setSounds(e.target.checked)} />
+          <span>
+            Sons de chamada
+            <small style={{ display: 'block', color: 'var(--muted)', fontSize: 12 }}>
+              Entradas e saídas no canal de voz, transmissões, mensagens diretas e toque de chamada.
+            </small>
+          </span>
+        </label>
+        {canPickOutput && <DeviceSelect {...props} k="output" kind="audiooutput" label="Saída de áudio" />}
+        <DeviceSelect {...props} k="camera" kind="videoinput" label="Câmera" />
+        <div className="settings-sec">Notificações</div>
+        <label className="checkbox">
+          <input type="checkbox" checked={repeatAlerts} onChange={(e) => setRepeatAlerts(e.target.checked)} />
+          <span>
+            Receber notificações repetidas
+            <small className="check-hint">
+              Desligado: se um amigo ficar online várias vezes seguidas (ou alternar entre offline e online), você
+              recebe no máximo um aviso dessa pessoa a cada 10 minutos.
+            </small>
+          </span>
+        </label>
+        <div className="settings-sec">Chamar atenção</div>
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={nudge?.allowNudges ?? true}
+            disabled={!nudge}
+            onChange={(e) => {
+              for (const c of connRegistry.values()) if (c.getState().me) c.getState().setAllowNudges(e.target.checked);
+            }}
+          />
+          <span>
+            Permitir que chamem a minha atenção
+            <small className="check-hint">
+              A janela treme, pisca laranja na barra de tarefas e toca um som. Cada pessoa pode chamar até 3 vezes por
+              minuto.
+            </small>
+          </span>
+        </label>
+        {nudge?.allowNudges !== false && (
+          <div className="block-list">
+            <div className="block-title">Não aceitar de ({nudge?.nudgeBlocks.length || 0})</div>
+            {nudge?.nudgeBlocks.length ? (
+              nudge.nudgeBlocks.map((u) => (
+                <div className="block-row" key={u.id}>
+                  <Avatar user={u} size={22} frame={false} />
+                  <span className="nm">
+                    <EmojiText text={u.displayName} /> <small>@{u.username}</small>
+                  </span>
+                  <button
+                    type="button"
+                    className="gloss mini"
+                    title="Voltar a aceitar"
+                    aria-label={`Voltar a aceitar de ${u.displayName}`}
+                    onClick={() => prim.getState().setNudgeBlocked(u.id, false)}
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              ))
+            ) : (
+              <p className="kv">Ninguém bloqueado. Para bloquear alguém, abra o perfil da pessoa.</p>
+            )}
+          </div>
+        )}
+        {needsPermission && (
+          <p className="kv">
+            Os nomes dos dispositivos aparecem depois que você permitir o acesso (entre em um canal de voz).
+          </p>
+        )}
+      </div>
+      <div className="modal-foot">
+        <button
+          className="btn red"
+          onClick={() => {
+            close();
+            if (isDesktop) localLogout();
+            else useStore.getState().logout();
+          }}
+        >
+          Sair da conta
+        </button>
+        <button
+          className="btn"
+          onClick={() => {
+            useStore.getState().setDevices(choice);
+            useStore.getState().setSounds(sounds);
+            useStore.getState().setRepeatAlerts(repeatAlerts);
+            if (rnnoise !== (useStore.getState().prefs.noiseSuppression !== false))
+              useStore.getState().setNoiseSuppression(rnnoise);
+            close();
+          }}
+        >
+          Salvar
+        </button>
+      </div>
+    </>
+  );
+}
+
+function DiagnosticsModal({ close }) {
+  const [text, setText] = useState(() => activeVoiceConn().getState().diagnostics());
+  const [latency, setLatency] = useState(() => activeVoiceConn().getState().latencyHistory());
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    const t = setInterval(() => {
+      setText(activeVoiceConn().getState().diagnostics());
+      setLatency(activeVoiceConn().getState().latencyHistory());
+    }, 2000);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <>
+      <div className="modal-body">
+        <h2>Diagnóstico da chamada</h2>
+        <p className="sub">Latência e estado da conexão com cada participante.</p>
+        <LatencyChart data={latency} />
+        <details className="diag-details">
+          <summary>Relatório técnico</summary>
+          <textarea className="diag" readOnly value={text} onFocus={(e) => e.target.select()} />
+        </details>
+      </div>
+      <div className="modal-foot">
+        <button className="btn ghost" onClick={close}>
+          Fechar
+        </button>
+        <button
+          className={`btn${copied ? ' green' : ''}`}
+          onClick={() => {
+            navigator.clipboard?.writeText(text);
+            setCopied(true);
+          }}
+        >
+          {copied ? 'Copiado' : 'Copiar relatório'}
+        </button>
+      </div>
+    </>
+  );
+}
+
+// ---------- Perfil ----------
+
+const fmtDate = (ts) => new Date(ts).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' });
+
+function ProfileModal({ close, userId, conn }) {
+  return (
+    <ConnProvider conn={conn}>
+      <ProfileCard close={close} userId={userId} />
+    </ConnProvider>
+  );
+}
+
+function ProfileCard({ close, userId }) {
+  const useC = useConn();
+  const isServer = useC((s) => s.kind === 'server');
+  const me = useC((s) => s.me);
+  const friend = useC((s) => s.friends[userId]);
+  const online = useC((s) => Boolean(s.online[userId]));
+  const nudgeBlocked = useC((s) => Boolean(s.nudgeSettings?.nudgeBlocks.some((u) => u.id === userId)));
+  const [profile, setProfile] = useState(null);
+  const [error, setError] = useState('');
+  const user = useUser(profile?.user);
+  const { openDm, callUser, sendFriendRequest, acceptFriend, removeFriend } = useC.getState();
+  const { openModal } = useStore.getState();
+
+  useEffect(() => {
+    useC
+      .getState()
+      .fetchProfile(userId)
+      .then(setProfile)
+      .catch((e) => setError(e.message));
+  }, [userId, friend?.status]);
+
+  if (error)
+    return (
+      <div className="modal-body">
+        <p className="error-text">{error}</p>
+      </div>
+    );
+  if (!profile)
+    return (
+      <div className="modal-body">
+        <p className="sub">Carregando perfil…</p>
+      </div>
+    );
+
+  const isMe = userId === me?.id;
+  const status = friend?.status;
+  const run = (fn) => async () => {
+    try {
+      await fn();
+    } catch (e) {
+      useStore.getState().notify(e.message);
+    }
+  };
+
+  return (
+    <div className="profile-card">
+      <div
+        className="profile-banner"
+        style={{ background: `linear-gradient(135deg, color-mix(in srgb, ${user.avatarColor} 55%, #fff), ${user.avatarColor})` }}
+      />
+      <div className="profile-head">
+        <Avatar user={user} size={80} status={online ? undefined : 'off'} />
+        {isMe && (
+          <button className="btn secondary" onClick={() => openModal({ type: 'editProfile' })}>
+            Editar perfil
+          </button>
+        )}
+      </div>
+      <div className="profile-body">
+        <h2>
+          <UserName user={user} /> {(user.lan || !isServer) && <span className="lan-tag">LAN</span>}
+        </h2>
+        <div className="profile-username">@{user.username}</div>
+        {profile.bio && (
+          <section>
+            <h4>Sobre mim</h4>
+            <p className={colorClass(user.bioColor, 'profile-bio')} style={colorStyle(user.bioColor)}>
+              <EmojiText text={profile.bio} />
+            </p>
+          </section>
+        )}
+        <section>
+          <h4>Membro desde</h4>
+          <p>{fmtDate(profile.createdAt)}</p>
+        </section>
+        {!isMe && profile.mutualGuilds.length > 0 && (
+          <section>
+            <h4>Servidores em comum — {profile.mutualGuilds.length}</h4>
+            <div className="chips">
+              {profile.mutualGuilds.map((g) => (
+                <span className="chip" key={g}>
+                  {g}
+                </span>
+              ))}
+            </div>
+          </section>
+        )}
+        {!isMe && (
+          <div className="profile-actions">
+            <button className="btn" onClick={run(async () => (await openDm(userId), close()))}>
+              <MessageSquare size={16} /> Mensagem
+            </button>
+            <button className="btn green" onClick={run(async () => (close(), await callUser(userId)))}>
+              <Phone size={16} /> Ligar
+            </button>
+            {isServer && !status && (
+              <button className="btn secondary" onClick={run(() => sendFriendRequest(user.username))}>
+                <UserPlus size={16} /> Adicionar amigo
+              </button>
+            )}
+            {status === 'incoming' && (
+              <button className="btn secondary" onClick={run(() => acceptFriend(userId))}>
+                <UserCheck size={16} /> Aceitar pedido
+              </button>
+            )}
+            {status === 'outgoing' && (
+              <button className="btn secondary" onClick={run(() => removeFriend(userId))}>
+                Cancelar pedido
+              </button>
+            )}
+            {status === 'friend' && (
+              <button className="btn ghost" title="Desfazer amizade" onClick={run(() => removeFriend(userId))}>
+                <UserMinus size={16} />
+              </button>
+            )}
+            <button
+              className={`btn ghost${nudgeBlocked ? ' pressed' : ''}`}
+              title={nudgeBlocked ? 'Voltar a aceitar chamar atenção desta pessoa' : 'Não aceitar chamar atenção desta pessoa'}
+              aria-pressed={nudgeBlocked}
+              onClick={() => useC.getState().setNudgeBlocked(userId, !nudgeBlocked)}
+            >
+              {nudgeBlocked ? <BellOff size={16} /> : <Vibrate size={16} />}
+              {nudgeBlocked ? 'Bloqueado' : ''}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Recorta no centro e reduz para 256×256 (WebP, ou PNG se o navegador não gerar WebP). */
+async function prepareAvatar(file) {
+  const bitmap = await createImageBitmap(file);
+  const side = Math.min(bitmap.width, bitmap.height);
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side, 0, 0, 256, 256);
+  bitmap.close?.();
+  const blob = (type, q) => new Promise((r) => canvas.toBlob(r, type, q));
+  const webp = await blob('image/webp', 0.9);
+  return webp?.type === 'image/webp' ? webp : blob('image/png');
+}
+
+/** Campo de texto com botão de emoticons (nome e mensagem pessoal). */
+function EmojiField({ id, label, value, setValue, maxLength, multiline, placeholder, required, hint }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const btn = useRef(null);
+  const Input = multiline ? 'textarea' : 'input';
+  return (
+    <div className="field">
+      <label htmlFor={id}>
+        <span>{label}</span>
+      </label>
+      <div className="emoji-field">
+        <Input
+          id={id}
+          ref={ref}
+          rows={multiline ? 3 : undefined}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          maxLength={maxLength}
+          placeholder={placeholder}
+          required={required}
+          style={multiline ? { resize: 'none' } : undefined}
+        />
+        <span className="tool-wrap">
+          <button
+            ref={btn}
+            type="button"
+            className={`gloss tool-sq${open ? ' pressed' : ''}`}
+            title="Emoticons"
+            aria-label="Inserir emoticon"
+            onClick={() => setOpen((v) => !v)}
+          >
+            <Smile size={15} className="ico-gold" />
+          </button>
+          {open && (
+            <EmojiPicker
+              anchorRef={btn}
+              align="right"
+              onClose={() => setOpen(false)}
+              onPick={(code) => {
+                setOpen(false);
+                if (value.length + code.length > maxLength)
+                  return useStore.getState().notify('Não cabe mais nenhum emoticon nesse campo', 'info');
+                insertText(ref.current, value, setValue, code);
+              }}
+            />
+          )}
+        </span>
+      </div>
+      {hint}
+    </div>
+  );
+}
+
+function EditProfileModal({ close }) {
+  const prim = primaryConn();
+  const me = prim((s) => s.me);
+  const base = prim((s) => s.baseUrl);
+  const [name, setName] = useState(me.displayName);
+  const [bio, setBio] = useState('');
+  const [nameColor, setNameColor] = useState(me.nameColor || null);
+  const [bioColor, setBioColor] = useState(me.bioColor || null);
+  const [loaded, setLoaded] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef(null);
+  const { busy, error, run } = useAction(async () => {
+    await prim.getState().updateProfile({ displayName: name, bio, nameColor: nameColor || '', bioColor: bioColor || '' });
+    syncProfileEverywhere();
+  }, close);
+
+  useEffect(() => {
+    prim
+      .getState()
+      .fetchProfile(me.id)
+      .then((p) => {
+        setBio(p.bio);
+        setLoaded(true);
+      })
+      .catch(() => setLoaded(true));
+  }, [me.id]);
+
+  async function pick(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setUploading(true);
+    try {
+      await prim.getState().uploadAvatar(await prepareAvatar(file));
+      syncProfileEverywhere();
+    } catch (err) {
+      useStore.getState().notify(err.message || 'Não foi possível usar essa imagem');
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  return (
+    <form onSubmit={run}>
+      <div className="modal-body">
+        <h2>Meu perfil</h2>
+        <p className="sub">Como as outras pessoas veem você.</p>
+        <div className="avatar-edit">
+          <button
+            type="button"
+            className="avatar-edit-pic"
+            onClick={() => fileRef.current?.click()}
+            title="Trocar foto"
+          >
+            <Avatar user={me} base={base} size={96} />
+            <span className="avatar-edit-overlay">
+              <Camera size={22} />
+              {uploading ? 'Enviando…' : 'Trocar'}
+            </span>
+          </button>
+          <div className="avatar-edit-actions">
+            <button
+              type="button"
+              className="btn secondary"
+              onClick={() => fileRef.current?.click()}
+              disabled={uploading}
+            >
+              <Camera size={16} /> Escolher imagem
+            </button>
+            {me.avatarUrl && (
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={async () => {
+                  await prim.getState().removeAvatar();
+                  syncProfileEverywhere();
+                }}
+              >
+                <Trash2 size={16} /> Remover foto
+              </button>
+            )}
+            <small>PNG, JPEG, WebP ou GIF. A imagem é recortada em quadrado.</small>
+          </div>
+          <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={pick} />
+        </div>
+        <EmojiField id="pf-name" label="Nome de exibição" value={name} setValue={setName} maxLength={32} required />
+        <div className="field">
+          <span>Cor do nome</span>
+          <ColorChoice label="Cor do nome" value={nameColor} palette={TEXT_COLORS} onChange={setNameColor} />
+        </div>
+        <EmojiField
+          id="pf-bio"
+          label="Sobre mim"
+          multiline
+          value={bio}
+          setValue={setBio}
+          maxLength={190}
+          placeholder={loaded ? 'Conte um pouco sobre você' : 'Carregando…'}
+          hint={
+            <small>
+              {190 - bio.length} caracteres restantes · @{me.username}
+            </small>
+          }
+        />
+        <div className="field">
+          <span>Cor da mensagem pessoal</span>
+          <ColorChoice label="Cor da mensagem pessoal" value={bioColor} palette={TEXT_COLORS} onChange={setBioColor} />
+        </div>
+        <div className="profile-preview">
+          <span className="preview-label">Prévia</span>
+          <b className={colorClass(nameColor)} style={colorStyle(nameColor)}>
+            <EmojiText text={name || me.username} size={18} />
+          </b>
+          {bio && (
+            <span className={colorClass(bioColor, 'pm')} style={colorStyle(bioColor)}>
+              <EmojiText text={bio} />
+            </span>
+          )}
+        </div>
+        {error && <p className="error-text">{error}</p>}
+      </div>
+      <div className="modal-foot">
+        <button type="button" className="btn ghost" onClick={close}>
+          Cancelar
+        </button>
+        <button className="btn" disabled={busy || !loaded}>
+          Salvar
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function NewDmModal({ close }) {
+  const allFriends = useStore((s) => s.friends);
+  const friends = Object.values(allFriends).filter((f) => f.status === 'friend');
+  const online = useStore((s) => s.online);
+  const [q, setQ] = useState('');
+  const list = friends.filter((f) =>
+    `${f.user.displayName} ${f.user.username}`.toLowerCase().includes(q.trim().toLowerCase()),
+  );
+  return (
+    <>
+      <div className="modal-body">
+        <h2>Nova conversa</h2>
+        <p className="sub">Escolha um amigo. Para falar com alguém de um servidor, clique na foto da pessoa.</p>
+        <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar amigos" />
+        <div className="pick-list">
+          {list.length === 0 && <p className="sub">Nenhum amigo encontrado.</p>}
+          {list.map((f) => (
+            <button
+              key={f.user.id}
+              className="pick-row"
+              onClick={async () => {
+                close();
+                await useStore.getState().openDm(f.user.id);
+              }}
+            >
+              <Avatar user={f.user} size={32} online={Boolean(online[f.user.id])} />
+              <span>
+                <b>
+                  <EmojiText text={f.user.displayName} />
+                </b>{' '}
+                <small>@{f.user.username}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="modal-foot">
+        <span />
+        <button className="btn ghost" onClick={close}>
+          Fechar
+        </button>
+      </div>
+    </>
+  );
+}
+
+/** Entrar (ou criar conta) no servidor de comunidade, sem mexer no perfil local. */
+function ServerLoginModal({ close }) {
+  const url = useStore((s) => s.baseUrl);
+  const localName = connRegistry.get('local')?.getState().me?.username || '';
+  const [mode, setMode] = useState('login');
+  const [form, setForm] = useState({ username: localName, password: '' });
+  const { busy, error, run } = useAction(() => serverAuthenticate(mode, form), close);
+  const update = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  return (
+    <form onSubmit={run}>
+      <div className="modal-body">
+        <h2>{url.replace(/^https?:\/\//, '')}</h2>
+        <p className="sub">
+          Amigos e servidores ficam nesta conta. Se o usuário for o mesmo do seu perfil local, nome, foto e mensagem
+          pessoal são copiados do perfil local.
+        </p>
+        <div className="tabs">
+          <button type="button" className={mode === 'login' ? 'active' : ''} onClick={() => setMode('login')}>
+            Entrar
+          </button>
+          <button type="button" className={mode === 'register' ? 'active' : ''} onClick={() => setMode('register')}>
+            Criar conta
+          </button>
+        </div>
+        <label className="field">
+          <span>Usuário</span>
+          <input value={form.username} onChange={update('username')} autoComplete="username" required />
+        </label>
+        <label className="field">
+          <span>Senha</span>
+          <input
+            type="password"
+            value={form.password}
+            onChange={update('password')}
+            autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+            required
+            autoFocus
+          />
+        </label>
+        {error && <p className="error-text">{error}</p>}
+      </div>
+      <div className="modal-foot">
+        <button
+          type="button"
+          className="btn ghost"
+          onClick={() => {
+            close();
+            useStore.getState().goHost();
+          }}
+        >
+          Trocar servidor
+        </button>
+        <button className="btn" disabled={busy}>
+          {mode === 'login' ? 'Entrar' : 'Criar conta'}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+const MODALS = {
+  serverLogin: ServerLoginModal,
+  profile: ProfileModal,
+  editProfile: EditProfileModal,
+  newDm: NewDmModal,
+  diagnostics: DiagnosticsModal,
+  guild: GuildModal,
+  channel: ChannelModal,
+  invite: InviteModal,
+  confirm: ConfirmModal,
+  settings: SettingsModal,
+};
+
+export default function Modals() {
+  const modal = useStore((s) => s.modal);
+  const close = useStore((s) => s.closeModal);
+  if (!modal) return null;
+  const Component = MODALS[modal.type];
+  return (
+    <Modal onClose={close} wide={modal.type === 'diagnostics'} title={TITLES[modal.type]}>
+      <Component key={modal.userId || modal.type} {...modal} close={close} />
+    </Modal>
+  );
+}

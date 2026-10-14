@@ -1,0 +1,92 @@
+import { useEffect } from 'react';
+import { AlertTriangle, Info, Download } from 'lucide-react';
+import { useStore, primaryConn } from './store.js';
+import { isPanel } from './lib/env.js';
+import { useUpdate, runAutoUpdate } from './lib/update.js';
+import AuthPage from './components/AuthPage.jsx';
+import HostPage from './components/HostPage.jsx';
+import Shell from './components/Shell.jsx';
+import Modals from './components/Modals.jsx';
+import IncomingCalls from './components/IncomingCall.jsx';
+import Avatar from './components/Avatar.jsx';
+import { TitleBar } from './components/Aero.jsx';
+import { EmojiText } from './components/Emotes.jsx';
+import { useAcross } from './components/conn.jsx';
+
+/** Aviso que sobe no canto, como o "fulano acabou de entrar" do Messenger. */
+function Toast({ toast }) {
+  return (
+    <div className={`toast window ${toast.kind}`} role="status" key={toast.id}>
+      <TitleBar title="PadoSpeak" onClose={useStore.getState().dismissToast} />
+      <div className="toast-body">
+        {toast.user ? (
+          <Avatar user={toast.user} base={toast.base} size={38} frame />
+        ) : toast.kind === 'error' ? (
+          <AlertTriangle size={22} className="toast-ico error" />
+        ) : (
+          <Info size={22} className="toast-ico" />
+        )}
+        <span className="toast-text">
+          <EmojiText text={toast.text} />
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** Progresso da atualização automática (só aparece quando há versão nova). */
+function UpdateOverlay() {
+  const { stage, version, progress } = useUpdate();
+  if (stage !== 'downloading' && stage !== 'installing' && stage !== 'ready') return null;
+  return (
+    <div className="update-window window" role="status" aria-live="polite">
+      <TitleBar title="Atualizando o PadoSpeak" />
+      <div className="update-body">
+        <Download size={22} className="toast-ico" />
+        <div>
+          <b>Versão {version}</b>
+          <span>
+            {stage === 'downloading'
+              ? progress == null
+                ? 'Baixando…'
+                : `Baixando… ${Math.round(progress * 100)}%`
+              : 'Instalando — o app reabre sozinho.'}
+          </span>
+          <div className="np-progress">
+            <div style={{ width: `${Math.round((progress ?? 0.3) * 100)}%` }} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  const phase = useStore((s) => s.phase);
+  const toast = useStore((s) => s.toast);
+  // Meu perfil (o local no app desktop): enquanto ele existir, a tela principal fica montada.
+  const loggedIn = useAcross(() => Boolean(primaryConn().getState().me));
+
+  useEffect(() => {
+    useStore.getState().boot();
+    runAutoUpdate();
+  }, []);
+
+  return (
+    <>
+      {phase === 'boot' && <div className="boot">Conectando…</div>}
+      {phase === 'auth' && <AuthPage />}
+      {phase === 'host' && (isPanel || loggedIn) && <HostPage />}
+      {/* O app continua montado na página Hostear para não derrubar uma chamada de voz em andamento. */}
+      {loggedIn && !isPanel && (
+        <div style={{ display: phase === 'app' ? 'contents' : 'none' }}>
+          <Shell />
+        </div>
+      )}
+      <Modals />
+      {loggedIn && <IncomingCalls />}
+      {toast && <Toast key={toast.id} toast={toast} />}
+      <UpdateOverlay />
+    </>
+  );
+}

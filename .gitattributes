@@ -1,0 +1,6 @@
+# Fim de linha LF no repositório (os scripts de deploy rodam em Linux).
+* text=auto eol=lf
+*.bmp binary
+*.png binary
+*.ico binary
+*.icns binary

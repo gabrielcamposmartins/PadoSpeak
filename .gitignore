@@ -1,0 +1,8 @@
+node_modules/
+target/
+client/dist/
+data/
+*.db
+*.db-*
+desktop/src-tauri/gen/
+.env
