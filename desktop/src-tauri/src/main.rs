@@ -1,18 +1,27 @@
 // App desktop do PadoSpeak: o cliente (React) roda no WebView e o servidor Rust vem embutido duas vezes:
 // - o **nó local**, sempre ligado: guarda o perfil deste PC (login offline) e conversa com a rede local;
 // - o **servidor hospedado**, ligado pela página "Hostear" para receber outras pessoas.
+// Fechar a janela só a esconde: o app continua na bandeja do Windows (perto do relógio), recebendo
+// mensagens e chamadas. Para sair de verdade, botão direito no ícone → "Fechar o PadoSpeak".
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use padospeak_server::lan::Hosting;
 use padospeak_server::logs::LogLine;
 use padospeak_server::{HostConfig, HostManager, HostStatus};
 use serde_json::{json, Value};
+use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{Manager, RunEvent, State};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Manager, RunEvent, State, WindowEvent};
+use tauri_plugin_notification::NotificationExt;
 
 type Host = Arc<HostManager>;
 /// Nó local (tipo próprio para o Tauri distinguir do servidor hospedado).
 struct Local(Arc<HostManager>);
+
+/// Arquivo que marca que a pessoa já viu o aviso "continua aberto na bandeja".
+struct TrayHint(PathBuf);
 
 /// Portas tentadas para o nó local (a primeira livre vale).
 const LOCAL_PORTS: std::ops::RangeInclusive<u16> = 47821..=47830;
@@ -79,8 +88,61 @@ async fn start_local(local: &HostManager) -> Result<(), String> {
     Err(last)
 }
 
+/// Traz a janela de volta (da bandeja ou do minimizado) para a frente.
+fn show_main(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+}
+
+/// Ícone na bandeja: clique abre a janela; botão direito tem "Abrir" e "Fechar o PadoSpeak".
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    let open = MenuItem::with_id(app, "open", "Abrir o PadoSpeak", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Fechar o PadoSpeak", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &PredefinedMenuItem::separator(app)?, &quit])?;
+    let mut tray = TrayIconBuilder::with_id("main")
+        .tooltip("PadoSpeak")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "open" => show_main(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                show_main(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
+/// Na primeira vez que a janela vai para a bandeja, explica onde o app ficou.
+fn hint_tray_once(app: &AppHandle) {
+    let path = app.state::<TrayHint>().0.clone();
+    if path.exists() {
+        return;
+    }
+    let _ = std::fs::write(&path, b"1");
+    let _ = app
+        .notification()
+        .builder()
+        .title("O PadoSpeak continua aberto")
+        .body("Ele fica aqui na bandeja, perto do relógio, para você receber mensagens e chamadas. Para fechar de vez, clique com o botão direito no ícone.")
+        .show();
+}
+
 fn main() {
     let app = tauri::Builder::default()
+        // Abrir o app de novo (atalho, menu Iniciar) só mostra a janela que já está na bandeja.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
@@ -97,7 +159,19 @@ fn main() {
             }
             app.manage(host);
             app.manage(Local(local));
+            app.manage(TrayHint(data_dir.join("aviso-bandeja")));
+            build_tray(app)?;
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Fechar a janela principal a esconde na bandeja; sair é pelo menu do ícone.
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    hint_tray_once(window.app_handle());
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, local_node])
         .build(tauri::generate_context!())

@@ -1,0 +1,10 @@
+# Renova os certificados Let's Encrypt do nginx de borda (pokeru e padospeak).
+# Instalado na VM em /etc/systemd/system/edge-certbot.service (com o edge-certbot.timer).
+[Unit]
+Description=Renova os certificados Lets Encrypt do nginx de borda (pokeru e padospeak)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/edge
+ExecStart=/usr/bin/docker compose run --rm certbot renew --quiet
+ExecStartPost=/usr/bin/docker compose exec -T nginx nginx -s reload

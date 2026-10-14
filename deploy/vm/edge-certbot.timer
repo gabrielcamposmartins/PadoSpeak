@@ -1,0 +1,11 @@
+# Roda o edge-certbot.service todo dia (o certbot só renova o que vence em menos de 30 dias).
+[Unit]
+Description=Renovacao diaria dos certificados do nginx de borda
+
+[Timer]
+OnCalendar=*-*-* 04:17
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

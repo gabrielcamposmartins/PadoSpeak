@@ -1,0 +1,8 @@
+# Arquivos enviados ao Cloud Build (gcloud builds submit): o mesmo que o .dockerignore.
+.git
+**/node_modules
+target
+desktop/src-tauri/target
+desktop/src-tauri/gen
+client/dist
+data

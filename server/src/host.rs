@@ -78,6 +78,10 @@ impl HostManager {
         let logs = Logs::default();
         let db = Db::open(&data_dir).await?;
         logs.info(format!("Banco Turso/libSQL pronto ({}: {})", db.info.mode, db.info.location));
+        logs.info(format!("Mensagens guardadas com criptografia AES-256-GCM (chave {})", db.cipher.fingerprint));
+        if let Some(w) = &db.info.key_warning {
+            logs.error(w.clone());
+        }
         Ok(Arc::new(Self {
             db,
             logs,

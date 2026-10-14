@@ -19,7 +19,8 @@ import { isDesktop } from '../lib/env.js';
 import Avatar, { Orb, useUser, usePresence, useActivity, UserName, STATUS_INFO, colorClass, colorStyle } from './Avatar.jsx';
 import ChatView from './ChatView.jsx';
 import VoiceView from './VoiceView.jsx';
-import { EmojiText } from './Emotes.jsx';
+import { FormattedText } from './Emotes.jsx';
+import { plain } from '../lib/text.js';
 import { ConnProvider, useConn, useConnKey } from './conn.jsx';
 
 /** Referência estável: seletores do zustand não podem devolver um array novo a cada leitura. */
@@ -41,7 +42,7 @@ export function LanTag() {
 function Bio({ user, text, size = 14 }) {
   return (
     <span className={colorClass(text ? null : user?.bioColor, 'pm')} style={text ? undefined : colorStyle(user?.bioColor)}>
-      <EmojiText text={text ?? user?.bio} size={size} />
+      <FormattedText text={text ?? user?.bio} size={size} />
     </span>
   );
 }
@@ -110,7 +111,7 @@ function RequestRow({ entry }) {
       <button
         className="go mini"
         title="Aceitar"
-        aria-label={`Aceitar pedido de ${user.displayName}`}
+        aria-label={`Aceitar pedido de ${plain(user.displayName)}`}
         onClick={() => acceptFriend(user.id)}
       >
         <Check size={14} />
@@ -118,7 +119,7 @@ function RequestRow({ entry }) {
       <button
         className="gloss mini danger-ico"
         title="Recusar"
-        aria-label={`Recusar pedido de ${user.displayName}`}
+        aria-label={`Recusar pedido de ${plain(user.displayName)}`}
         onClick={() => removeFriend(user.id)}
       >
         <X size={14} />
@@ -170,7 +171,7 @@ function FriendOrbRow({ entry }) {
   const status = usePresence(user.id);
   const label = { voice: 'em voz', live: 'ao vivo', away: 'ausente', busy: 'ocupado' }[status];
   return (
-    <button className="row orb-row" onClick={() => useStore.getState().openDm(user.id)} title={`Conversar com ${user.displayName}`}>
+    <button className="row orb-row" onClick={() => useStore.getState().openDm(user.id)} title={`Conversar com ${plain(user.displayName)}`}>
       <Orb status={status} />
       <UserName user={user} className="nm" />
       {label && <span className={`orb-note ${status}`}>{label}</span>}
@@ -182,7 +183,7 @@ function LanPeerRow({ peer }) {
   const status = STATUS_INFO[peer.status]?.cls || 'on';
   return (
     <div className="lan-row">
-      <button className="row lan-open" onClick={() => openLanDm(peer)} title={`Conversar com ${peer.displayName}`}>
+      <button className="row lan-open" onClick={() => openLanDm(peer)} title={`Conversar com ${plain(peer.displayName)}`}>
         <Avatar user={peer} size={30} status={status} />
         <span className="member-text">
           <span className="member-name">
@@ -239,7 +240,7 @@ export function HomeSidebar() {
   const tab = useStore((s) => s.friendsTab);
   const friends = useStore((s) => s.friends);
   const online = useStore((s) => s.online);
-  const all = Object.values(friends).sort((a, b) => a.user.displayName.localeCompare(b.user.displayName));
+  const all = Object.values(friends).sort((a, b) => plain(a.user.displayName).localeCompare(plain(b.user.displayName)));
   const incoming = all.filter((f) => f.status === 'incoming');
   const mates = all.filter((f) => f.status === 'friend');
   const shown = tab === 'online' ? mates.filter((f) => online[f.user.id]) : mates;
@@ -338,7 +339,7 @@ function FriendRow({ entry }) {
               onClick={act(() =>
                 openModal({
                   type: 'confirm',
-                  title: `Desfazer amizade com ${user.displayName}?`,
+                  title: `Desfazer amizade com ${plain(user.displayName)}?`,
                   text: '',
                   action: () => removeFriend(user.id),
                 }),
@@ -394,13 +395,13 @@ function LanCard({ peer }) {
         {peer.hosting ? <Bio text={`Hospedando o servidor “${peer.hosting.name}”`} /> : peer.bio && <Bio user={peer} />}
       </div>
       <div className="friend-actions" onClick={(e) => e.stopPropagation()}>
-        <button className="gloss mini" title="Mensagem" aria-label={`Mensagem para ${peer.displayName}`} onClick={() => openLanDm(peer)}>
+        <button className="gloss mini" title="Mensagem" aria-label={`Mensagem para ${plain(peer.displayName)}`} onClick={() => openLanDm(peer)}>
           <MessageSquare size={16} />
         </button>
         <button
           className="gloss mini"
           title="Ligar"
-          aria-label={`Ligar para ${peer.displayName}`}
+          aria-label={`Ligar para ${plain(peer.displayName)}`}
           onClick={() => openLanDm(peer, { call: true })}
         >
           <Phone size={16} />
@@ -502,7 +503,7 @@ export function FriendsPage() {
   const noGuilds = useStore((s) => s.guilds.length === 0);
   const serverOnline = useStore((s) => Boolean(s.me));
   const lanPeers = useLanPeers();
-  const all = Object.values(friends).sort((a, b) => a.user.displayName.localeCompare(b.user.displayName));
+  const all = Object.values(friends).sort((a, b) => plain(a.user.displayName).localeCompare(plain(b.user.displayName)));
   const list = {
     online: all.filter((f) => f.status === 'friend' && online[f.user.id]),
     all: all.filter((f) => f.status === 'friend'),
@@ -571,14 +572,14 @@ function PhotoCard({ user, label, onClick }) {
   return (
     <div className="photo-card">
       {onClick ? (
-        <button className="photo-btn" onClick={onClick} aria-label={`Ver perfil de ${user.displayName}`}>
+        <button className="photo-btn" onClick={onClick} aria-label={`Ver perfil de ${plain(user.displayName)}`}>
           {pic}
         </button>
       ) : (
         pic
       )}
       <span>
-        <EmojiText text={label} size={14} />
+        <FormattedText text={label} size={14} />
       </span>
     </div>
   );
@@ -608,7 +609,7 @@ function DmWindow({ dmId }) {
     );
 
   const inCall = voice?.channelId === dmId;
-  const channel = { id: dm.id, name: recipient.displayName, guildId: null, dm: true, recipient };
+  const channel = { id: dm.id, name: plain(recipient.displayName), guildId: null, dm: true, recipient };
   const { joinVoice, toggleCamera } = useC.getState();
   const ringing = !inCall && othersInCall.length > 0;
 
@@ -644,14 +645,16 @@ function DmWindow({ dmId }) {
         </button>
         {ringing && (
           <span className="dm-ringing">
-            <Phone size={14} /> {recipient.displayName} está numa chamada com você.
+            <Phone size={14} /> <UserName user={recipient} /> está numa chamada com você.
           </span>
         )}
       </div>
       {inCall && (
         <div className="dm-call">
           <VoiceView channel={channel} />
-          {voice.peers.length === 0 && <div className="dm-calling">Chamando {recipient.displayName}…</div>}
+          {voice.peers.length === 0 && <div className="dm-calling">
+              Chamando <UserName user={recipient} />…
+            </div>}
         </div>
       )}
       <div className="dm-grid">

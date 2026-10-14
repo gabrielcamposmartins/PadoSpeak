@@ -70,14 +70,16 @@ struct ProfileBody {
 
 async fn update_profile(State(app): AppState, AuthUser(me, _): AuthUser, Json(body): Json<ProfileBody>) -> ApiResult<Json<Value>> {
     if let Some(name) = body.display_name {
-        let name: String = name.trim().chars().take(32).collect();
-        if name.is_empty() {
+        let name = fit_formatted(&name, NAME_MAX, NAME_RAW_MAX)
+            .ok_or_else(|| bad("O nome de exibição pode ter até 32 caracteres (e formatação de até 128)"))?;
+        if visible_len(&name) == 0 {
             return Err(bad("O nome de exibição não pode ficar vazio"));
         }
         app.db.execute("UPDATE users SET display_name = ?1 WHERE id = ?2", [name.as_str(), me.id.as_str()]).await?;
     }
     if let Some(bio) = body.bio {
-        let bio: String = bio.trim().chars().take(190).collect();
+        let bio = fit_formatted(&bio, BIO_MAX, BIO_RAW_MAX)
+            .ok_or_else(|| bad("O \"Sobre mim\" pode ter até 190 caracteres (e formatação de até 600)"))?;
         app.db.execute("UPDATE users SET bio = ?1 WHERE id = ?2", [bio.as_str(), me.id.as_str()]).await?;
     }
     for (col, value) in [("name_color", body.name_color), ("bio_color", body.bio_color)] {
@@ -451,6 +453,9 @@ async fn open_dm(State(app): AppState, AuthUser(me, _): AuthUser, Json(body): Js
 pub async fn dm_messages(app: &App, dm_id: &str, before: i64, limit: i64) -> ApiResult<Vec<Message>> {
     let sql = format!("{DM_MESSAGE_SELECT} WHERE m.dm_id = ?1 AND m.created_at < ?2 ORDER BY m.created_at DESC LIMIT ?3");
     let mut list = app.db.query_all(&sql, libsql::params![dm_id, before, limit], message_from_row).await?;
+    for m in &mut list {
+        m.content = app.db.cipher.reveal(&m.content);
+    }
     list.reverse();
     Ok(list)
 }

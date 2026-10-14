@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { EmojiText } from './Emotes.jsx';
+import { FormattedText } from './Emotes.jsx';
+import { plain } from '../lib/text.js';
 import { useConn } from './conn.jsx';
 
 /** Dados mais recentes de um usuário (nome/foto podem ter mudado depois que a mensagem chegou). */
@@ -67,7 +68,7 @@ export default function Avatar({ user: given, size = 40, status, frame = true, s
   const connBase = useConn()((s) => s.baseUrl);
   const auto = usePresence(frame && status == null && online == null ? user?.id : null);
   const [broken, setBroken] = useState(null);
-  const name = user?.displayName || user?.username || '?';
+  const name = plain(user?.displayName) || user?.username || '?';
   const src = avatarSrc(user?.avatarUrl, base || connBase);
   const showImg = src && broken !== src;
   const radius = Math.max(3, Math.round(size * 0.09));
@@ -124,7 +125,7 @@ export function UserName({ user, className, style, onClick }) {
       onClick={onClick}
       role={onClick ? 'button' : undefined}
     >
-      <EmojiText text={u?.displayName || u?.username} />
+      <FormattedText text={u?.displayName || u?.username} />
     </span>
   );
 }

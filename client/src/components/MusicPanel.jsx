@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Play, Pause, SkipForward, Music, X, LoaderCircle, Volume2, ArrowLeft } from 'lucide-react';
+import { Play, Pause, SkipForward, SkipBack, RotateCcw, Music, X, LoaderCircle, Volume2, ArrowLeft, History } from 'lucide-react';
 import { useStore } from '../store.js';
 import { MusicPlayer } from '../lib/music.js';
+import { plain } from '../lib/text.js';
 
 const fmt = (sec) => {
   if (!Number.isFinite(sec)) return '--:--';
@@ -86,7 +87,7 @@ function NowPlaying({ state }) {
       <div className="np-body">
         <div className="np-src">
           <Source track={track} />
-          {track.addedBy && <span>adicionado por {track.addedBy.displayName}</span>}
+          {track.addedBy && <span>adicionado por {plain(track.addedBy.displayName)}</span>}
         </div>
         <a className="np-title" href={track.pageUrl} target="_blank" rel="noreferrer" title={track.title}>
           {track.title}
@@ -107,6 +108,24 @@ function NowPlaying({ state }) {
           <span>{fmt(dur)}</span>
         </div>
         <div className="np-controls">
+          <button
+            className="ball small"
+            title="Voltar para a anterior"
+            aria-label="Voltar para a música anterior"
+            disabled={!state.history?.length}
+            onClick={() => musicControl('previous')}
+          >
+            <SkipBack />
+          </button>
+          <button
+            className="ball small"
+            title="Recomeçar a música"
+            aria-label="Recomeçar a música"
+            disabled={loading}
+            onClick={() => musicControl('restart')}
+          >
+            <RotateCcw />
+          </button>
           <button
             className="ball aqua"
             title={paused ? 'Retomar' : 'Pausar'}
@@ -133,6 +152,41 @@ function NowPlaying({ state }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/** Últimas músicas que tocaram no canal (até 30), a mais recente primeiro. */
+function RecentTracks({ history }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <div className="queue-head">
+        <button
+          type="button"
+          className="history-toggle"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+        >
+          <History size={13} /> Tocadas recentemente ({history.length})
+        </button>
+      </div>
+      {open && (
+        <ol className="music-queue music-history">
+          {history.map((t) => (
+            <li key={t.id} title={`${t.title}${t.addedBy ? ` · por ${plain(t.addedBy.displayName)}` : ''}`}>
+              <div className="mq-text">
+                <span className="mq-title">{t.title}</span>
+                <span className="mq-sub">
+                  <Source track={t} />
+                  {plain(t.addedBy?.displayName) || t.artist}
+                  {t.durationMs ? ` · ${fmt(t.durationMs / 1000)}` : ''}
+                </span>
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+    </>
   );
 }
 
@@ -206,6 +260,11 @@ export default function MusicPanel() {
                 <Music size={26} />
                 <p>Nada tocando. Arraste links do YouTube ou do Spotify para cá.</p>
                 <small>Vídeos, playlists, faixas e álbuns</small>
+                {state?.history?.length > 0 && (
+                  <button className="gloss small-btn" onClick={() => musicControl('previous')}>
+                    <SkipBack size={14} /> Tocar de novo a última
+                  </button>
+                )}
               </div>
             )}
 
@@ -225,13 +284,13 @@ export default function MusicPanel() {
                 </div>
                 <ol className="music-queue">
                   {state.queue.map((t, i) => (
-                    <li key={t.id} title={`${t.title}${t.addedBy ? ` · por ${t.addedBy.displayName}` : ''}`}>
+                    <li key={t.id} title={`${t.title}${t.addedBy ? ` · por ${plain(t.addedBy.displayName)}` : ''}`}>
                       <span className="q-n">{i + 1}</span>
                       <div className="mq-text">
                         <span className="mq-title">{t.title}</span>
                         <span className="mq-sub">
                           <Source track={t} />
-                          {t.addedBy?.displayName || t.artist}
+                          {plain(t.addedBy?.displayName) || t.artist}
                           {t.durationMs ? ` · ${fmt(t.durationMs / 1000)}` : ''}
                         </span>
                       </div>
@@ -248,6 +307,8 @@ export default function MusicPanel() {
                 </ol>
               </>
             )}
+
+            {state?.history?.length > 0 && <RecentTracks history={state.history} />}
           </>
         )}
 

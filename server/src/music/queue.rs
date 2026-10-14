@@ -15,6 +15,8 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 /// Tamanho máximo da fila de um canal.
 pub const MAX_QUEUE: usize = 500;
+/// Quantas músicas já tocadas o canal lembra (para "voltar" e para a lista de tocadas).
+pub const MAX_HISTORY: usize = 30;
 /// Folga entre resolver o áudio e começar a tocar, para os clientes carregarem o stream.
 const START_LEAD_MS: i64 = 1200;
 
@@ -33,6 +35,8 @@ pub struct ChannelMusic {
     pub guild_id: String,
     pub queue: VecDeque<Track>,
     pub current: Option<Playing>,
+    /// Últimas músicas que tocaram (a mais recente no fim).
+    pub history: VecDeque<Track>,
     /// Muda a cada troca de faixa/pausa; invalida temporizadores e carregamentos antigos.
     pub generation: u64,
 }
@@ -45,11 +49,62 @@ pub enum Removed {
 }
 
 impl ChannelMusic {
-    /// Passa para a próxima faixa (ou para nada). Devolve a faixa que precisa ser carregada.
+    /// Passa para a próxima faixa (ou para nada); a atual vai para o histórico.
+    /// Devolve a faixa que precisa ser carregada.
     pub fn advance(&mut self) -> Option<Track> {
+        if let Some(p) = self.current.take() {
+            self.remember(p.track);
+        }
+        self.advance_dropping()
+    }
+
+    /// Como `advance`, mas descarta a atual (removida da fila ou que não deu para tocar).
+    pub fn advance_dropping(&mut self) -> Option<Track> {
         self.generation += 1;
-        self.current = self.queue.pop_front().map(|track| Playing { track, started_at: None, paused_at: None });
+        self.current = self.queue.pop_front().map(Self::fresh);
         self.current.as_ref().map(|p| p.track.clone())
+    }
+
+    /// Volta para a última música do histórico; a atual volta para o começo da fila.
+    pub fn previous(&mut self) -> Option<Track> {
+        let prev = self.history.pop_back()?;
+        if let Some(p) = self.current.take() {
+            self.queue.push_front(p.track);
+        }
+        self.generation += 1;
+        self.current = Some(Self::fresh(prev));
+        self.current.as_ref().map(|p| p.track.clone())
+    }
+
+    /// Recomeça a música atual do início (pausada continua pausada, já no começo).
+    pub fn restart(&mut self, now: i64) -> bool {
+        let Some(p) = &mut self.current else { return false };
+        if p.started_at.is_none() {
+            return false; // ainda carregando: já vai começar do início
+        }
+        p.started_at = Some(p.paused_at.unwrap_or(now));
+        self.generation += 1;
+        true
+    }
+
+    fn fresh(track: Track) -> Playing {
+        Playing { track, started_at: None, paused_at: None }
+    }
+
+    fn remember(&mut self, track: Track) {
+        self.history.push_back(track);
+        while self.history.len() > MAX_HISTORY {
+            self.history.pop_front();
+        }
+    }
+
+    /// Canal de voz esvaziou: para tudo, mas lembra o que tocou.
+    pub fn stop(&mut self) {
+        self.queue.clear();
+        if let Some(p) = self.current.take() {
+            self.remember(p.track);
+        }
+        self.generation += 1;
     }
 
     /// Áudio pronto: começa a tocar daqui a `START_LEAD_MS`.
@@ -122,6 +177,8 @@ impl ChannelMusic {
                 "pausedAt": p.paused_at,
             })),
             "queue": self.queue,
+            // A mais recente primeiro.
+            "history": self.history.iter().rev().collect::<Vec<_>>(),
         })
     }
 }
@@ -256,6 +313,10 @@ impl MusicManager {
         for t in &mut tracks {
             t.added_by = Some(user.clone());
         }
+        // Resolver o link leva alguns segundos: o canal pode ter esvaziado nesse meio-tempo.
+        if !self.hub.voice_has_people(channel_id) {
+            return Err("O canal de voz ficou vazio antes de a música carregar".into());
+        }
         let (count, first_title, to_load) = {
             let mut channels = self.channels.lock().unwrap();
             let chan = channels.entry(channel_id.to_string()).or_default();
@@ -298,7 +359,7 @@ impl MusicManager {
                     Ok(audio) => chan.start(crate::now_ms(), audio.duration_ms),
                     Err(e) => {
                         failure = Some((chan.guild_id.clone(), format!("Não foi possível tocar \"{}\": {e}", track.title)));
-                        next_to_load = chan.advance().map(|t| (t, chan.generation));
+                        next_to_load = chan.advance_dropping().map(|t| (t, chan.generation));
                     }
                 }
             }
@@ -384,7 +445,13 @@ impl MusicManager {
         let source = {
             let channels = self.channels.lock().unwrap();
             channels.values().find_map(|c| {
-                c.current.iter().map(|p| &p.track).chain(c.queue.iter()).find(|t| t.id == track_id).map(|t| t.source.clone())
+                c.current
+                    .iter()
+                    .map(|p| &p.track)
+                    .chain(c.queue.iter())
+                    .chain(c.history.iter())
+                    .find(|t| t.id == track_id)
+                    .map(|t| t.source.clone())
             })
         };
         let source = source.ok_or("faixa não está em nenhuma fila")?;
@@ -392,7 +459,7 @@ impl MusicManager {
         Ok(self.cached_or_resolve(&tools, track_id, &source, force).await?.url)
     }
 
-    /// Pausar, retomar, pular, remover ou limpar — sempre no canal de quem pediu.
+    /// Pausar, retomar, pular, voltar, recomeçar, remover ou limpar — sempre no canal de quem pediu.
     pub fn control(self: &Arc<Self>, channel_id: &str, op: &str, track_id: Option<&str>) -> Result<(), String> {
         let now = crate::now_ms();
         let mut to_load = None;
@@ -407,10 +474,19 @@ impl MusicManager {
                     chan.resume(now);
                 }
                 "music:skip" => to_load = chan.advance().map(|t| (t, chan.generation)),
+                "music:previous" => match chan.previous() {
+                    Some(t) => to_load = Some((t, chan.generation)),
+                    None => return Err("Nenhuma música tocou antes desta".into()),
+                },
+                "music:restart" => {
+                    if !chan.restart(now) {
+                        return Err("A música ainda está carregando".into());
+                    }
+                }
                 "music:remove" => {
                     let id = track_id.ok_or("Faixa não informada")?;
                     match chan.remove(id) {
-                        Removed::Current => to_load = chan.advance().map(|t| (t, chan.generation)),
+                        Removed::Current => to_load = chan.advance_dropping().map(|t| (t, chan.generation)),
                         Removed::FromQueue => {}
                         Removed::NotFound => return Err("Essa música não está mais na fila".into()),
                     }
@@ -430,17 +506,20 @@ impl MusicManager {
         Ok(())
     }
 
-    /// Remove a fila do canal (canal vazio, canal excluído ou servidor desligando).
+    /// Canal de voz vazio: a música para e a fila é descartada (o histórico continua).
     pub fn clear(&self, channel_id: &str) {
-        let removed = self.channels.lock().unwrap().remove(channel_id);
-        if let Some(chan) = removed {
-            if !chan.is_idle() {
-                self.hub.to_guild(
-                    &chan.guild_id,
-                    "music:state",
-                    ChannelMusic { guild_id: chan.guild_id.clone(), ..Default::default() }.payload(channel_id, crate::now_ms()),
-                );
+        let was_playing = {
+            let mut channels = self.channels.lock().unwrap();
+            let Some(chan) = channels.get_mut(channel_id) else { return };
+            let was_playing = !chan.is_idle();
+            chan.stop();
+            if chan.history.is_empty() {
+                channels.remove(channel_id);
             }
+            was_playing
+        };
+        if was_playing {
+            self.broadcast(channel_id);
         }
     }
 }
@@ -511,6 +590,54 @@ mod tests {
         assert_eq!(c.queue.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["c"]);
         assert_eq!(c.remove("a"), Removed::Current);
         assert_eq!(c.remove("zzz"), Removed::NotFound);
+    }
+
+    #[test]
+    fn historico_voltar_e_recomecar() {
+        let mut c = chan(&["a", "b", "c"]);
+        c.advance();
+        c.start(0, None);
+        assert!(c.previous().is_none(), "nada tocou antes");
+        c.advance(); // a → histórico, toca b
+        c.start(20_000, None);
+        assert_eq!(c.history.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["a"]);
+        // Voltar: a toca de novo e b volta para o começo da fila.
+        assert_eq!(c.previous().unwrap().id, "a");
+        assert_eq!(c.current.as_ref().unwrap().started_at, None, "precisa carregar de novo");
+        assert_eq!(c.queue.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["b", "c"]);
+        assert!(c.history.is_empty());
+
+        // Recomeçar tocando e pausada.
+        c.start(50_000, None);
+        let g = c.generation;
+        assert!(c.restart(60_000));
+        assert_eq!(c.current.as_ref().unwrap().started_at, Some(60_000));
+        assert_ne!(c.generation, g, "invalida o fim agendado");
+        c.pause(65_000);
+        assert!(c.restart(70_000));
+        let p = c.current.as_ref().unwrap();
+        assert_eq!(p.started_at, p.paused_at, "pausada no começo");
+
+        // Removida ou com erro não entra no histórico.
+        assert_eq!(c.remove("a"), Removed::Current);
+        c.advance_dropping();
+        assert!(c.history.is_empty());
+    }
+
+    #[test]
+    fn historico_guarda_so_as_ultimas() {
+        let ids: Vec<String> = (0..40).map(|i| i.to_string()).collect();
+        let mut c = chan(&ids.iter().map(String::as_str).collect::<Vec<_>>());
+        for _ in 0..40 {
+            c.advance();
+        }
+        c.advance();
+        assert_eq!(c.history.len(), MAX_HISTORY);
+        assert_eq!(c.history.back().unwrap().id, "39");
+        assert_eq!(c.history.front().unwrap().id, "10");
+        c.stop();
+        assert_eq!(c.history.len(), MAX_HISTORY);
+        assert!(c.is_idle());
     }
 
     #[test]

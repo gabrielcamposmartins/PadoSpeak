@@ -93,6 +93,11 @@ impl Hub {
         (Arc::new(Self { state: Mutex::new(state), shutdown: CancellationToken::new() }), rx)
     }
 
+    /// Alguém está no canal de voz agora?
+    pub fn voice_has_people(&self, channel_id: &str) -> bool {
+        self.state.lock().unwrap().voice.get(channel_id).is_some_and(|v| !v.is_empty())
+    }
+
     /// Canal de voz (e guild) em que a conexão está.
     pub fn voice_channel_of(&self, conn_id: &str) -> Option<(String, String)> {
         let s = self.state.lock().unwrap();
@@ -532,7 +537,8 @@ impl Hub {
                 return err("Conteúdo inválido");
             }
             let edited_at = crate::now_ms();
-            if app.db.execute("UPDATE dm_messages SET content = ?1, edited_at = ?2 WHERE id = ?3", libsql::params![content, edited_at, message_id]).await.is_err() {
+            let sealed = app.db.cipher.seal(content);
+            if app.db.execute("UPDATE dm_messages SET content = ?1, edited_at = ?2 WHERE id = ?3", libsql::params![sealed, edited_at, message_id]).await.is_err() {
                 return err("Erro ao editar");
             }
             self.to_users(&users, "message:updated", json!({ "id": message_id, "channelId": dm_id, "content": content, "editedAt": edited_at }));
@@ -585,7 +591,7 @@ impl Hub {
                         .db
                         .execute(
                             "INSERT INTO dm_messages (id, dm_id, author_id, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                            libsql::params![msg.id.as_str(), dm.id.as_str(), user.id.as_str(), msg.content.as_str(), msg.created_at],
+                            libsql::params![msg.id.as_str(), dm.id.as_str(), user.id.as_str(), app.db.cipher.seal(&msg.content), msg.created_at],
                         )
                         .await;
                     if let Err(e) = res {
@@ -603,7 +609,7 @@ impl Hub {
                     .db
                     .execute(
                         "INSERT INTO messages (id, channel_id, author_id, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                        libsql::params![msg.id.as_str(), msg.channel_id.as_str(), user.id.as_str(), msg.content.as_str(), msg.created_at],
+                        libsql::params![msg.id.as_str(), msg.channel_id.as_str(), user.id.as_str(), app.db.cipher.seal(&msg.content), msg.created_at],
                     )
                     .await;
                 if let Err(e) = res {
@@ -643,7 +649,7 @@ impl Hub {
                     let edited_at = crate::now_ms();
                     if app
                         .db
-                        .execute("UPDATE messages SET content = ?1, edited_at = ?2 WHERE id = ?3", libsql::params![content.as_str(), edited_at, message_id.as_str()])
+                        .execute("UPDATE messages SET content = ?1, edited_at = ?2 WHERE id = ?3", libsql::params![app.db.cipher.seal(&content), edited_at, message_id.as_str()])
                         .await
                         .is_err()
                     {
@@ -795,7 +801,7 @@ impl Hub {
                 None
             }
 
-            "music:pause" | "music:resume" | "music:skip" | "music:remove" | "music:clear" => {
+            "music:pause" | "music:resume" | "music:skip" | "music:previous" | "music:restart" | "music:remove" | "music:clear" => {
                 let Some((channel_id, _)) = self.voice_channel_of(conn_id) else {
                     return err("Entre no canal de voz para controlar a música");
                 };

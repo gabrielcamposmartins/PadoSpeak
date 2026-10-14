@@ -9,7 +9,6 @@ import {
   UserCheck,
   Camera,
   Trash2,
-  Smile,
   Vibrate,
   BellOff,
   X,
@@ -25,12 +24,13 @@ import {
   serverAuthenticate,
 } from '../store.js';
 import { isDesktop } from '../lib/env.js';
-import { TEXT_COLORS } from './Emotes.jsx';
 import { ConnProvider, useConn } from './conn.jsx';
 import Avatar, { useUser, UserName, colorClass, colorStyle } from './Avatar.jsx';
 import LatencyChart from './LatencyChart.jsx';
 import { TitleBar } from './Aero.jsx';
-import { EmojiText, EmojiPicker, insertText } from './Emotes.jsx';
+import { FormattedText } from './Emotes.jsx';
+import FormatTools from './FormatTools.jsx';
+import { plain, visibleLength } from '../lib/text.js';
 
 const TITLES = {
   profile: 'Perfil',
@@ -98,7 +98,7 @@ function ColorChoice({ value, onChange, palette, label, defaultLabel = 'Padrão'
   );
 }
 
-function Modal({ children, onClose, wide, title }) {
+function Modal({ children, onClose, size, title }) {
   useEffect(() => {
     const onKey = (e) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', onKey);
@@ -106,7 +106,7 @@ function Modal({ children, onClose, wide, title }) {
   }, [onClose]);
   return (
     <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className={`modal${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
+      <div className={`modal${size ? ` ${size}` : ''}`} role="dialog" aria-modal="true" aria-label={title}>
         <TitleBar title={`PadoSpeak — ${title}`} onClose={onClose} />
         {children}
       </div>
@@ -167,7 +167,7 @@ function GuildModal({ close }) {
 
 function GuildForm({ close, me }) {
   const [tab, setTab] = useState('create');
-  const [name, setName] = useState(`Servidor de ${me.displayName}`);
+  const [name, setName] = useState(`Servidor de ${plain(me.displayName)}`);
   const [code, setCode] = useState('');
   const { busy, error, run } = useAction(
     () => (tab === 'create' ? useStore.getState().createGuild(name) : useStore.getState().joinGuild(code)),
@@ -414,137 +414,141 @@ function SettingsModal({ close }) {
             </>
           )}
         </p>
-        <div className="settings-sec">Aparência</div>
-        <div className="grid-2">
-          <label className="field">
-            <span>Tema</span>
-            <select
-              value={theme}
-              onChange={(e) => {
-                setTheme(e.target.value);
-                useStore.getState().setAppearance({ theme: e.target.value });
-              }}
-            >
-              <option value="light">Claro (Aero) — padrão</option>
-              <option value="dark">Escuro (Aero noturno)</option>
-              <option value="system">Igual ao sistema</option>
-            </select>
-          </label>
-          <div className="field">
-            <span>Cena do perfil</span>
-            <div className="scene-pick" role="radiogroup" aria-label="Cena do perfil">
-              {SCENES.map(([name, hint], i) => (
-                <button
-                  key={name}
-                  title={hint}
-                  type="button"
-                  role="radio"
-                  aria-checked={scene === i}
-                  className={`scene-swatch s${i}${scene === i ? ' on' : ''}`}
-                  onClick={() => {
-                    setScene(i);
-                    useStore.getState().setAppearance({ scene: i });
-                  }}
-                >
-                  {name}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-        <div className="field">
-          <span>Cor do sistema</span>
-          <ColorChoice
-            label="Cor do sistema"
-            value={accent}
-            palette={ACCENTS}
-            defaultLabel="Aero"
-            onChange={(hex) => useStore.getState().setAppearance({ accent: hex })}
-          />
-          <small>Seleções, abas, links e o brilho dos botões. A cena “Sistema” pinta o céu do topo com ela.</small>
-        </div>
-        <div className="settings-sec">Voz e áudio</div>
-        <DeviceSelect {...props} k="mic" kind="audioinput" label="Microfone" />
-        <label className="checkbox">
-          <input type="checkbox" checked={rnnoise} onChange={(e) => setRnnoise(e.target.checked)} />
-          <span>
-            Supressão de ruído por IA (RNNoise)
-            <small style={{ display: 'block', color: 'var(--muted)', fontSize: 12 }}>
-              Remove teclado, ventilador e barulho de fundo do seu microfone.
-            </small>
-          </span>
-        </label>
-        <label className="checkbox">
-          <input type="checkbox" checked={sounds} onChange={(e) => setSounds(e.target.checked)} />
-          <span>
-            Sons de chamada
-            <small style={{ display: 'block', color: 'var(--muted)', fontSize: 12 }}>
-              Entradas e saídas no canal de voz, transmissões, mensagens diretas e toque de chamada.
-            </small>
-          </span>
-        </label>
-        {canPickOutput && <DeviceSelect {...props} k="output" kind="audiooutput" label="Saída de áudio" />}
-        <DeviceSelect {...props} k="camera" kind="videoinput" label="Câmera" />
-        <div className="settings-sec">Notificações</div>
-        <label className="checkbox">
-          <input type="checkbox" checked={repeatAlerts} onChange={(e) => setRepeatAlerts(e.target.checked)} />
-          <span>
-            Receber notificações repetidas
-            <small className="check-hint">
-              Desligado: se um amigo ficar online várias vezes seguidas (ou alternar entre offline e online), você
-              recebe no máximo um aviso dessa pessoa a cada 10 minutos.
-            </small>
-          </span>
-        </label>
-        <div className="settings-sec">Chamar atenção</div>
-        <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={nudge?.allowNudges ?? true}
-            disabled={!nudge}
-            onChange={(e) => {
-              for (const c of connRegistry.values()) if (c.getState().me) c.getState().setAllowNudges(e.target.checked);
-            }}
-          />
-          <span>
-            Permitir que chamem a minha atenção
-            <small className="check-hint">
-              A janela treme, pisca laranja na barra de tarefas e toca um som. Cada pessoa pode chamar até 3 vezes por
-              minuto.
-            </small>
-          </span>
-        </label>
-        {nudge?.allowNudges !== false && (
-          <div className="block-list">
-            <div className="block-title">Não aceitar de ({nudge?.nudgeBlocks.length || 0})</div>
-            {nudge?.nudgeBlocks.length ? (
-              nudge.nudgeBlocks.map((u) => (
-                <div className="block-row" key={u.id}>
-                  <Avatar user={u} size={22} frame={false} />
-                  <span className="nm">
-                    <EmojiText text={u.displayName} /> <small>@{u.username}</small>
-                  </span>
+        <div className="settings-cols">
+          <section className="settings-col">
+            <div className="settings-sec">Aparência</div>
+            <label className="field">
+              <span>Tema</span>
+              <select
+                value={theme}
+                onChange={(e) => {
+                  setTheme(e.target.value);
+                  useStore.getState().setAppearance({ theme: e.target.value });
+                }}
+              >
+                <option value="light">Claro (Aero) — padrão</option>
+                <option value="dark">Escuro (Aero noturno)</option>
+                <option value="system">Igual ao sistema</option>
+              </select>
+            </label>
+            <div className="field">
+              <span>Cena do perfil</span>
+              <div className="scene-pick" role="radiogroup" aria-label="Cena do perfil">
+                {SCENES.map(([name, hint], i) => (
                   <button
+                    key={name}
+                    title={hint}
                     type="button"
-                    className="gloss mini"
-                    title="Voltar a aceitar"
-                    aria-label={`Voltar a aceitar de ${u.displayName}`}
-                    onClick={() => prim.getState().setNudgeBlocked(u.id, false)}
+                    role="radio"
+                    aria-checked={scene === i}
+                    className={`scene-swatch s${i}${scene === i ? ' on' : ''}`}
+                    onClick={() => {
+                      setScene(i);
+                      useStore.getState().setAppearance({ scene: i });
+                    }}
                   >
-                    <X size={13} />
+                    {name}
                   </button>
-                </div>
-              ))
-            ) : (
-              <p className="kv">Ninguém bloqueado. Para bloquear alguém, abra o perfil da pessoa.</p>
+                ))}
+              </div>
+            </div>
+            <div className="field">
+              <span>Cor do sistema</span>
+              <ColorChoice
+                label="Cor do sistema"
+                value={accent}
+                palette={ACCENTS}
+                defaultLabel="Aero"
+                onChange={(hex) => useStore.getState().setAppearance({ accent: hex })}
+              />
+              <small>Seleções, abas, links e o brilho dos botões. A cena “Sistema” pinta o céu do topo com ela.</small>
+            </div>
+            <div className="settings-sec">Chamar atenção</div>
+            <label className="checkbox">
+              <input
+                type="checkbox"
+                checked={nudge?.allowNudges ?? true}
+                disabled={!nudge}
+                onChange={(e) => {
+                  for (const c of connRegistry.values()) if (c.getState().me) c.getState().setAllowNudges(e.target.checked);
+                }}
+              />
+              <span>
+                Permitir que chamem a minha atenção
+                <small className="check-hint">
+                  A janela treme, pisca laranja na barra de tarefas e toca um som. Cada pessoa pode chamar até 3 vezes por
+                  minuto.
+                </small>
+              </span>
+            </label>
+            {nudge?.allowNudges !== false && (
+              <div className="block-list">
+                <div className="block-title">Não aceitar de ({nudge?.nudgeBlocks.length || 0})</div>
+                {nudge?.nudgeBlocks.length ? (
+                  nudge.nudgeBlocks.map((u) => (
+                    <div className="block-row" key={u.id}>
+                      <Avatar user={u} size={22} frame={false} />
+                      <span className="nm">
+                        <FormattedText text={u.displayName} /> <small>@{u.username}</small>
+                      </span>
+                      <button
+                        type="button"
+                        className="gloss mini"
+                        title="Voltar a aceitar"
+                        aria-label={`Voltar a aceitar de ${plain(u.displayName)}`}
+                        onClick={() => prim.getState().setNudgeBlocked(u.id, false)}
+                      >
+                        <X size={13} />
+                      </button>
+                    </div>
+                  ))
+                ) : (
+                  <p className="kv">Ninguém bloqueado. Para bloquear alguém, abra o perfil da pessoa.</p>
+                )}
+              </div>
             )}
-          </div>
-        )}
-        {needsPermission && (
-          <p className="kv">
-            Os nomes dos dispositivos aparecem depois que você permitir o acesso (entre em um canal de voz).
-          </p>
-        )}
+          </section>
+          <section className="settings-col">
+            <div className="settings-sec">Voz e áudio</div>
+            <DeviceSelect {...props} k="mic" kind="audioinput" label="Microfone" />
+            <label className="checkbox">
+              <input type="checkbox" checked={rnnoise} onChange={(e) => setRnnoise(e.target.checked)} />
+              <span>
+                Supressão de ruído por IA (RNNoise)
+                <small style={{ display: 'block', color: 'var(--muted)', fontSize: 12 }}>
+                  Remove teclado, ventilador e barulho de fundo do seu microfone.
+                </small>
+              </span>
+            </label>
+            <label className="checkbox">
+              <input type="checkbox" checked={sounds} onChange={(e) => setSounds(e.target.checked)} />
+              <span>
+                Sons de chamada
+                <small style={{ display: 'block', color: 'var(--muted)', fontSize: 12 }}>
+                  Entradas e saídas no canal de voz, transmissões, mensagens diretas e toque de chamada.
+                </small>
+              </span>
+            </label>
+            {canPickOutput && <DeviceSelect {...props} k="output" kind="audiooutput" label="Saída de áudio" />}
+            <DeviceSelect {...props} k="camera" kind="videoinput" label="Câmera" />
+            {needsPermission && (
+              <p className="kv">
+                Os nomes dos dispositivos aparecem depois que você permitir o acesso (entre em um canal de voz).
+              </p>
+            )}
+            <div className="settings-sec">Notificações</div>
+            <label className="checkbox">
+              <input type="checkbox" checked={repeatAlerts} onChange={(e) => setRepeatAlerts(e.target.checked)} />
+              <span>
+                Receber notificações repetidas
+                <small className="check-hint">
+                  Desligado: se um amigo ficar online várias vezes seguidas (ou alternar entre offline e online), você
+                  recebe no máximo um aviso dessa pessoa a cada 10 minutos.
+                </small>
+              </span>
+            </label>
+          </section>
+        </div>
       </div>
       <div className="modal-foot">
         <button
@@ -694,7 +698,7 @@ function ProfileCard({ close, userId }) {
           <section>
             <h4>Sobre mim</h4>
             <p className={colorClass(user.bioColor, 'profile-bio')} style={colorStyle(user.bioColor)}>
-              <EmojiText text={profile.bio} />
+              <FormattedText text={profile.bio} />
             </p>
           </section>
         )}
@@ -773,73 +777,54 @@ async function prepareAvatar(file) {
   return webp?.type === 'image/webp' ? webp : blob('image/png');
 }
 
-/** Campo de texto com botão de emoticons (nome e mensagem pessoal). */
-function EmojiField({ id, label, value, setValue, maxLength, multiline, placeholder, required, hint }) {
-  const [open, setOpen] = useState(false);
+/**
+ * Campo do perfil (nome e mensagem pessoal) com a mesma barra de formatação da caixa de mensagem:
+ * a cor, o negrito etc. ficam como tags no próprio texto. `max` conta só o que aparece na tela.
+ */
+function ProfileField({ id, label, value, setValue, max, maxRaw, multiline, placeholder, required, hint }) {
   const ref = useRef(null);
-  const btn = useRef(null);
   const Input = multiline ? 'textarea' : 'input';
+  const set = (next) => {
+    if (visibleLength(next) > max) return useStore.getState().notify(`Esse campo aceita até ${max} caracteres`, 'info');
+    setValue(next);
+  };
   return (
-    <div className="field">
+    <div className="field profile-field">
       <label htmlFor={id}>
         <span>{label}</span>
       </label>
-      <div className="emoji-field">
-        <Input
-          id={id}
-          ref={ref}
-          rows={multiline ? 3 : undefined}
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          maxLength={maxLength}
-          placeholder={placeholder}
-          required={required}
-          style={multiline ? { resize: 'none' } : undefined}
-        />
-        <span className="tool-wrap">
-          <button
-            ref={btn}
-            type="button"
-            className={`gloss tool-sq${open ? ' pressed' : ''}`}
-            title="Emoticons"
-            aria-label="Inserir emoticon"
-            onClick={() => setOpen((v) => !v)}
-          >
-            <Smile size={15} className="ico-gold" />
-          </button>
-          {open && (
-            <EmojiPicker
-              anchorRef={btn}
-              align="right"
-              onClose={() => setOpen(false)}
-              onPick={(code) => {
-                setOpen(false);
-                if (value.length + code.length > maxLength)
-                  return useStore.getState().notify('Não cabe mais nenhum emoticon nesse campo', 'info');
-                insertText(ref.current, value, setValue, code);
-              }}
-            />
-          )}
-        </span>
-      </div>
+      <FormatTools inputRef={ref} text={value} setText={set} maxRaw={maxRaw} label={`Formatação: ${label}`} />
+      <Input
+        id={id}
+        ref={ref}
+        rows={multiline ? 3 : undefined}
+        value={value}
+        onChange={(e) => set(e.target.value)}
+        maxLength={maxRaw}
+        placeholder={placeholder}
+        required={required}
+        style={multiline ? { resize: 'none' } : undefined}
+      />
       {hint}
     </div>
   );
 }
 
+/** A cor antiga do perfil (escolhida à parte) vira tag no próprio texto. */
+const withLegacyColor = (text, color) =>
+  color && text && !text.includes('[cor=') ? `[cor=${color}]${text}[/cor]` : text;
+
 function EditProfileModal({ close }) {
   const prim = primaryConn();
   const me = prim((s) => s.me);
   const base = prim((s) => s.baseUrl);
-  const [name, setName] = useState(me.displayName);
+  const [name, setName] = useState(() => withLegacyColor(me.displayName, me.nameColor));
   const [bio, setBio] = useState('');
-  const [nameColor, setNameColor] = useState(me.nameColor || null);
-  const [bioColor, setBioColor] = useState(me.bioColor || null);
   const [loaded, setLoaded] = useState(false);
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef(null);
   const { busy, error, run } = useAction(async () => {
-    await prim.getState().updateProfile({ displayName: name, bio, nameColor: nameColor || '', bioColor: bioColor || '' });
+    await prim.getState().updateProfile({ displayName: name, bio, nameColor: '', bioColor: '' });
     syncProfileEverywhere();
   }, close);
 
@@ -848,7 +833,7 @@ function EditProfileModal({ close }) {
       .getState()
       .fetchProfile(me.id)
       .then((p) => {
-        setBio(p.bio);
+        setBio(withLegacyColor(p.bio, p.bioColor ?? me.bioColor));
         setLoaded(true);
       })
       .catch(() => setLoaded(true));
@@ -912,37 +897,39 @@ function EditProfileModal({ close }) {
           </div>
           <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={pick} />
         </div>
-        <EmojiField id="pf-name" label="Nome de exibição" value={name} setValue={setName} maxLength={32} required />
-        <div className="field">
-          <span>Cor do nome</span>
-          <ColorChoice label="Cor do nome" value={nameColor} palette={TEXT_COLORS} onChange={setNameColor} />
-        </div>
-        <EmojiField
+        <ProfileField
+          id="pf-name"
+          label="Nome de exibição"
+          value={name}
+          setValue={setName}
+          max={32}
+          maxRaw={128}
+          required
+          hint={<small>{32 - visibleLength(name)} caracteres restantes</small>}
+        />
+        <ProfileField
           id="pf-bio"
           label="Sobre mim"
           multiline
           value={bio}
           setValue={setBio}
-          maxLength={190}
+          max={190}
+          maxRaw={600}
           placeholder={loaded ? 'Conte um pouco sobre você' : 'Carregando…'}
           hint={
             <small>
-              {190 - bio.length} caracteres restantes · @{me.username}
+              {190 - visibleLength(bio)} caracteres restantes · @{me.username}
             </small>
           }
         />
-        <div className="field">
-          <span>Cor da mensagem pessoal</span>
-          <ColorChoice label="Cor da mensagem pessoal" value={bioColor} palette={TEXT_COLORS} onChange={setBioColor} />
-        </div>
         <div className="profile-preview">
           <span className="preview-label">Prévia</span>
-          <b className={colorClass(nameColor)} style={colorStyle(nameColor)}>
-            <EmojiText text={name || me.username} size={18} />
+          <b>
+            <FormattedText text={plain(name).trim() ? name : me.username} size={18} />
           </b>
           {bio && (
-            <span className={colorClass(bioColor, 'pm')} style={colorStyle(bioColor)}>
-              <EmojiText text={bio} />
+            <span className="pm">
+              <FormattedText text={bio} />
             </span>
           )}
         </div>
@@ -966,7 +953,7 @@ function NewDmModal({ close }) {
   const online = useStore((s) => s.online);
   const [q, setQ] = useState('');
   const list = friends.filter((f) =>
-    `${f.user.displayName} ${f.user.username}`.toLowerCase().includes(q.trim().toLowerCase()),
+    `${plain(f.user.displayName)} ${f.user.username}`.toLowerCase().includes(q.trim().toLowerCase()),
   );
   return (
     <>
@@ -988,7 +975,7 @@ function NewDmModal({ close }) {
               <Avatar user={f.user} size={32} online={Boolean(online[f.user.id])} />
               <span>
                 <b>
-                  <EmojiText text={f.user.displayName} />
+                  <FormattedText text={f.user.displayName} />
                 </b>{' '}
                 <small>@{f.user.username}</small>
               </span>
@@ -1066,6 +1053,9 @@ function ServerLoginModal({ close }) {
   );
 }
 
+/** Janelas mais largas que o padrão. */
+const SIZES = { diagnostics: 'wide', settings: 'settings' };
+
 const MODALS = {
   serverLogin: ServerLoginModal,
   profile: ProfileModal,
@@ -1085,7 +1075,7 @@ export default function Modals() {
   if (!modal) return null;
   const Component = MODALS[modal.type];
   return (
-    <Modal onClose={close} wide={modal.type === 'diagnostics'} title={TITLES[modal.type]}>
+    <Modal onClose={close} size={SIZES[modal.type]} title={TITLES[modal.type]}>
       <Component key={modal.userId || modal.type} {...modal} close={close} />
     </Modal>
   );

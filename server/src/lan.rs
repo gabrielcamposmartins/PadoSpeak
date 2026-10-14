@@ -10,7 +10,7 @@
 //! não consegue se passar por ele. A mídia das chamadas vai direto entre os dois PCs (WebRTC).
 use crate::api::{ApiError, AuthUser};
 use crate::host::App;
-use crate::models::{user_from_row, valid_color, User, USER_COLS};
+use crate::models::{fit_formatted, user_from_row, valid_color, visible_len, User, BIO_MAX, BIO_RAW_MAX, NAME_MAX, NAME_RAW_MAX, USER_COLS};
 use axum::extract::{ConnectInfo, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -355,9 +355,10 @@ async fn session(
     if id.is_empty() || id.len() > 64 || body.key.len() < 16 {
         return Err(err(StatusCode::BAD_REQUEST, "Perfil inválido"));
     }
-    let display_name: String = body.display_name.trim().chars().take(32).collect();
-    let display_name = if display_name.is_empty() { body.username.clone() } else { display_name };
-    let bio: String = body.bio.trim().chars().take(190).collect();
+    let display_name = fit_formatted(&body.display_name, NAME_MAX, NAME_RAW_MAX)
+        .filter(|d| visible_len(d) > 0)
+        .unwrap_or_else(|| body.username.clone());
+    let bio = fit_formatted(&body.bio, BIO_MAX, BIO_RAW_MAX).unwrap_or_default();
     let avatar_color = clean_color(Some(body.avatar_color)).unwrap_or_else(|| "#3a8ee0".into());
     let (name_color, bio_color) = (clean_color(body.name_color), clean_color(body.bio_color));
 

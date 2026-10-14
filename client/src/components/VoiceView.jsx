@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { useStore } from '../store.js';
 import { useConn } from './conn.jsx';
+import { plain } from '../lib/text.js';
 import { SCREEN_PRESETS } from '../lib/voice.js';
 import Avatar from './Avatar.jsx';
 import { useServerPing } from './hooks.js';
@@ -125,17 +126,17 @@ function Tile({ tile, focused, onFocus }) {
           {isScreen
             ? tile.self
               ? 'Sua tela'
-              : `Tela de ${tile.user?.displayName || '…'}`
+              : `Tela de ${plain(tile.user?.displayName) || '…'}`
             : tile.self
               ? 'Você'
-              : tile.user?.displayName || 'Conectando…'}
+              : plain(tile.user?.displayName) || 'Conectando…'}
         </span>
       </span>
       <div className="tile-tools" onClick={(e) => e.stopPropagation()}>
         {!tile.self && !isScreen && (
           <label className="tool-pill" title="Volume deste usuário">
             <Volume2 size={14} />
-            <span className="sr-only">Volume de {tile.user?.displayName}</span>
+            <span className="sr-only">Volume de {plain(tile.user?.displayName)}</span>
             <input
               type="range"
               min="0"

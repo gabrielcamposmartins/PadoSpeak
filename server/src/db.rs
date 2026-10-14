@@ -5,6 +5,9 @@
 //! - `turso dev` (sqld local): `DATABASE_URL=http://127.0.0.1:8080`
 //! - Turso Cloud:             `DATABASE_URL=libsql://<db>.turso.io` + `TURSO_AUTH_TOKEN`
 //! - Réplica embarcada:       `TURSO_SYNC_URL=libsql://...` + `TURSO_AUTH_TOKEN` (arquivo local sincronizado)
+//!
+//! O texto das mensagens é guardado cifrado (veja `crypto.rs`).
+use crate::crypto::Cipher;
 use libsql::{params::IntoParams, Builder, Connection, Database, Row};
 use serde::Serialize;
 use std::path::Path;
@@ -18,6 +21,8 @@ pub type DbResult<T> = Result<T, libsql::Error>;
 pub struct DbInfo {
     pub mode: &'static str,
     pub location: String,
+    /// Problema com a chave das mensagens (aparece no log e no painel).
+    pub key_warning: Option<String>,
 }
 
 #[derive(Clone)]
@@ -25,6 +30,8 @@ pub struct Db {
     database: Arc<Database>,
     local: bool,
     pub info: DbInfo,
+    /// Cifra o texto das mensagens antes de gravar e abre ao ler.
+    pub cipher: Cipher,
 }
 
 const MIGRATIONS: &str = r#"
@@ -182,26 +189,67 @@ impl Db {
                 .read_your_writes(true)
                 .build()
                 .await?;
-            (db, false, DbInfo { mode: "embedded-replica", location: format!("{local_path} ⇄ {sync}") })
+            (db, false, DbInfo { mode: "embedded-replica", location: format!("{local_path} ⇄ {sync}"), key_warning: None })
         } else if let Some(u) = url.filter(|u| !u.starts_with("file:")) {
             let db = Builder::new_remote(u.clone(), token).build().await?;
-            (db, false, DbInfo { mode: "remote", location: u })
+            (db, false, DbInfo { mode: "remote", location: u, key_warning: None })
         } else {
             if let Some(parent) = Path::new(&local_path).parent() {
                 std::fs::create_dir_all(parent)?;
             }
             let db = Builder::new_local(&local_path).build().await?;
-            (db, true, DbInfo { mode: "local", location: local_path })
+            (db, true, DbInfo { mode: "local", location: local_path, key_warning: None })
         };
 
-        let db = Db { database: Arc::new(database), local, info };
+        let cipher = Cipher::load(data_dir)?;
+        let mut db = Db { database: Arc::new(database), local, info, cipher };
         let conn = db.conn().await?;
         if db.local {
             conn.query("PRAGMA journal_mode = WAL", ()).await?;
         }
         conn.execute_batch(MIGRATIONS).await?;
         db.migrate().await?;
+        db.info.key_warning = db.encrypt_legacy().await?;
         Ok(db)
+    }
+
+    /// Cifra as mensagens gravadas antes da criptografia, sem perder nenhuma (em lotes; pode ser
+    /// interrompido e retomado). Devolve um aviso se a chave não for a mesma das mensagens já cifradas.
+    async fn encrypt_legacy(&self) -> Result<Option<String>, crate::BoxError> {
+        let fingerprint = &self.cipher.fingerprint;
+        let warning = match self.get_setting("message_key").await? {
+            Some(saved) if &saved != fingerprint => Some(format!(
+                "A chave das mensagens mudou (antes {saved}, agora {fingerprint}): as mensagens cifradas com a chave \
+                 antiga não podem ser lidas. Restaure a chave antiga (MESSAGE_KEY ou chave-mensagens.key)."
+            )),
+            Some(_) => None,
+            None => {
+                self.set_setting("message_key", fingerprint).await?;
+                None
+            }
+        };
+        for table in ["messages", "dm_messages"] {
+            loop {
+                let pending = self
+                    .query_all(
+                        &format!("SELECT id, content FROM {table} WHERE content NOT LIKE 'enc1:%' LIMIT 500"),
+                        (),
+                        |r| Ok((r.get::<String>(0)?, r.get::<String>(1)?)),
+                    )
+                    .await?;
+                if pending.is_empty() {
+                    break;
+                }
+                let conn = self.conn().await?;
+                let tx = conn.transaction().await?;
+                for (id, content) in &pending {
+                    tx.execute(&format!("UPDATE {table} SET content = ?1 WHERE id = ?2"), [self.cipher.seal(content).as_str(), id.as_str()])
+                        .await?;
+                }
+                tx.commit().await?;
+            }
+        }
+        Ok(warning)
     }
 
     /// Migrações incrementais (ALTER TABLE etc.), controladas por `settings.schema_version`.

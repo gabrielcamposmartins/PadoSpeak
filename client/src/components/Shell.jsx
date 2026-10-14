@@ -34,7 +34,8 @@ import ChatView from './ChatView.jsx';
 import VoiceView from './VoiceView.jsx';
 import { useServerPing } from './hooks.js';
 import MusicPanel from './MusicPanel.jsx';
-import { EmojiText, Floating } from './Emotes.jsx';
+import { FormattedText, Floating } from './Emotes.jsx';
+import { plain } from '../lib/text.js';
 
 const openProfile = (userId) => useStore.getState().openModal({ type: 'profile', userId });
 
@@ -137,7 +138,7 @@ function ProfileBar() {
       ? 'Reconectando ao perfil local…'
       : 'Reconectando ao servidor…'
     : dm
-      ? `${statusLabel} · em chamada com ${dm.recipient.displayName}`
+      ? `${statusLabel} · em chamada com ${plain(dm.recipient.displayName)}`
       : channel
         ? `${voice.screen ? `${statusLabel} · ao vivo` : statusLabel} · em ${channel.name}`
         : statusLabel;
@@ -150,7 +151,7 @@ function ProfileBar() {
         <div className="pb-name">
           <button className="pb-me" onClick={() => openModal({ type: 'editProfile' })} title="Editar perfil">
             <span className={colorClass(me.nameColor)} style={colorStyle(me.nameColor)}>
-              <EmojiText text={me.displayName} size={20} />
+              <FormattedText text={me.displayName} size={20} />
             </span>
           </button>
           <StatusMenu status={orb} label={where} />
@@ -158,7 +159,7 @@ function ProfileBar() {
         <button className="pb-bio" onClick={() => openModal({ type: 'editProfile' })} title="Editar mensagem pessoal">
           {me.bio ? (
             <span className={colorClass(me.bioColor)} style={colorStyle(me.bioColor)}>
-              <EmojiText text={me.bio} />
+              <FormattedText text={me.bio} />
             </span>
           ) : (
             'Escreva uma mensagem pessoal'
@@ -468,7 +469,7 @@ export function VoiceStatus() {
   const { showVoice, leaveVoice, toggleCamera, toggleScreen, openModal } = vc.getState();
   const connected = voice.peers.every((p) => p.connectionState === 'connected');
   const calling = voice.dm && voice.peers.length === 0;
-  const where = dm ? `Chamada com ${dm.recipient.displayName}` : `${channel?.name} · ${guild?.name}`;
+  const where = dm ? `Chamada com ${plain(dm.recipient.displayName)}` : `${channel?.name} · ${guild?.name}`;
   return (
     <div className={`voice-status${connected && !calling ? '' : ' pending'}`}>
       <button className="conn" onClick={showVoice} title="Abrir chamada">
@@ -533,7 +534,7 @@ function MemberRow({ m, isOn, ownerId }) {
         </span>
         {isOn && (fresh.bio || activity) && (
           <span className="pm">
-            <EmojiText text={fresh.bio || activity} size={14} />
+            <FormattedText text={fresh.bio || activity} size={14} />
           </span>
         )}
       </span>

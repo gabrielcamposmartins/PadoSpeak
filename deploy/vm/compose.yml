@@ -1,0 +1,54 @@
+# Servidor de comunidade do PadoSpeak na VM (https://padospeak.padoru.org), instalado em /srv/padospeak.
+#
+#   docker compose pull && docker compose up -d        (ou: bash deploy-vm.sh)
+#
+# - server: o padospeak-server com o cliente web embutido, em HTTP na rede "edge"; o TLS termina no
+#   nginx de borda (/srv/edge, veja padospeak.conf).
+# - db: banco Turso/libSQL (sqld) próprio. Não usa o sqld do GBOT porque lá já existe uma tabela
+#   "users" (do bot) e o sqld dele não tem namespaces: as tabelas do PadoSpeak colidiriam.
+name: padospeak
+
+services:
+  server:
+    image: us-central1-docker.pkg.dev/gen-lang-client-0425635607/padospeak/server:latest
+    # o nginx de borda aponta para este nome; não mude sem mudar o padospeak.conf
+    container_name: padospeak-server
+    restart: unless-stopped
+    command: ["padospeak-server", "--headless"]
+    # MESSAGE_KEY: chave da criptografia das mensagens (gerada pelo deploy-vm.sh; só o root lê).
+    # Sem ela, o banco sozinho não revela as conversas. Guarde uma cópia: sem a chave, as mensagens se perdem.
+    env_file: /etc/padospeak/server.env
+    environment:
+      SERVER_NAME: PadoSpeak
+      PORT: "3000"
+      DATABASE_URL: http://padospeak-db:8080
+    volumes:
+      # yt-dlp atualizado, cookies da música e arquivos do servidor
+      - padospeak-data:/data
+    networks: [edge, padospeak]
+    depends_on:
+      db:
+        condition: service_started
+    mem_limit: 256m
+    stop_grace_period: 15s
+
+  db:
+    image: ghcr.io/tursodatabase/libsql-server:latest
+    container_name: padospeak-db
+    restart: unless-stopped
+    environment:
+      SQLD_NODE: primary
+    volumes:
+      - padospeak-db:/var/lib/sqld
+    # só o servidor enxerga o banco
+    networks: [padospeak]
+    mem_limit: 128m
+
+volumes:
+  padospeak-data:
+  padospeak-db:
+
+networks:
+  padospeak:
+  edge:
+    external: true

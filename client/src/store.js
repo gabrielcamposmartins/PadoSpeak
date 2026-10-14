@@ -6,6 +6,7 @@ import { MusicPlayer } from './lib/music.js';
 import { isPanel, isDesktop, localNodeUrl } from './lib/env.js';
 import { playSound, loopSound, setSoundsEnabled } from './lib/sounds.js';
 import { shakeWindow, flashTaskbar } from './lib/attention.js';
+import { systemNotify, showAppWindow } from './lib/background.js';
 
 /*
  * Conexões
@@ -167,6 +168,8 @@ export function createConnStore({ key, kind, base, primary = false }) {
       if (!primary) return notify(text, kind2, user);
       const id = Date.now() + Math.random();
       set({ toast: { text, kind: kind2, user, base: base || baseUrl, id } });
+      // App na bandeja ou minimizado: também avisa pelo Windows.
+      if (kind2 === 'presence') systemNotify(text);
       setTimeout(() => {
         if (get().toast?.id === id) set({ toast: null });
       }, 4500);
@@ -430,6 +433,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
       rt.on('call:ring', ({ dmId, from }) => {
         if (get().voice?.channelId === dmId) return;
         set({ incomingCall: { dmId, from } });
+        showAppWindow();
         if (!get().dms.some((d) => d.id === dmId)) get().loadDms();
       });
       rt.on('call:declined', ({ dmId, by }) => {
@@ -488,7 +492,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
       rt.on('music:state', (m) =>
         set((s) => {
           const music = { ...s.music };
-          if (m.current || m.queue.length) music[m.channelId] = m;
+          if (m.current || m.queue.length || m.history?.length) music[m.channelId] = m;
           else delete music[m.channelId];
           // O atraso da rede só faz o offset parecer menor; o maior observado é o mais fiel.
           return { music, serverOffset: Math.max(s.serverOffset, m.serverTime - Date.now()) };

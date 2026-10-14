@@ -1,4 +1,5 @@
 import { suppressNoise } from './noise.js';
+import { plain } from './text.js';
 
 // Voz, câmera e compartilhamento de tela via WebRTC em malha (P2P), com "perfect negotiation".
 // O servidor Rust só repassa a sinalização (oferta/resposta/ICE) entre quem está no mesmo canal.
@@ -620,7 +621,7 @@ export class VoiceClient {
     const pong = await this.rt.request('ping', {}, 3000);
     const sample = { t: Date.now(), server: pong?.error ? null : Math.round(performance.now() - t0), peers: {} };
     for (const p of this.peers.values()) {
-      if (p.info.user) this.peerNames.set(p.id, p.info.user.displayName);
+      if (p.info.user) this.peerNames.set(p.id, plain(p.info.user.displayName));
       // Cor por pessoa, atribuída na primeira aparição e nunca reaproveitada (slot 0 = servidor).
       if (!this.peerSlots.has(p.id)) this.peerSlots.set(p.id, this.peerSlots.size + 1);
       sample.peers[p.id] = p.stats?.path?.rttMs ?? null;

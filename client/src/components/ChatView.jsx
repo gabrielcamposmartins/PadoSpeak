@@ -5,20 +5,15 @@ import {
   Trash2,
   Send,
   PenLine,
-  Bold,
-  Italic,
-  Underline,
-  Strikethrough,
-  Smile,
   Vibrate,
-  Baseline,
   Sticker,
 } from 'lucide-react';
 import { useStore, sendSticker } from '../store.js';
 import { StickerPicker, StickerView, parseSticker } from './Stickers.jsx';
+import FormatTools from './FormatTools.jsx';
 import { useConn, useConnKey } from './conn.jsx';
 import Avatar, { UserName, Orb, usePresence, useUser, colorClass, colorStyle } from './Avatar.jsx';
-import { EmojiText, RichText, EmojiPicker, ColorPicker, editField, insertText } from './Emotes.jsx';
+import { RichText, FormattedText, plain } from './Emotes.jsx';
 
 /** Abre o perfil de alguém desta conexão (servidor ou PC da rede). */
 function useOpenProfile() {
@@ -48,8 +43,8 @@ function dayLabel(ts) {
 function Notice({ n, dm, name }) {
   let text;
   if (n.kind === 'nudge-in') text = <><UserName user={n.author} className="author" /> chamou a sua atenção!</>;
-  else if (dm && n.delivered) text = <>Você chamou a atenção de <EmojiText text={name} />.</>;
-  else if (dm) text = <><EmojiText text={name} /> não está aceitando chamar atenção agora.</>;
+  else if (dm && n.delivered) text = <>Você chamou a atenção de <FormattedText text={name} />.</>;
+  else if (dm) text = <><FormattedText text={name} /> não está aceitando chamar atenção agora.</>;
   else if (n.delivered) text = `Você chamou a atenção de ${n.delivered} ${n.delivered === 1 ? 'pessoa' : 'pessoas'} aqui.`;
   else text = 'Você chamou a atenção, mas ninguém aqui está recebendo agora.';
   return (
@@ -63,91 +58,30 @@ function Notice({ n, dm, name }) {
 
 /** Barra acima da caixa de texto: formatação, cor, emoticons e chamar atenção. */
 function ComposerTools({ inputRef, text, setText, channelId }) {
-  const [open, setOpen] = useState(null); // 'emoji' | 'color'
+  const [open, setOpen] = useState(false);
   const useC = useConn();
   const connKey = useConnKey();
-  const colorBtn = useRef(null);
-  const emojiBtn = useRef(null);
   const stickerBtn = useRef(null);
-  const wrap = (before, after, placeholder) => editField(inputRef.current, text, setText, before, after, placeholder);
-  const tools = [
-    [Bold, 'Negrito', () => wrap('**', '**', 'negrito')],
-    [Italic, 'Itálico', () => wrap('*', '*', 'itálico')],
-    [Underline, 'Sublinhado', () => wrap('__', '__', 'sublinhado')],
-    [Strikethrough, 'Riscado', () => wrap('~~', '~~', 'riscado')],
-  ];
   return (
-    <div className="composer-tools" role="toolbar" aria-label="Opções de texto">
-      {tools.map(([Icon, label, fn]) => (
-        <button key={label} type="button" className="gloss tool-sq" title={label} aria-label={label} onClick={fn}>
-          <Icon size={15} />
-        </button>
-      ))}
-      <span className="tool-wrap">
-        <button
-          ref={colorBtn}
-          type="button"
-          className={`gloss tool-sq${open === 'color' ? ' pressed' : ''}`}
-          title="Cor do texto"
-          aria-label="Cor do texto"
-          aria-expanded={open === 'color'}
-          onClick={() => setOpen(open === 'color' ? null : 'color')}
-        >
-          <Baseline size={15} className="ico-color" />
-        </button>
-        {open === 'color' && (
-          <ColorPicker
-            anchorRef={colorBtn}
-            onClose={() => setOpen(null)}
-            onPick={(hex) => {
-              setOpen(null);
-              wrap(`[cor=${hex}]`, '[/cor]', 'texto colorido');
-            }}
-          />
-        )}
-      </span>
-      <span className="tool-sep" />
-      <span className="tool-wrap">
-        <button
-          ref={emojiBtn}
-          type="button"
-          className={`gloss tool-sq${open === 'emoji' ? ' pressed' : ''}`}
-          title="Emoticons"
-          aria-label="Emoticons"
-          aria-expanded={open === 'emoji'}
-          onClick={() => setOpen(open === 'emoji' ? null : 'emoji')}
-        >
-          <Smile size={15} className="ico-gold" />
-        </button>
-        {open === 'emoji' && (
-          <EmojiPicker
-            anchorRef={emojiBtn}
-            onClose={() => setOpen(null)}
-            onPick={(code) => {
-              setOpen(null);
-              insertText(inputRef.current, text, setText, code);
-            }}
-          />
-        )}
-      </span>
+    <FormatTools inputRef={inputRef} text={text} setText={setText} maxRaw={MAX}>
       <span className="tool-wrap">
         <button
           ref={stickerBtn}
           type="button"
-          className={`gloss tool-sq${open === 'sticker' ? ' pressed' : ''}`}
+          className={`gloss tool-sq${open ? ' pressed' : ''}`}
           title="Stickers"
           aria-label="Stickers"
-          aria-expanded={open === 'sticker'}
-          onClick={() => setOpen(open === 'sticker' ? null : 'sticker')}
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
         >
           <Sticker size={15} className="ico-purple" />
         </button>
-        {open === 'sticker' && (
+        {open && (
           <StickerPicker
             anchorRef={stickerBtn}
-            onClose={() => setOpen(null)}
+            onClose={() => setOpen(false)}
             onPick={(st) => {
-              setOpen(null);
+              setOpen(false);
               sendSticker(connKey, channelId, st);
             }}
           />
@@ -162,7 +96,7 @@ function ComposerTools({ inputRef, text, setText, channelId }) {
         <Vibrate size={15} />
         Chamar atenção
       </button>
-    </div>
+    </FormatTools>
   );
 }
 
@@ -266,7 +200,7 @@ function DmHeader({ recipient }) {
       {user.lan && <span className="lan-tag">LAN</span>}
       {user.bio && (
         <span className={colorClass(user.bioColor, 'pm')} style={colorStyle(user.bioColor)}>
-          <EmojiText text={user.bio} size={14} />
+          <FormattedText text={user.bio} size={14} />
         </span>
       )}
     </div>
@@ -341,7 +275,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
     <>
       <PenLine size={13} className="typing-ico" />
       <span>
-        <b>{typers.map((u) => u.displayName).join(', ')}</b>{' '}
+        <b>{typers.map((u) => plain(u.displayName)).join(', ')}</b>{' '}
         {typers.length > 1 ? 'estão digitando uma mensagem...' : 'está digitando uma mensagem...'}
       </span>
     </>

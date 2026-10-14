@@ -872,6 +872,9 @@ code {
   position: relative;
   display: inline-flex;
   flex: none;
+  /* A moldura acompanha a foto, mesmo dentro de linhas altas (mensagem com sticker). */
+  width: fit-content;
+  height: fit-content;
   user-select: none;
   line-height: 1;
 }
@@ -1074,6 +1077,120 @@ code {
   height: 20px;
   padding: 0;
   flex: none;
+}
+
+/* ---------- Moldura da janela do app desktop (substitui a do Windows) ----------
+   Sem barra própria: o título e os botões ficam por cima da cena do topo (perfil, login, Hostear),
+   que cresce para baixo deles. */
+html.framed {
+  --frame-h: 30px;
+}
+.window-frame {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  height: var(--frame-h);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-left: 10px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+html.framed .profile-bar {
+  height: calc(96px + var(--frame-h));
+  padding-top: var(--frame-h);
+}
+html.framed .host-band {
+  padding-top: calc(16px + var(--frame-h));
+}
+html.framed .auth-page,
+html.framed .boot,
+html.framed .overlay {
+  padding-top: calc(16px + var(--frame-h));
+}
+/* Logo e título deixam o clique passar para a área de arrastar. */
+.window-frame > svg,
+.wf-title {
+  pointer-events: none;
+}
+.window-frame > svg {
+  filter: drop-shadow(0 1px 2px rgba(0, 30, 60, 0.45));
+}
+.wf-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-shadow:
+    0 1px 2px rgba(0, 30, 60, 0.6),
+    0 0 8px rgba(0, 40, 90, 0.35);
+}
+.window-frame.inactive .wf-title,
+.window-frame.inactive > svg {
+  opacity: 0.7;
+}
+/* Botões de legenda colados no topo, como no Aero: vidro sobre a cena, fechar vermelho. */
+.wf-caption {
+  align-self: flex-start;
+  display: flex;
+  margin-right: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-top: 0;
+  border-radius: 0 0 6px 6px;
+  overflow: hidden;
+  box-shadow:
+    0 1px 3px rgba(0, 30, 60, 0.3),
+    0 0 0 1px rgba(0, 40, 80, 0.18);
+}
+.wf-btn {
+  width: 29px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0.22) 48%, rgba(255, 255, 255, 0.08) 50%, rgba(255, 255, 255, 0.2) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(6px);
+  transition:
+    background 0.12s,
+    filter 0.12s;
+}
+.wf-btn svg {
+  filter: drop-shadow(0 1px 1px rgba(0, 30, 60, 0.7));
+}
+.wf-btn + .wf-btn {
+  border-left: 1px solid rgba(255, 255, 255, 0.45);
+}
+.wf-btn:hover {
+  background: linear-gradient(180deg, rgba(225, 245, 255, 0.85) 0%, rgba(140, 210, 255, 0.55) 48%, rgba(60, 160, 240, 0.5) 50%, rgba(120, 220, 255, 0.7) 100%);
+  filter: drop-shadow(0 0 4px rgba(150, 220, 255, 0.9));
+}
+.wf-btn:active {
+  filter: brightness(0.9);
+}
+.wf-btn.close {
+  width: 46px;
+  background: linear-gradient(180deg, #f3a596 0%, #de5a45 47%, #c43a24 50%, #e2735e 100%);
+  border-left-color: rgba(120, 20, 10, 0.6);
+}
+.wf-btn.close:hover {
+  background: linear-gradient(180deg, #ffb4a8 0%, #f0503d 47%, #d32a17 50%, #f2624d 100%);
+  filter: drop-shadow(0 0 5px rgba(255, 90, 60, 0.9));
+}
+.window-frame.inactive .wf-btn:not(:hover) {
+  filter: saturate(0.5) opacity(0.8);
+}
+.wf-btn:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: -3px;
 }
 
 /* ---------- Layout do app ---------- */
@@ -1635,6 +1752,7 @@ code {
   width: 34px;
   flex: none;
   display: flex;
+  align-items: flex-start;
   justify-content: center;
 }
 .msg .body {
@@ -2664,7 +2782,8 @@ code {
 .np-controls {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px;
   margin-top: 6px;
 }
 .np-controls .ball:not(.small) {
@@ -2672,7 +2791,7 @@ code {
   height: 44px;
 }
 .np-volume {
-  flex: 1;
+  flex: 1 0 100%;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -2768,6 +2887,20 @@ code {
 .music-empty .btn {
   margin-top: 4px;
 }
+.history-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: inherit;
+  color: inherit;
+}
+.history-toggle:hover {
+  color: var(--accent, var(--ink));
+}
+.music-history .mq-title {
+  font-weight: 600;
+  color: var(--text-2);
+}
 .music-adding {
   display: flex;
   align-items: center;
@@ -2860,7 +2993,7 @@ code {
 .modal {
   width: 100%;
   max-width: 460px;
-  max-height: calc(100vh - 32px);
+  max-height: calc(100vh - 32px - var(--frame-h, 0px));
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -2873,6 +3006,23 @@ code {
 }
 .modal.wide {
   max-width: 720px;
+}
+.modal.settings {
+  max-width: 880px;
+}
+.settings-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0 28px;
+  align-items: start;
+}
+.settings-col {
+  min-width: 0;
+}
+@media (max-width: 760px) {
+  .settings-cols {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 .modal > form,
 .modal > .profile-card {
@@ -4168,19 +4318,9 @@ fieldset.plain {
 .block-row small {
   color: var(--muted);
 }
-.emoji-field {
-  display: flex;
-  gap: 6px;
-  align-items: flex-start;
-}
-.emoji-field > input,
-.emoji-field > textarea {
-  flex: 1;
-  min-width: 0;
-}
-.emoji-field .tool-sq {
-  height: 34px;
-  width: 34px;
+/* Nome e mensagem pessoal: a barra de formatação fica logo acima do campo */
+.profile-field .composer-tools {
+  padding-bottom: 4px;
 }
 .profile-preview {
   display: flex;

@@ -51,6 +51,41 @@ pub fn valid_color(c: &str) -> bool {
     c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
+/// Limites do nome e da mensagem pessoal: o que aparece na tela e o texto com as tags de formatação.
+pub const NAME_MAX: usize = 32;
+pub const NAME_RAW_MAX: usize = 128;
+pub const BIO_MAX: usize = 190;
+pub const BIO_RAW_MAX: usize = 600;
+
+/// Quantos caracteres aparecem na tela: tags de cor (`[cor=#rrggbb]`, `[/cor]`) e marcas de
+/// negrito/itálico/sublinhado/riscado não contam.
+pub fn visible_len(text: &str) -> usize {
+    let mut rest = text;
+    let mut n = 0;
+    while let Some(ch) = rest.chars().next() {
+        let skip = if rest.starts_with("[cor=#") && rest.len() >= 13 && rest.as_bytes()[12] == b']' && valid_color(&rest[5..12]) {
+            13
+        } else if rest.starts_with("[/cor]") {
+            6
+        } else if rest.starts_with("**") || rest.starts_with("__") || rest.starts_with("~~") {
+            2
+        } else if ch == '*' {
+            1
+        } else {
+            n += 1;
+            ch.len_utf8()
+        };
+        rest = &rest[skip..];
+    }
+    n
+}
+
+/// Texto formatado dentro dos limites (aparado), ou `None` se o visível passar de `max`.
+pub fn fit_formatted(text: &str, max: usize, raw_max: usize) -> Option<String> {
+    let text = text.trim();
+    (text.chars().count() <= raw_max && visible_len(text) <= max).then(|| text.to_string())
+}
+
 pub fn user_from_row(r: &Row) -> DbResult<User> {
     user_at(r, 0)
 }
@@ -120,4 +155,20 @@ pub struct GuildFull {
     pub guild: Guild,
     pub channels: Vec<Channel>,
     pub members: Vec<User>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn visible_len_ignores_format_tags() {
+        assert_eq!(visible_len("Gabi"), 4);
+        assert_eq!(visible_len("[cor=#d93f3a]Gabi[/cor]"), 4);
+        assert_eq!(visible_len("**Ga**__bi__ ~~x~~ *y*"), 8);
+        assert_eq!(visible_len("ção [cor=#zzzzzz]"), 17);
+        let long = format!("[cor=#1a7fc4]{}[/cor]", "a".repeat(32));
+        assert!(fit_formatted(&long, NAME_MAX, NAME_RAW_MAX).is_some());
+        assert!(fit_formatted(&"a".repeat(33), NAME_MAX, NAME_RAW_MAX).is_none());
+    }
 }

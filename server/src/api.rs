@@ -208,8 +208,8 @@ async fn register(
     }
     let display_name: String = body
         .display_name
-        .map(|d| d.trim().chars().take(32).collect::<String>())
-        .filter(|d| !d.is_empty())
+        .and_then(|d| crate::models::fit_formatted(&d, crate::models::NAME_MAX, crate::models::NAME_RAW_MAX))
+        .filter(|d| crate::models::visible_len(d) > 0)
         .unwrap_or_else(|| username.clone());
     let user = User { id: new_id(), username, display_name, avatar_color: random_color(), avatar_url: None, bio: String::new(), name_color: None, bio_color: None, lan: false };
     let hash = auth::hash_password(body.password).await;
@@ -450,6 +450,9 @@ async fn list_messages(
     };
     let sql = format!("{MESSAGE_SELECT} WHERE m.channel_id = ?1 AND m.created_at < ?2 ORDER BY m.created_at DESC LIMIT ?3");
     let mut list = app.db.query_all(&sql, libsql::params![ch.id.as_str(), before, limit], message_from_row).await?;
+    for m in &mut list {
+        m.content = app.db.cipher.reveal(&m.content);
+    }
     list.reverse();
     Ok(Json(list))
 }

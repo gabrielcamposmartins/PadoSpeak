@@ -1,6 +1,9 @@
 // Emoticons no estilo Aero (desenhos próprios em SVG, com brilho de vidro) e o texto formatado das mensagens.
 import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { plain, visibleLength } from '../lib/text.js';
+
+export { plain, visibleLength };
 
 const INK = '#6b3d00';
 const line = { fill: 'none', stroke: INK, strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' };
@@ -435,6 +438,12 @@ export function RichText({ text }) {
   return parse(text, { format: true, links: true, emoteSize: 22 });
 }
 
+/** Nome e mensagem pessoal: formatação, cores e emoticons (sem links). */
+export function FormattedText({ text, size = 16 }) {
+  if (!text) return null;
+  return parse(String(text), { format: true, emoteSize: size });
+}
+
 /** Nomes e mensagens pessoais: só emoticons. */
 export function EmojiText({ text, size = 16 }) {
   if (!text) return null;
@@ -511,6 +520,7 @@ export function EmojiPicker({ anchorRef, onPick, onClose, align }) {
 
 /** Paleta de cores do texto. */
 export function ColorPicker({ anchorRef, onPick, onClose }) {
+  const [custom, setCustom] = useState('#3a8ee0');
   return (
     <Floating anchorRef={anchorRef} onClose={onClose} className="color-picker" role="dialog" aria-label="Cor do texto">
       <div className="popover-title">Cor do texto</div>
@@ -526,6 +536,12 @@ export function ColorPicker({ anchorRef, onPick, onClose }) {
             onClick={() => onPick(hex)}
           />
         ))}
+      </div>
+      <div className="color-custom">
+        <input type="color" value={custom} onChange={(e) => setCustom(e.target.value)} aria-label="Outra cor" title="Outra cor" />
+        <button type="button" className="gloss small-btn" onClick={() => onPick(custom)}>
+          Usar esta cor
+        </button>
       </div>
     </Floating>
   );

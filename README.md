@@ -107,6 +107,22 @@ sudo nano /etc/padospeak/padospeak.env         # porta, HTTPS, TURN, banco…
 sudo systemctl restart padospeak && journalctl -u padospeak -f
 ```
 
+### Servidor de comunidade oficial (padospeak.padoru.org)
+
+O servidor padrão do app desktop roda na VM de Iowa pelo Compose de `deploy/vm/`: o `padospeak-server`
+e um banco Turso/libSQL (sqld) próprio, atrás do nginx de borda da VM, que termina o TLS (Let's Encrypt,
+renovado pelo timer `edge-certbot` do systemd).
+
+```bash
+docker build -t us-central1-docker.pkg.dev/gen-lang-client-0425635607/padospeak/server:latest .
+docker push us-central1-docker.pkg.dev/gen-lang-client-0425635607/padospeak/server:latest
+gcloud compute scp deploy/vm/{compose.yml,padospeak.conf,deploy-vm.sh} instance-20260920-143727:padospeak-deploy/ --zone us-central1-a
+gcloud compute ssh instance-20260920-143727 --zone us-central1-a --command "bash padospeak-deploy/deploy-vm.sh"
+```
+
+A chave das mensagens fica em `/etc/padospeak/server.env` (só o root lê). **Guarde uma cópia**: sem ela,
+as mensagens guardadas não podem ser lidas.
+
 ### Variáveis de ambiente
 
 Valores definidos por variável de ambiente prevalecem sobre o painel (lá aparecem como travados).
@@ -119,6 +135,7 @@ Valores definidos por variável de ambiente prevalecem sobre o painel (lá apare
 | `TURSO_SYNC_URL`                                 | —                   | Réplica embarcada: arquivo local sincronizado com a nuvem  |
 | `SERVER_NAME` / `PORT` / `HOST`                  | `PadoSpeak` / `3000` / `0.0.0.0` |                                                    |
 | `HTTPS`                                          | `off`               | `off`, `self-signed` ou `custom` (+ `TLS_CERT`, `TLS_KEY`) |
+| `MESSAGE_KEY`                                    | arquivo `chave-mensagens.key` | Chave AES-256 (base64 de 32 bytes) das mensagens guardadas |
 | `ALLOW_REGISTRATION`                             | `true`              | Permite criar contas                                       |
 | `ICE_SERVERS`                                    | STUN do Google      | Lista JSON de `RTCIceServer` (STUN/TURN)                   |
 | `AUTO_HOST`                                      | `false`             | Sobe o servidor ao iniciar (igual a `--host`)              |
@@ -165,3 +182,8 @@ todos no canal ouvem a mesma música, em sincronia, mesmo que quem adicionou sai
 
 O `padospeak-server` usa o crate oficial `libsql` (Turso). Tabelas: `users`, `sessions`, `guilds`,
 `guild_members`, `channels`, `messages` e `settings` (configuração do host). As migrações rodam ao iniciar.
+
+O texto das mensagens (canais e conversas diretas) é guardado cifrado com AES-256-GCM
+(`enc1:…`). A chave vem de `MESSAGE_KEY` ou do arquivo `chave-mensagens.key` na pasta de dados, criado na
+primeira vez. Mensagens antigas são cifradas ao iniciar, sem perder nenhuma. Se a chave mudar, o log avisa
+e as mensagens cifradas com a chave antiga aparecem como protegidas até ela ser restaurada.

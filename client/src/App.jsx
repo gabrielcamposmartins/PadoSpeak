@@ -10,7 +10,7 @@ import Modals from './components/Modals.jsx';
 import IncomingCalls from './components/IncomingCall.jsx';
 import Avatar from './components/Avatar.jsx';
 import { TitleBar } from './components/Aero.jsx';
-import { EmojiText } from './components/Emotes.jsx';
+import { FormattedText } from './components/Emotes.jsx';
 import { useAcross } from './components/conn.jsx';
 
 /** Aviso que sobe no canto, como o "fulano acabou de entrar" do Messenger. */
@@ -27,7 +27,7 @@ function Toast({ toast }) {
           <Info size={22} className="toast-ico" />
         )}
         <span className="toast-text">
-          <EmojiText text={toast.text} />
+          <FormattedText text={toast.text} />
         </span>
       </div>
     </div>

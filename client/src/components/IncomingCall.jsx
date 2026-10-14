@@ -1,7 +1,8 @@
 import { Phone, PhoneOff } from 'lucide-react';
 import { useStore } from '../store.js';
 import Avatar, { Orb, useUser } from './Avatar.jsx';
-import { EmojiText } from './Emotes.jsx';
+import { FormattedText } from './Emotes.jsx';
+import { plain } from '../lib/text.js';
 import { ConnProvider, useConn } from './conn.jsx';
 
 /** Janela de chamada 1 a 1 recebida numa conexão (o toque é controlado pelo store). */
@@ -12,7 +13,7 @@ function IncomingCall() {
   if (!call) return null;
   const { answerCall, declineCall } = useC.getState();
   return (
-    <div className="incoming-call window" role="alertdialog" aria-label={`Chamada recebida de ${from.displayName}`}>
+    <div className="incoming-call window" role="alertdialog" aria-label={`Chamada recebida de ${plain(from.displayName)}`}>
       <div className="titlebar small">
         <Orb status="on" size={9} />
         <span className="tb-title">Chamada recebida{from.lan ? ' · rede local' : ''}</span>
@@ -24,7 +25,7 @@ function IncomingCall() {
           <Avatar user={from} size={64} />
         </div>
         <b>
-          <EmojiText text={from.displayName} /> está chamando você
+          <FormattedText text={from.displayName} /> está chamando você
         </b>
         <span>Chamada 1 a 1</span>
         <div className="incoming-actions">
