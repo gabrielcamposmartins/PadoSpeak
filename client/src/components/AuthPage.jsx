@@ -4,6 +4,12 @@ import { useStore, localAuthenticate, connRegistry, knownProfiles, lastProfile }
 import Avatar from './Avatar.jsx';
 import { InstallCard } from './Mobile.jsx';
 import { isDesktop, DOWNLOAD_URL } from '../lib/env.js';
+import { isStandalone, isTouch } from '../lib/layout.js';
+
+/** O app para Windows só é oferecido no navegador de um computador com Windows (nunca no celular, no tablet
+ * ou no PadoSpeak instalado como app). */
+const offerWindowsApp =
+  !isDesktop && !isStandalone && !isTouch && typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent);
 import Logo from './Logo.jsx';
 import { SceneArt, TitleBar } from './Aero.jsx';
 
@@ -161,7 +167,7 @@ export default function AuthPage() {
           {/* No celular/tablet: instalar como app (PWA) — botão ou o passo a passo do iPhone/iPad. */}
           {!isDesktop && <InstallCard />}
           {/* No navegador: convite para baixar o app (perfil local, rede local, bandeja do Windows). */}
-          {!isDesktop && (
+          {offerWindowsApp && (
             <div className="auth-download">
               <span>ou use o app</span>
               <a className="btn secondary block" href={DOWNLOAD_URL}>

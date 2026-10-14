@@ -1223,6 +1223,43 @@ export function openFromUrl(url = location.href) {
   }
 }
 
+/**
+ * Celular e tablet: o "voltar" do sistema (Android e app instalado) volta uma tela — fecha a janela
+ * aberta ou sai da conversa — em vez de sair do PadoSpeak. Cada tela por cima vira uma entrada no
+ * histórico do navegador, e o histórico acompanha quando ela é fechada pelos botões do app.
+ */
+export function initBackNavigation() {
+  let depth = 0; // entradas que o app colocou no histórico
+  let expectPop = false; // o próprio app voltou o histórico (não é o botão do sistema)
+  let applying = false;
+  const layers = (s) =>
+    currentLayout() === 'desktop' ? 0 : (s.mobilePane === 'detail' && currentLayout() === 'phone' ? 1 : 0) + (s.modal ? 1 : 0);
+  useStore.subscribe((s) => {
+    if (applying) return;
+    const want = layers(s);
+    if (want > depth) {
+      for (; depth < want; depth++) history.pushState({ padospeak: depth + 1 }, '');
+    } else if (want < depth) {
+      expectPop = true;
+      history.go(want - depth);
+      depth = want;
+    }
+  });
+  window.addEventListener('popstate', () => {
+    if (expectPop) {
+      expectPop = false;
+      return;
+    }
+    if (depth === 0) return;
+    depth -= 1;
+    applying = true;
+    const s = useStore.getState();
+    if (s.modal) s.closeModal();
+    else if (s.mobilePane === 'detail') s.mobileBack();
+    applying = false;
+  });
+}
+
 /** Voltou para a janela: a conversa que está aberta foi lida (some o número vermelho). */
 function markViewedRead() {
   const v = useStore.getState().view;
