@@ -20,6 +20,8 @@ import Avatar, { Orb, useUser, usePresence, useActivity, UserName, STATUS_INFO, 
 import ChatView from './ChatView.jsx';
 import VoiceView from './VoiceView.jsx';
 import { FormattedText } from './Emotes.jsx';
+import { useLayout } from '../lib/layout.js';
+import { MobileBack } from './Mobile.jsx';
 import { plain } from '../lib/text.js';
 import { ConnProvider, useConn, useConnKey } from './conn.jsx';
 
@@ -64,7 +66,7 @@ const TABS = [
   ['pending', 'Pendentes'],
 ];
 
-function FriendTabs() {
+export function FriendTabs() {
   const tab = useStore((s) => s.friendsTab);
   const pending = useStore((s) => Object.values(s.friends).filter((f) => f.status === 'incoming').length);
   const { setFriendsTab, goHome } = useStore.getState();
@@ -601,6 +603,7 @@ function DmWindow({ dmId }) {
   const me = useC((s) => s.me);
   const recipient = useUser(dm?.recipient);
   const othersInCall = useC((s) => s.voiceStates[dmId]) || NOBODY;
+  const phone = useLayout() === 'phone';
   if (!dm || !me)
     return (
       <main className="main glass">
@@ -616,6 +619,7 @@ function DmWindow({ dmId }) {
   return (
     <main className="main glass dm-window">
       <div className="dm-actions">
+        {phone && <MobileBack />}
         {!inCall && (
           <>
             <button

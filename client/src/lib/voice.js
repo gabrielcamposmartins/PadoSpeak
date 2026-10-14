@@ -458,6 +458,7 @@ export class VoiceClient {
       this.pushState({ video: true, cameraStreamId: this.camera.id });
       for (const peer of this.peers.values()) peer.senders.camera = peer.pc.addTrack(track, this.camera);
     } else if (!on && this.camera) {
+      this.state.cameraFacing = 'user';
       for (const peer of this.peers.values()) {
         if (peer.senders.camera) peer.pc.removeTrack(peer.senders.camera);
         peer.senders.camera = null;
@@ -466,6 +467,33 @@ export class VoiceClient {
       this.camera = null;
       this.pushState({ video: false, cameraStreamId: null });
     }
+    this.changed();
+  }
+
+  /** Celular/tablet: troca entre a câmera frontal e a traseira sem sair da chamada. */
+  async flipCamera() {
+    if (!this.camera) return;
+    const facing = this.state.cameraFacing === 'environment' ? 'user' : 'environment';
+    const next = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: facing },
+        width: { ideal: CAMERA.width },
+        height: { ideal: CAMERA.height },
+        frameRate: { ideal: CAMERA.fps },
+      },
+    });
+    const track = next.getVideoTracks()[0];
+    const old = this.camera.getVideoTracks()[0];
+    track.onended = old?.onended || null;
+    // Mesmo stream (quem recebe continua reconhecendo a câmera), só a trilha muda.
+    for (const peer of this.peers.values()) if (peer.senders.camera) await peer.senders.camera.replaceTrack(track);
+    if (old) {
+      old.onended = null;
+      old.stop();
+      this.camera.removeTrack(old);
+    }
+    this.camera.addTrack(track);
+    this.state.cameraFacing = facing;
     this.changed();
   }
 
@@ -697,6 +725,7 @@ export class VoiceClient {
       screenHasAudio: Boolean(this.screen?.getAudioTracks().length),
       screenAudioMuted: Boolean(s.screenAudioMuted),
       video: Boolean(this.camera),
+      cameraFacing: s.cameraFacing || 'user',
       screen: Boolean(this.screen),
       localCamera: this.camera,
       localScreen: this.screen,

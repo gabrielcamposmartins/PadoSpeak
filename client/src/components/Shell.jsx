@@ -21,12 +21,16 @@ import {
   AudioWaveform,
   Activity,
   Link2,
+  Menu,
+  X,
 } from 'lucide-react';
 import { useStore, primaryConn, setStatusEverywhere, connRegistry } from '../store.js';
 import { isDesktop } from '../lib/env.js';
 import { ConnProvider, useAcross, useVoiceConn } from './conn.jsx';
 import { canHost } from '../lib/host.js';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useLayout, useNarrow, isTouch } from '../lib/layout.js';
+import MobileShell, { MobileBack } from './Mobile.jsx';
 import Avatar, { UserName, Orb, useActivity, STATUS_INFO, colorClass, colorStyle } from './Avatar.jsx';
 import { SceneArt, BuddiesIcon } from './Aero.jsx';
 import { HomeSidebar, FriendsPage, DmView } from './Home.jsx';
@@ -57,7 +61,7 @@ const STATUS_ORDER = [
 ];
 
 /** Botão "Online ▾" com o menu para escolher o próprio status. */
-function StatusMenu({ status, label }) {
+export function StatusMenu({ status, label }) {
   const [open, setOpen] = useState(false);
   const btn = useRef(null);
   const myStatus = useAcross(() => primaryConn().getState().myStatus);
@@ -108,7 +112,7 @@ function StatusMenu({ status, label }) {
   );
 }
 
-function ProfileBar() {
+export function ProfileBar({ onMenu }) {
   const prim = primaryConn();
   const me = prim((s) => s.me);
   const base = prim((s) => s.baseUrl);
@@ -146,6 +150,11 @@ function ProfileBar() {
   return (
     <header className="profile-bar scene">
       <SceneArt />
+      {onMenu && (
+        <button className="gloss round pb-menu" onClick={onMenu} title="Conversas e servidores" aria-label="Conversas e servidores">
+          <Menu size={20} />
+        </button>
+      )}
       <Avatar user={me} base={base} size={62} status={frame} speaking={voice?.speaking.me} onClick={() => openModal({ type: 'editProfile' })} />
       <div className="pb-text">
         <div className="pb-name">
@@ -218,7 +227,7 @@ function ProfileBar() {
 
 // ---------- Trilho de servidores ----------
 
-function GuildRail() {
+export function GuildRail() {
   const guilds = useStore((s) => s.guilds);
   const current = useStore((s) => s.currentGuildId);
   const { selectGuild, openModal, goHost, goHome } = useStore.getState();
@@ -368,7 +377,7 @@ function ChannelGroup({ title, type, list, isOwner, guildId, activeId }) {
   );
 }
 
-function ChannelSidebar() {
+export function ChannelSidebar() {
   const guildId = useStore((s) => s.currentGuildId);
   const guild = useStore((s) => s.guilds.find((g) => g.id === s.currentGuildId));
   const data = useStore((s) => s.guildData[s.currentGuildId]);
@@ -492,6 +501,7 @@ export function VoiceStatus() {
         >
           <Video size={16} />
         </button>
+        {navigator.mediaDevices?.getDisplayMedia && !isTouch && (
         <button
           className={voice.screen ? 'go' : 'gloss'}
           onClick={() => toggleScreen()}
@@ -501,6 +511,7 @@ export function VoiceStatus() {
         >
           <MonitorUp size={16} />
         </button>
+        )}
         <button
           className="gloss"
           onClick={() => openModal({ type: 'diagnostics' })}
@@ -542,15 +553,22 @@ function MemberRow({ m, isOn, ownerId }) {
   );
 }
 
-function MemberList() {
+function MemberList({ onClose }) {
   const guild = useStore((s) => s.guilds.find((g) => g.id === s.currentGuildId));
   const members = useStore((s) => s.guildData[s.currentGuildId]?.members) || [];
   const online = useStore((s) => s.online);
   const on = members.filter((m) => online[m.id]);
   const off = members.filter((m) => !online[m.id]);
   return (
-    <aside className="members glass" aria-label="Membros">
-      <div className="panel-head">Membros de {guild?.name}</div>
+    <aside className={`members glass${onClose ? ' members-over' : ''}`} aria-label="Membros">
+      <div className="panel-head">
+        <span>Membros de {guild?.name}</span>
+        {onClose && (
+          <button className="gloss mini" onClick={onClose} title="Fechar" aria-label="Fechar membros">
+            <X size={14} />
+          </button>
+        )}
+      </div>
       <div className="members-list">
         <div className="grp">
           <ChevronDown size={12} />
@@ -575,7 +593,7 @@ function MemberList() {
 
 // ---------- Área principal ----------
 
-function Main() {
+export function Main() {
   const view = useStore((s) => s.view);
   const guild = useStore((s) => s.guilds.find((g) => g.id === s.currentGuildId));
   const channel = useStore((s) => s.guildData[s.currentGuildId]?.channels.find((c) => c.id === s.view?.channelId));
@@ -583,9 +601,16 @@ function Main() {
     (s) => (s.guildData[s.currentGuildId]?.members || []).filter((m) => s.online[m.id]).length,
   );
   const guilds = useStore((s) => s.guilds);
-  const showMembers = useStore((s) => s.showMembers);
+  const desktopMembers = useStore((s) => s.showMembers);
+  const membersOpen = useStore((s) => s.membersOpen);
   const home = useStore((s) => s.currentGuildId == null);
   const { openModal } = useStore.getState();
+  const layout = useLayout();
+  // Em telas estreitas (celular, tablet, janela pequena) a lista de membros abre por cima da conversa.
+  const narrow = useNarrow();
+  const showMembers = narrow ? membersOpen : desktopMembers;
+  const toggleMembers = () =>
+    useStore.setState(narrow ? { membersOpen: !membersOpen } : { showMembers: !desktopMembers });
 
   if (home) {
     if (view?.type === 'dm') return <DmView key={`${view.conn}:${view.channelId}`} dmId={view.channelId} conn={view.conn} />;
@@ -620,6 +645,7 @@ function Main() {
     <>
       <main className="main glass">
         <header className="main-header">
+          {layout === 'phone' && <MobileBack />}
           <Hash size={20} className="head-ico" />
           <div className="head-text">
             <b>{channel?.name || ''}</b>
@@ -637,7 +663,7 @@ function Main() {
                 className={`gloss tool${showMembers ? ' pressed' : ''}`}
                 aria-pressed={showMembers}
                 title="Membros"
-                onClick={() => useStore.setState({ showMembers: !showMembers })}
+                onClick={toggleMembers}
               >
                 <Users size={20} className="ico-purple" />
                 Membros
@@ -651,12 +677,42 @@ function Main() {
           <div className="empty">Selecione um canal.</div>
         )}
       </main>
-      {view?.type === 'text' && showMembers && <MemberList />}
+      {view?.type === 'text' && showMembers && (
+        <MemberList onClose={narrow ? () => useStore.setState({ membersOpen: false }) : undefined} />
+      )}
     </>
   );
 }
 
+/** Tablet na vertical: servidores e conversas numa gaveta que abre pelo ☰. */
+function TabletShell() {
+  const [open, setOpen] = useState(false);
+  const pane = useStore((s) => s.mobilePane);
+  // Abriu uma conversa, canal ou chamada pela gaveta: ela fecha e mostra o que foi aberto.
+  useEffect(() => {
+    if (pane !== 'detail') return;
+    setOpen(false);
+    useStore.setState({ mobilePane: 'list' });
+  }, [pane]);
+  return (
+    <div className="aero-app tablet-app">
+      <ProfileBar onMenu={() => setOpen(true)} />
+      <div className="aero-body">
+        <Main />
+      </div>
+      {open && <div className="t-scrim" onClick={() => setOpen(false)} />}
+      <div className={`t-drawer${open ? ' open' : ''}`} aria-hidden={!open}>
+        <GuildRail />
+        <ChannelSidebar />
+      </div>
+    </div>
+  );
+}
+
 export default function Shell() {
+  const layout = useLayout();
+  if (layout === 'phone') return <MobileShell />;
+  if (layout === 'tablet') return <TabletShell />;
   return (
     <div className="aero-app">
       <ProfileBar />

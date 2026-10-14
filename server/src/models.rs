@@ -83,6 +83,28 @@ pub fn visible_len(text: &str) -> usize {
     n
 }
 
+/// O texto como aparece na tela, sem as tags de formatação (para notificações).
+pub fn plain_text(text: &str) -> String {
+    let mut rest = text;
+    let mut out = String::new();
+    while let Some(ch) = rest.chars().next() {
+        let skip = if rest.starts_with("[cor=#") && rest.len() >= 13 && rest.as_bytes()[12] == b']' && valid_color(&rest[5..12]) {
+            13
+        } else if rest.starts_with("[/cor]") {
+            6
+        } else if rest.starts_with("**") || rest.starts_with("__") || rest.starts_with("~~") {
+            2
+        } else if ch == '*' {
+            1
+        } else {
+            out.push(ch);
+            ch.len_utf8()
+        };
+        rest = &rest[skip..];
+    }
+    out
+}
+
 /// Texto formatado dentro dos limites (aparado), ou `None` se o visível passar de `max`.
 pub fn fit_formatted(text: &str, max: usize, raw_max: usize) -> Option<String> {
     let text = text.trim();

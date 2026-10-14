@@ -1,17 +1,20 @@
-// App desktop rodando em segundo plano (janela fechada, ícone na bandeja do Windows):
+// App desktop fora de foco (atrás de outro programa, minimizado ou na bandeja do Windows):
 // os avisos viram notificações do Windows e uma chamada recebida traz a janela de volta.
 import { isTauri } from './env.js';
 import { plain } from './text.js';
 
 const appWindow = () => import('@tauri-apps/api/window').then((m) => m.getCurrentWindow());
 
-/** A janela está escondida na bandeja ou minimizada (o aviso no canto não seria visto). */
+/**
+ * A pessoa não está olhando o PadoSpeak: janela na bandeja, minimizada ou atrás de outro programa
+ * (sem foco). Aí o aviso no canto da janela não seria visto.
+ */
 async function outOfSight() {
   const win = await appWindow();
-  return !(await win.isVisible()) || (await win.isMinimized());
+  return !(await win.isVisible()) || (await win.isMinimized()) || !(await win.isFocused());
 }
 
-/** Notificação do Windows quando o app não está à vista. */
+/** Notificação do Windows quando o app não está em foco. */
 export async function systemNotify(text) {
   if (!isTauri) return;
   try {

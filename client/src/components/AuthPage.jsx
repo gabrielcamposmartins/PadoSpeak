@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Server, Wifi, Download } from 'lucide-react';
 import { useStore, localAuthenticate, connRegistry, knownProfiles, lastProfile } from '../store.js';
 import Avatar from './Avatar.jsx';
+import { InstallCard } from './Mobile.jsx';
 import { isDesktop, DOWNLOAD_URL } from '../lib/env.js';
 import Logo from './Logo.jsx';
 import { SceneArt, TitleBar } from './Aero.jsx';
@@ -157,6 +158,8 @@ export default function AuthPage() {
             </button>
           </form>
 
+          {/* No celular/tablet: instalar como app (PWA) — botão ou o passo a passo do iPhone/iPad. */}
+          {!isDesktop && <InstallCard />}
           {/* No navegador: convite para baixar o app (perfil local, rede local, bandeja do Windows). */}
           {!isDesktop && (
             <div className="auth-download">

@@ -78,7 +78,7 @@ export function createApi(base, token) {
     post: (p, body = {}) => request('POST', p, body),
     patch: (p, body = {}) => request('PATCH', p, body),
     put: (p, body) => request('PUT', p, body),
-    del: (p) => request('DELETE', p),
+    del: (p, body) => request('DELETE', p, body),
     /** Baixa um arquivo (ex.: a foto de perfil, para copiar para outro servidor). */
     async blob(path) {
       const res = await fetch(base() + path);

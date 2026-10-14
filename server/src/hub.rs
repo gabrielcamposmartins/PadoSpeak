@@ -6,7 +6,7 @@
 //! - evento:             `{ "ev": "...", "d": {...} }`
 use crate::api::{channel_with_access, guild_ids_of};
 use crate::host::App;
-use crate::models::{user_from_row, Message, User, USER_COLS};
+use crate::models::{plain_text, user_from_row, Message, User, USER_COLS};
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -26,6 +26,8 @@ struct Conn {
     guilds: HashSet<String>,
     /// Amigos aceitos: também recebem a presença deste usuário.
     friends: HashSet<String>,
+    /// O app está na tela (aba visível / app em primeiro plano). Sem nenhuma assim, vai push.
+    visible: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -168,6 +170,12 @@ impl Hub {
     }
 
     /// Online para os outros: conectado e sem "aparecer offline".
+/// A pessoa está com o PadoSpeak aberto na tela em algum aparelho?
+    pub fn is_watching(&self, user_id: &str) -> bool {
+        let s = self.state.lock().unwrap();
+        s.user_conns.get(user_id).into_iter().flatten().any(|id| s.conns.get(id).is_some_and(|c| c.visible))
+    }
+
     pub fn is_online(&self, user_id: &str) -> bool {
         Self::visible(&self.state.lock().unwrap(), user_id)
     }
@@ -459,7 +467,7 @@ impl Hub {
                     "voice": voice, "music": music, "serverTime": crate::now_ms()
                 }),
             ));
-            s.conns.insert(conn_id.clone(), Conn { tx: tx.clone(), guilds: guilds.clone(), friends: friends.clone() });
+            s.conns.insert(conn_id.clone(), Conn { tx: tx.clone(), guilds: guilds.clone(), friends: friends.clone(), visible: true });
             if first && Self::visible(&s, &user.id) {
                 Self::presence(&s, &user.id, true, guilds.iter().cloned(), &friends);
             }
@@ -621,6 +629,20 @@ impl Hub {
                         return err("Sem acesso ao canal");
                     };
                     msg.channel_id = dm.id.clone();
+                    let preview = if msg.content.starts_with("[[sticker:") {
+                        "enviou um sticker".to_string()
+                    } else {
+                        plain_text(&msg.content).chars().take(160).collect()
+                    };
+                    app.push_to(
+                        dm.other(&user.id),
+                        crate::push::Note {
+                            title: plain_text(&user.display_name),
+                            body: preview,
+                            tag: format!("dm:{}", dm.id),
+                            url: format!("/?dm={}", dm.id),
+                        },
+                    );
                     let res = app
                         .db
                         .execute(
@@ -752,6 +774,17 @@ impl Hub {
                     }
                 }
                 self.to_users(&delivered, "nudge", json!({ "channelId": target_id, "dm": dm, "from": user, "at": crate::now_ms() }));
+                for r in &delivered {
+                    app.push_to(
+                        r,
+                        crate::push::Note {
+                            title: "PadoSpeak".into(),
+                            body: format!("{} chamou a sua atenção!", plain_text(&user.display_name)),
+                            tag: format!("nudge:{target_id}"),
+                            url: if dm { format!("/?dm={target_id}") } else { "/".into() },
+                        },
+                    );
+                }
                 Some(json!({ "delivered": delivered.len(), "refused": refused, "channelId": target_id }))
             }
 
@@ -795,11 +828,25 @@ impl Hub {
                 }
                 Self::broadcast_voice_channel(&s, &me, &ch_id);
                 // Chamada 1 a 1: toca para o outro lado se ele ainda não estiver na chamada.
+                let mut ringing = None;
                 if let Some(users) = &dm_users {
                     let other = users.iter().find(|u| **u != user.id).cloned().unwrap_or_default();
                     if !peers.iter().any(|p| p.user.id == other) {
                         Self::send_to_user(&s, &other, &event("call:ring", json!({ "dmId": ch_id, "from": user })));
+                        ringing = Some(other);
                     }
+                }
+                drop(s);
+                if let Some(other) = ringing {
+                    app.push_to(
+                        &other,
+                        crate::push::Note {
+                            title: plain_text(&user.display_name),
+                            body: "está chamando você".into(),
+                            tag: format!("call:{ch_id}"),
+                            url: format!("/?dm={ch_id}"),
+                        },
+                    );
                 }
                 Some(json!({ "ok": true, "channelId": ch_id, "guildId": guild_id, "dm": dm_users.is_some(), "peers": peers }))
             }
@@ -854,6 +901,15 @@ impl Hub {
                 if mine.is_some() && mine == s.conn_voice.get(&to) {
                     let data = d.get("data").cloned().unwrap_or(Value::Null);
                     Self::send_to(&s, &to, event("voice:signal", json!({ "from": conn_id, "data": data })));
+                }
+                None
+            }
+
+            // O app foi para segundo plano (ou voltou): decide se as notificações vão por push.
+            "app:visibility" => {
+                let visible = d.get("visible").and_then(Value::as_bool).unwrap_or(true);
+                if let Some(c) = self.state.lock().unwrap().conns.get_mut(conn_id) {
+                    c.visible = visible;
                 }
                 None
             }

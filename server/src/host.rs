@@ -28,6 +28,8 @@ pub struct App {
     pub music: Arc<crate::music::MusicManager>,
     /// Presente só no nó local do app desktop (perfil local + rede local).
     pub lan: Option<Arc<crate::lan::Lan>>,
+    /// Notificações push (só no servidor de comunidade; o nó local usa as do Windows).
+    pub push: Option<Arc<crate::push::Push>>,
 }
 
 struct Running {
@@ -179,6 +181,17 @@ impl HostManager {
         } else {
             None
         };
+        let push = if self.local_node {
+            None
+        } else {
+            match crate::push::Push::load(&self.db).await {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    self.logs.warn(format!("Notificações push indisponíveis: {e}"));
+                    None
+                }
+            }
+        };
         let app = Arc::new(App {
             db: self.db.clone(),
             hub,
@@ -187,6 +200,7 @@ impl HostManager {
             logs: self.logs.clone(),
             urls: urls.clone(),
             lan: lan.clone(),
+            push,
         });
         if let Some(lan) = &lan {
             app.hub.set_lan_mode();
@@ -197,6 +211,7 @@ impl HostManager {
             .merge(crate::social::router())
             .merge(crate::lan::router())
             .merge(crate::stickers::router())
+            .merge(crate::push::router())
             .route("/ws", get(crate::hub::ws_handler))
             .route("/api/music/stream/{id}", get(crate::music::stream::handler))
             .fallback(crate::assets::static_handler)

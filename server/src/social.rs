@@ -305,6 +305,17 @@ async fn request_friend(State(app): AppState, AuthUser(me, _): AuthUser, Json(bo
         }
     };
     notify_friendship(&app, &me, &other).await?;
+    if status == "outgoing" {
+        app.push_to(
+            &other.id,
+            crate::push::Note {
+                title: "PadoSpeak".into(),
+                body: format!("{} quer ser seu amigo.", plain_text(&me.display_name)),
+                tag: format!("friend:{}", me.id),
+                url: "/?friends=pending".into(),
+            },
+        );
+    }
     Ok(Json(json!({ "user": other, "status": status })))
 }
 

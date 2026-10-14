@@ -10,6 +10,22 @@ const audio = () => {
   return ctx;
 };
 
+/**
+ * Celular (principalmente iPhone): o áudio só pode começar dentro de um toque. Chamada no primeiro
+ * toque na tela, deixa os sons prontos para os avisos que chegarem depois.
+ */
+export function unlockAudio() {
+  try {
+    const ac = audio();
+    const src = ac.createBufferSource();
+    src.buffer = ac.createBuffer(1, 1, 22050);
+    src.connect(ac.destination);
+    src.start(0);
+  } catch {
+    /* sem áudio */
+  }
+}
+
 export const setSoundsEnabled = (on) => {
   enabled = on;
 };

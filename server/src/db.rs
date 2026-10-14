@@ -176,6 +176,20 @@ CREATE INDEX IF NOT EXISTS idx_stickers_owner ON stickers(owner_id, hash);
 ALTER TABLE users ADD COLUMN banner_color TEXT;
 "#,
     ),
+    (
+        7,
+        r#"
+-- Aparelhos inscritos nas notificações push (navegador ou app instalado no celular).
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  endpoint TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);
+"#,
+    ),
 ];
 
 impl Db {

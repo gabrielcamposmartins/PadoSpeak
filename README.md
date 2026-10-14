@@ -35,6 +35,18 @@ como banco — por padrão um arquivo local, sem nada para instalar.
   local; se o token expirar, o app pede login de novo sem sair do perfil local.
 - O Windows pede permissão de rede na primeira vez: libere em **redes privadas** para os outros PCs te verem.
 
+## Celular e tablet (PWA)
+
+Em https://padospeak.padoru.org o PadoSpeak se ajusta à tela: no celular, abas embaixo (Conversas, Amigos,
+Servidores, Eu) e conversa, canal e chamada em tela cheia; no tablet na vertical, conversas e servidores numa
+gaveta; no iPad na horizontal, o layout completo.
+
+- **Instalar:** Android, Chrome e Edge mostram o botão "Instalar". No iPhone e no iPad, Safari →
+  Compartilhar → "Adicionar à Tela de Início" (o app mostra o passo a passo).
+- **Notificações push:** com o app fechado ou em segundo plano, chegam mensagens diretas, chamadas, "chamar
+  atenção" e pedidos de amizade (Web Push com VAPID; no iPhone/iPad, iOS 16.4+ com o app instalado). O
+  servidor só envia quando a pessoa não está com o PadoSpeak na tela.
+
 ## Página “Hostear”
 
 A mesma página aparece em dois lugares:

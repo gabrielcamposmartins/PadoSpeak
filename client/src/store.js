@@ -7,6 +7,8 @@ import { isPanel, isDesktop, localNodeUrl } from './lib/env.js';
 import { playSound, loopSound, setSoundsEnabled } from './lib/sounds.js';
 import { shakeWindow, flashTaskbar } from './lib/attention.js';
 import { systemNotify, showAppWindow } from './lib/background.js';
+import { currentLayout } from './lib/layout.js';
+import { syncPush, disablePush } from './lib/pwa.js';
 
 /*
  * Conexões
@@ -114,6 +116,8 @@ export function createConnStore({ key, kind, base, primary = false }) {
     if (primary) return store.setState(patch);
     useStore.setState({ ...patch, view: patch.view ? { ...patch.view, conn: key } : patch.view });
   };
+  /** Celular: abre a tela cheia (conversa, canal, chamada ou música) por cima da lista. */
+  const openPane = () => ui().setState({ mobilePane: 'detail' });
   const isViewing = (channelId) => {
     const v = ui().getState().view;
     return v?.channelId === channelId && (v.conn || 'server') === key;
@@ -155,6 +159,10 @@ export function createConnStore({ key, kind, base, primary = false }) {
     prefs: loadPrefs(),
 
     showMembers: true,
+    // Celular: aba de baixo e se a tela mostra a lista ou o que foi aberto (conversa, canal, chamada).
+    mobileTab: 'chats', // chats | friends | servers | me
+    mobilePane: 'list', // list | detail
+    membersOpen: false, // celular/tablet: lista de membros por cima da conversa
     users: {}, // atualizações de perfil recebidas (id -> usuário)
     friends: {}, // userId -> { user, status: friend | incoming | outgoing }
     dms: [], // conversas diretas, mais recentes primeiro
@@ -235,6 +243,8 @@ export function createConnStore({ key, kind, base, primary = false }) {
     },
 
     async logout() {
+      // Este aparelho para de receber notificações da conta que saiu.
+      if (primary && !isDesktop) await disablePush(store).catch(() => {});
       await api.post('/api/auth/logout').catch(() => {});
       get().teardown();
       setToken(null);
@@ -307,6 +317,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
         return;
       }
       set({ phase: 'app' });
+      syncPush(store);
       // Link de convite aberto no navegador: /invite/<código>
       const invite = location.pathname.match(/^\/invite\/([\w-]+)/);
       if (invite) {
@@ -317,8 +328,9 @@ export function createConnStore({ key, kind, base, primary = false }) {
           get().notify(e.message);
         }
       }
-      if (guilds[0]) get().selectGuild(guilds[0].id);
+      if (guilds[0] && currentLayout() !== 'phone') get().selectGuild(guilds[0].id);
       else get().goHome();
+      openFromUrl();
     },
 
     connectRealtime() {
@@ -326,6 +338,9 @@ export function createConnStore({ key, kind, base, primary = false }) {
       rt = new Realtime(() => `${baseUrl.replace(/^http/i, 'ws')}/ws?token=${encodeURIComponent(token || '')}`);
       let firstReady = true;
       rt.on('status', (rtStatus) => set({ rtStatus }));
+      rt.on('ready', () => {
+        if (document.visibilityState !== 'visible') rt?.send('app:visibility', { visible: false });
+      });
       rt.on('ready', (d) => {
         set({
           online: Object.fromEntries(d.online.map((id) => [id, true])),
@@ -422,7 +437,9 @@ export function createConnStore({ key, kind, base, primary = false }) {
         const isGuild = Object.values(s.guildData).some((g) => g.channels.some((c) => c.id === m.channelId));
         if (!isDm && !isGuild) get().loadDms(); // primeira mensagem de uma conversa nova
         if (isDm || !isGuild) {
-          const viewing = isViewing(m.channelId) && !document.hidden;
+          // Só conta como lida se a pessoa está mesmo olhando: conversa aberta e janela em foco (com a
+          // janela atrás de outro programa ou na bandeja, a mensagem avisa e fica como não lida).
+          const viewing = isViewing(m.channelId) && !document.hidden && document.hasFocus();
           set((st) => ({
             dms: st.dms
               .map((d) => (d.id === m.channelId ? { ...d, lastMessageAt: m.createdAt } : d))
@@ -583,7 +600,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
 
     // ---------- Início: amigos e conversas diretas ----------
     goHome() {
-      ui().setState({ currentGuildId: null, view: { type: 'friends' }, sidebarView: 'channels' });
+      ui().setState({ currentGuildId: null, view: { type: 'friends' }, sidebarView: 'channels', mobilePane: 'list' });
     },
 
     async loadFriends() {
@@ -624,6 +641,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
     selectDm(dmId) {
       set((s) => ({ unread: { ...s.unread, [dmId]: 0 } }));
       setView({ currentGuildId: null, sidebarView: 'channels', view: { type: 'dm', channelId: dmId } });
+      openPane();
       if (!get().messages[dmId]) get().loadMessages(dmId);
     },
 
@@ -776,7 +794,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
     },
 
     async selectGuild(guildId) {
-      set({ currentGuildId: guildId });
+      set({ currentGuildId: guildId, lastGuildId: guildId, mobilePane: 'list' });
       let data = get().guildData[guildId];
       if (!data) {
         try {
@@ -795,6 +813,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
     selectTextChannel(channelId) {
       const guildId = get().currentGuildId;
       set((s) => ({ view: { type: 'text', channelId }, lastChannel: { ...s.lastChannel, [guildId]: channelId } }));
+      openPane();
       if (!get().messages[channelId]) get().loadMessages(channelId);
     },
 
@@ -890,7 +909,10 @@ export function createConnStore({ key, kind, base, primary = false }) {
     // ---------- Voz ----------
     async joinVoice(channelId) {
       if (get().voice?.channelId === channelId) {
-        if (primary && !get().dms.some((d) => d.id === channelId)) set({ view: { type: 'voice', channelId } });
+        if (primary && !get().dms.some((d) => d.id === channelId)) {
+          set({ view: { type: 'voice', channelId } });
+          openPane();
+        }
         return;
       }
       // Uma chamada por vez, em qualquer conexão.
@@ -915,7 +937,10 @@ export function createConnStore({ key, kind, base, primary = false }) {
       });
       voiceClient = client;
       const isDm = get().dms.some((d) => d.id === channelId);
-      if (!isDm && primary) set({ view: { type: 'voice', channelId } });
+      if (!isDm && primary) {
+        set({ view: { type: 'voice', channelId } });
+        openPane();
+      }
       try {
         const { selfMuted, selfDeafened } = ui().getState();
         const p = prefs();
@@ -954,6 +979,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
       if (v.dm) return get().selectDm(v.channelId);
       if (get().currentGuildId !== v.guildId) set({ currentGuildId: v.guildId });
       set({ view: { type: 'voice', channelId: v.channelId } });
+      openPane();
     },
 
     /** Mudo/surdo valem para a chamada em qualquer conexão (o estado fica no principal). */
@@ -981,6 +1007,14 @@ export function createConnStore({ key, kind, base, primary = false }) {
         notify(cameraError(e));
       }
     },
+    /** Câmera frontal ↔ traseira (celular e tablet). */
+    async flipCamera() {
+      try {
+        await voiceClient?.flipCamera();
+      } catch (e) {
+        notify(cameraError(e));
+      }
+    },
     async toggleScreen(preset) {
       if (!voiceClient) return;
       if (!window.isSecureContext) return notify(INSECURE_MSG);
@@ -998,7 +1032,33 @@ export function createConnStore({ key, kind, base, primary = false }) {
     latencyHistory: () => voiceClient?.latencyHistory() || { samples: [], series: [] },
 
     // ---------- Música ----------
-    toggleMusicPanel: () => ui().setState((s) => ({ sidebarView: s.sidebarView === 'music' ? 'channels' : 'music' })),
+    toggleMusicPanel: () =>
+      ui().setState((s) =>
+        s.sidebarView === 'music' ? { sidebarView: 'channels', mobilePane: 'list' } : { sidebarView: 'music', mobilePane: 'detail' },
+      ),
+    /** Celular: troca de aba (Conversas, Amigos, Servidores, Eu). */
+    setMobileTab(tab) {
+      const s = ui().getState();
+      ui().setState({ mobileTab: tab, mobilePane: 'list', sidebarView: 'channels' });
+      if (tab === 'chats' || tab === 'friends') {
+        if (s.currentGuildId != null) s.goHome();
+        if (tab === 'chats') ui().setState({ view: { type: 'friends' } });
+      } else if (tab === 'servers' && s.currentGuildId == null && s.guilds.length) {
+        s.selectGuild((s.guilds.find((g) => g.id === s.lastGuildId) || s.guilds[0]).id);
+      }
+    },
+    /** Celular: botão "voltar" da tela cheia. */
+    mobileBack() {
+      const s = ui().getState();
+      if (s.sidebarView === 'music') return s.toggleMusicPanel();
+      ui().setState({ mobilePane: 'list' });
+    },
+    /** Notificações push deste aparelho (navegador / app instalado no celular). */
+    pushKey: () => api.get('/api/push/key').then((r) => r.publicKey),
+    pushSubscribe: (sub) => api.post('/api/push/subscribe', sub),
+    pushUnsubscribe: (endpoint) => api.del('/api/push/subscribe', { endpoint }),
+    /** O app foi para segundo plano ou voltou: o servidor decide se manda notificação push. */
+    sendVisibility: (visible) => rt?.send('app:visibility', { visible }),
 
     /** Adiciona links à fila do canal de voz em que estou (cada link pode trazer várias músicas). */
     async addMusic(urls) {
@@ -1136,6 +1196,49 @@ export function knownProfiles(base) {
 
 /** Último perfil que entrou neste PC (para já vir preenchido no login). */
 export const lastProfile = (base) => storage.get(`padospeak.lastProfile:${base}`) || '';
+
+/**
+ * Toque numa notificação: `/?dm=<id>` abre a conversa; `/?friends=pending` abre os pedidos de amizade.
+ * Também chamada quando o service worker avisa um app que já estava aberto.
+ */
+export function openFromUrl(url = location.href) {
+  const q = new URL(url, location.origin).searchParams;
+  const dm = q.get('dm');
+  const friends = q.get('friends');
+  if (!dm && !friends) return;
+  if (new URL(url, location.origin).href === location.href) history.replaceState(null, '', '/');
+  const ui = useStore.getState();
+  if (dm) {
+    const store = [...connRegistry.values()].find((c) => c.getState().dms.some((d) => d.id === dm));
+    if (store) store.getState().selectDm(dm);
+    else
+      useStore
+        .getState()
+        .loadDms?.()
+        .then(() => useStore.getState().dms.some((d) => d.id === dm) && useStore.getState().selectDm(dm))
+        .catch(() => {});
+  } else if (friends) {
+    ui.setFriendsTab(friends === 'pending' ? 'pending' : 'online');
+    ui.setMobileTab('friends');
+  }
+}
+
+/** Voltou para a janela: a conversa que está aberta foi lida (some o número vermelho). */
+function markViewedRead() {
+  const v = useStore.getState().view;
+  if (v?.type !== 'dm' || document.hidden) return;
+  const store = getConn(v.conn);
+  if (store.getState().unread[v.channelId]) store.setState((s) => ({ unread: { ...s.unread, [v.channelId]: 0 } }));
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    const visible = document.visibilityState === 'visible';
+    for (const c of connRegistry.values()) c.getState().sendVisibility(visible);
+    if (visible && document.hasFocus()) markViewedRead();
+  });
+  window.addEventListener('focus', markViewedRead);
+}
 
 /** Fecha e esquece uma conexão secundária. */
 export function dropConn(key) {

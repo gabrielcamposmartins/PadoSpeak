@@ -14,6 +14,7 @@ import FormatTools from './FormatTools.jsx';
 import { useConn, useConnKey } from './conn.jsx';
 import Avatar, { UserName, Orb, usePresence, useUser, colorClass, colorStyle } from './Avatar.jsx';
 import { RichText, FormattedText, plain } from './Emotes.jsx';
+import { useLayout, isTouch } from '../lib/layout.js';
 
 /** Abre o perfil de alguém desta conexão (servidor ou PC da rede). */
 function useOpenProfile() {
@@ -100,7 +101,7 @@ function ComposerTools({ inputRef, text, setText, channelId }) {
   );
 }
 
-function Message({ m, head, canEdit: canEditText, canDelete, showAvatar }) {
+function Message({ m, head, canEdit: canEditText, canDelete }) {
   const sticker = parseSticker(m.content);
   const canEdit = canEditText && !sticker;
   const [editing, setEditing] = useState(false);
@@ -109,6 +110,31 @@ function Message({ m, head, canEdit: canEditText, canDelete, showAvatar }) {
   const openProfile = useOpenProfile();
   const { editMessage, deleteMessage } = useC.getState();
   const { openModal } = useStore.getState();
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const rowRef = useRef(null);
+  const press = useRef(null);
+  const hasTools = canEdit || canDelete;
+  // Toque: segurar a mensagem mostra "editar" e "excluir"; tocar fora esconde.
+  useEffect(() => {
+    if (!toolsOpen) return;
+    const close = (e) => !rowRef.current?.contains(e.target) && setToolsOpen(false);
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, [toolsOpen]);
+  const longPress =
+    isTouch && hasTools
+      ? {
+          onTouchStart: () => {
+            press.current = setTimeout(() => {
+              setToolsOpen(true);
+              navigator.vibrate?.(12);
+            }, 450);
+          },
+          onTouchEnd: () => clearTimeout(press.current),
+          onTouchMove: () => clearTimeout(press.current),
+          onContextMenu: (e) => e.preventDefault(),
+        }
+      : {};
 
   const save = () => {
     const c = draft.trim();
@@ -117,12 +143,15 @@ function Message({ m, head, canEdit: canEditText, canDelete, showAvatar }) {
   };
 
   return (
-    <div className={`msg${head ? ' head' : ''}${showAvatar ? '' : ' no-avatar'}`}>
-      {showAvatar && (
-        <div className="msg-pic">
-          {head && <Avatar user={m.author} size={30} onClick={() => openProfile(m.author.id)} />}
-        </div>
-      )}
+    <div
+      ref={rowRef}
+      className={`msg${head ? ' head' : ''}${toolsOpen ? ' tools-open' : ''}`}
+      {...longPress}
+    >
+      {/* A fotinha de quem escreveu, nos canais e nas conversas privadas. */}
+      <div className="msg-pic">
+        {head && <Avatar user={m.author} size={30} onClick={() => openProfile(m.author.id)} />}
+      </div>
       <div className="body">
         {head && (
           <div className="meta">
@@ -158,7 +187,11 @@ function Message({ m, head, canEdit: canEditText, canDelete, showAvatar }) {
       {(canEdit || canDelete) && !editing && (
         <div className="tools">
           {canEdit && (
-            <button className="icon-btn" title="Editar" onClick={() => (setDraft(m.content), setEditing(true))}>
+            <button
+              className="icon-btn"
+              title="Editar"
+              onClick={() => (setDraft(m.content), setEditing(true), setToolsOpen(false))}
+            >
               <Pencil size={14} />
             </button>
           )}
@@ -212,6 +245,20 @@ function DmHeader({ recipient }) {
  * `variant="dm"`: painéis separados (mensagens / escrita), sem fotos nas mensagens, como a janela do Messenger.
  */
 export default function ChatView({ channel, variant = 'channel' }) {
+  const phone = useLayout() === 'phone';
+  const [fmtOpen, setFmtOpen] = useState(false);
+  const aaBtn = phone && (
+    <button
+      type="button"
+      className={`gloss aa-btn${fmtOpen ? ' pressed' : ''}`}
+      aria-label="Formatação, emoticons e stickers"
+      aria-expanded={fmtOpen}
+      onClick={() => setFmtOpen((v) => !v)}
+    >
+      Aa
+    </button>
+  );
+  const showTools = !phone || fmtOpen;
   const useC = useConn();
   const messages = useC((s) => s.messages[channel.id]) || EMPTY;
   const loaded = useC((s) => channel.id in s.messages);
@@ -238,10 +285,19 @@ export default function ChatView({ channel, variant = 'channel' }) {
   useLayoutEffect(() => {
     const el = listRef.current;
     if (!el) return;
+    // Mensagem (ou sticker) que eu mesmo mandei: sempre leva ao fim.
+    if (messages[messages.length - 1]?.author?.id === me?.id) stickToBottom.current = true;
     if (stickToBottom.current) el.scrollTop = el.scrollHeight;
     else if (prevHeight.current && el.scrollTop < 50) el.scrollTop += el.scrollHeight - prevHeight.current;
     prevHeight.current = el.scrollHeight;
   }, [messages]);
+
+  // Stickers e imagens terminam de carregar depois e aumentam a conversa: continua no fim.
+  const onMediaLoad = () => {
+    const el = listRef.current;
+    if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
+    if (el) prevHeight.current = el.scrollHeight;
+  };
 
   const onScroll = () => {
     const el = listRef.current;
@@ -285,7 +341,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
   const placeholder = dm ? `Conversar com ${channel.name}` : `Conversar em #${channel.name}`;
 
   const log = (
-    <div className="messages" ref={listRef} onScroll={onScroll}>
+    <div className="messages" ref={listRef} onScroll={onScroll} onLoadCapture={onMediaLoad}>
       {hasMore ? (
         <button className="btn secondary load-more" onClick={() => useC.getState().loadMessages(channel.id, true)}>
           Carregar mensagens anteriores
@@ -337,7 +393,6 @@ export default function ChatView({ channel, variant = 'channel' }) {
             <Message
               m={m}
               head={head}
-              showAvatar={!dm}
               canEdit={m.author.id === me.id}
               canDelete={m.author.id === me.id || isOwner}
             />
@@ -379,13 +434,16 @@ export default function ChatView({ channel, variant = 'channel' }) {
           {log}
         </div>
         <div className="panel composer">
-          <div className="panel-head tools-head">
-            {tools}
-            <span className="count">
-              {text.length} / {MAX}
-            </span>
-          </div>
+          {showTools && (
+            <div className="panel-head tools-head">
+              {tools}
+              <span className="count">
+                {text.length} / {MAX}
+              </span>
+            </div>
+          )}
           <div className="compose-row">
+            {aaBtn}
             {textarea}
             {sendBtn}
           </div>
@@ -408,8 +466,9 @@ export default function ChatView({ channel, variant = 'channel' }) {
         <div className="typing" aria-live="polite">
           {typingLine}
         </div>
-        {tools}
+        {showTools && tools}
         <div className="compose-row">
+          {aaBtn}
           {textarea}
           {sendBtn}
         </div>

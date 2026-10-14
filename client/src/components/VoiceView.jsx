@@ -16,6 +16,7 @@ import {
   AudioWaveform,
   VolumeX,
   X,
+  SwitchCamera,
 } from 'lucide-react';
 import { useStore } from '../store.js';
 import { useConn } from './conn.jsx';
@@ -23,6 +24,40 @@ import { plain } from '../lib/text.js';
 import { SCREEN_PRESETS } from '../lib/voice.js';
 import Avatar from './Avatar.jsx';
 import { useServerPing } from './hooks.js';
+import { useLayout, isTouch } from '../lib/layout.js';
+import { MobileBack } from './Mobile.jsx';
+
+/** Celular e tablet não compartilham tela (o navegador não oferece). */
+const canShareScreen = typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices?.getDisplayMedia) && !isTouch;
+
+/** Celular: a faixa com a sua câmera fica num canto e dá para arrastar com o dedo. */
+function useDraggable(enabled) {
+  const [pos, setPos] = useState({ x: 0, y: 0 });
+  const drag = useRef(null);
+  if (!enabled) return {};
+  return {
+    style: { transform: `translate(${pos.x}px, ${pos.y}px)` },
+    onPointerDown: (e) => {
+      drag.current = { sx: e.clientX, sy: e.clientY, x: pos.x, y: pos.y, moved: false };
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+    },
+    onPointerMove: (e) => {
+      const d = drag.current;
+      if (!d) return;
+      const dx = e.clientX - d.sx;
+      const dy = e.clientY - d.sy;
+      if (Math.abs(dx) + Math.abs(dy) > 6) d.moved = true;
+      if (d.moved) setPos({ x: d.x + dx, y: d.y + dy });
+    },
+    onPointerUp: () => {
+      setTimeout(() => (drag.current = null), 0);
+    },
+    // Arrastou: não conta como toque para destacar o vídeo.
+    onClickCapture: (e) => {
+      if (drag.current?.moved) e.stopPropagation();
+    },
+  };
+}
 
 /** <video> que acompanha o MediaStream e mede o que é de fato desenhado (resolução/fps). */
 function StreamVideo({ stream, mirror, onStats }) {
@@ -93,7 +128,7 @@ function Tile({ tile, focused, onFocus }) {
       {tile.stream ? (
         <StreamVideo
           stream={tile.stream}
-          mirror={tile.self && !isScreen}
+          mirror={tile.self && !isScreen && tile.facing !== 'environment'}
           onStats={setRendered}
         />
       ) : tile.pending ? (
@@ -248,7 +283,11 @@ export default function VoiceView({ channel }) {
   const me = useC((s) => s.me);
   const muted = useStore((s) => s.selfMuted);
   const deafened = useStore((s) => s.selfDeafened);
-  const [focusId, setFocusId] = useState(null);
+  const layout = useLayout();
+  const phone = layout === 'phone';
+  // No celular a chamada já abre destacando quem fala com você (sua câmera vai para o canto).
+  const [focusId, setFocusId] = useState(phone ? 'auto' : null);
+  const stripDrag = useDraggable(phone);
   const [preset, setPreset] = useState('1080p30');
   const [showDiag, setShowDiag] = useState(false);
   const seenScreens = useRef(new Set());
@@ -265,6 +304,7 @@ export default function VoiceView({ channel }) {
       user: me,
       stream: voice.localCamera,
       stats: voice.localCameraStats,
+      facing: voice.cameraFacing,
       speaking: voice.speaking.me,
       muted: muted || deafened,
       live: Boolean(voice.localScreen),
@@ -335,7 +375,8 @@ export default function VoiceView({ channel }) {
     );
   }
 
-  const focused = tiles.find((t) => t.id === focusId);
+  const autoId = (tiles.find((t) => t.kind === 'screen') || tiles.find((t) => !t.self))?.id;
+  const focused = tiles.find((t) => t.id === (focusId === 'auto' ? autoId : focusId));
   const others = tiles.filter((t) => t !== focused);
   const pickFocus = () =>
     setFocusId((tiles.find((t) => t.kind === 'screen') || tiles.find((t) => !t.self) || tiles[0]).id);
@@ -345,6 +386,7 @@ export default function VoiceView({ channel }) {
     <div className="voice-view stage">
       {!channel.dm && (
         <header className="stage-head">
+          {phone && <MobileBack />}
           <Volume2 size={20} />
           <div className="stage-title">
             <b>{channel.name}</b>
@@ -371,7 +413,7 @@ export default function VoiceView({ channel }) {
               <Tile tile={focused} focused onFocus={() => setFocusId(null)} />
             </div>
             {others.length > 0 && (
-              <div className="voice-strip">
+              <div className={`voice-strip${phone ? ' pip' : ''}`} {...stripDrag}>
                 {others.map((t) => (
                   <Tile key={t.id} tile={t} onFocus={() => setFocusId(t.id)} />
                 ))}
@@ -417,6 +459,12 @@ export default function VoiceView({ channel }) {
           >
             {voice.video ? <Video /> : <VideoOff />}
           </button>
+          {isTouch && voice.video && (
+            <button className="ball" onClick={store.flipCamera} title="Trocar câmera" aria-label="Trocar câmera frontal e traseira">
+              <SwitchCamera />
+            </button>
+          )}
+          {canShareScreen && (
           <div className="ctrl-group">
             <button
               className={`ball${voice.screen ? ' on' : ''}`}
@@ -453,6 +501,7 @@ export default function VoiceView({ channel }) {
               </select>
             </label>
           </div>
+          )}
           <button
             className={`ball${nsOn ? ' aqua' : ''}`}
             onClick={() => store.setNoiseSuppression(!nsOn)}
