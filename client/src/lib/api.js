@@ -1,9 +1,11 @@
 // Acesso HTTP a um servidor PadoSpeak. O app pode falar com vários ao mesmo tempo (servidor, perfil
 // local e PCs da rede), então cada conexão tem o seu cliente (`createApi`) e o token fica salvo por endereço.
+// No app desktop, a sessão do servidor de comunidade também é separada por perfil local (`scope`): dois
+// perfis no mesmo PC nunca usam a conta um do outro.
 import { defaultServerUrl } from './env.js';
 
 const SERVER_KEY = 'padospeak.serverUrl';
-const tokenKey = (url) => `padospeak.token:${url}`;
+const tokenKey = (url, scope) => `padospeak.token:${url}${scope ? `#${scope}` : ''}`;
 
 export const storage = {
   get(k) {
@@ -35,8 +37,8 @@ export const normalizeUrl = (url) => {
 export const savedServerUrl = () => normalizeUrl(storage.get(SERVER_KEY) || defaultServerUrl());
 export const saveServerUrl = (url) => storage.set(SERVER_KEY, normalizeUrl(url) || null);
 
-export const loadToken = (url) => storage.get(tokenKey(url));
-export const saveToken = (url, t) => storage.set(tokenKey(url), t);
+export const loadToken = (url, scope) => storage.get(tokenKey(url, scope));
+export const saveToken = (url, t, scope) => storage.set(tokenKey(url, scope), t);
 
 export class ApiError extends Error {
   constructor(status, message) {

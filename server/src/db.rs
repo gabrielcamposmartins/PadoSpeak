@@ -169,6 +169,13 @@ CREATE TABLE IF NOT EXISTS stickers (
 CREATE INDEX IF NOT EXISTS idx_stickers_owner ON stickers(owner_id, hash);
 "#,
     ),
+    (
+        6,
+        r#"
+-- Cor do banner do perfil (acima da foto).
+ALTER TABLE users ADD COLUMN banner_color TEXT;
+"#,
+    ),
 ];
 
 impl Db {

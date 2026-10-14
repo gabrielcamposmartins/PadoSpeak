@@ -188,6 +188,23 @@ impl Hub {
         Self::visible(&s, user_id).then(|| s.statuses.get(user_id).cloned().unwrap_or_else(|| "online".into()))
     }
 
+    /// O usuário está (por alguma conexão) em algum destes servidores?
+    fn shares_guild(s: &HubState, user_id: &str, guilds: &HashSet<String>) -> bool {
+        s.user_conns
+            .get(user_id)
+            .into_iter()
+            .flatten()
+            .any(|id| s.conns.get(id).is_some_and(|c| !c.guilds.is_disjoint(guilds)))
+    }
+
+    /// Conta a `to` a presença atual de `about` (se estiver visível).
+    fn tell_presence(s: &HubState, about: &str, to: &str) {
+        if Self::visible(s, about) {
+            let status = s.statuses.get(about).cloned().unwrap_or_else(|| "online".into());
+            Self::send_to_user(s, to, &event("presence:update", json!({ "userId": about, "online": true, "status": status })));
+        }
+    }
+
     fn visible(s: &HubState, user_id: &str) -> bool {
         s.user_conns.contains_key(user_id) && s.statuses.get(user_id).is_none_or(|st| st != "invisible")
     }
@@ -259,6 +276,10 @@ impl Hub {
                     }
                 }
             }
+        }
+        if friends {
+            Self::tell_presence(&s, a, b);
+            Self::tell_presence(&s, b, a);
         }
     }
 
@@ -336,6 +357,12 @@ impl Hub {
             }
         }
         Self::presence(&s, user_id, Self::visible(&s, user_id), [guild_id.to_string()], &HashSet::new());
+        let one = HashSet::from([guild_id.to_string()]);
+        let members: Vec<String> =
+            s.user_conns.keys().filter(|u| u.as_str() != user_id && Self::shares_guild(&s, u, &one)).cloned().collect();
+        for m in members {
+            Self::tell_presence(&s, &m, user_id);
+        }
     }
 
     pub fn leave_guild(&self, user_id: &str, guild_id: &str) {
@@ -415,7 +442,14 @@ impl Hub {
                     })
                 })
                 .collect();
-            let online: Vec<&String> = s.user_conns.keys().filter(|u| Self::visible(&s, u)).collect();
+            // Um host pode ter vários servidores: só aparece online quem divide um servidor comigo ou é
+            // amigo (no nó local da rede, todos se veem).
+            let online: Vec<&String> = s
+                .user_conns
+                .keys()
+                .filter(|u| Self::visible(&s, u))
+                .filter(|u| s.lan_mode || *u == &user.id || friends.contains(*u) || Self::shares_guild(&s, u, &guilds))
+                .collect();
             let statuses: HashMap<&String, &String> =
                 online.iter().filter_map(|u| s.statuses.get(*u).map(|st| (*u, st))).collect();
             let _ = tx.send(event(

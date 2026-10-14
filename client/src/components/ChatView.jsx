@@ -385,19 +385,16 @@ export default function ChatView({ channel, variant = 'channel' }) {
               {text.length} / {MAX}
             </span>
           </div>
-          {typers.length > 0 && (
-            <div className="typing dm-typing" aria-live="polite">
-              {typingLine}
-            </div>
-          )}
           <div className="compose-row">
             {textarea}
             {sendBtn}
           </div>
-          <div className="panel-foot">
-            {lastReceived
-              ? `Última mensagem recebida ${dayLabel(lastReceived.createdAt) === 'HOJE' ? 'hoje' : `em ${new Date(lastReceived.createdAt).toLocaleDateString('pt-BR')}`} às ${hhmm(lastReceived.createdAt)}.`
-              : 'Nenhuma mensagem recebida ainda.'}
+          <div className={`panel-foot${typers.length ? ' typing-foot' : ''}`} aria-live="polite">
+            {typers.length
+              ? typingLine
+              : lastReceived
+                ? `Última mensagem recebida ${dayLabel(lastReceived.createdAt) === 'HOJE' ? 'hoje' : `em ${new Date(lastReceived.createdAt).toLocaleDateString('pt-BR')}`} às ${hhmm(lastReceived.createdAt)}.`
+                : 'Nenhuma mensagem recebida ainda.'}
           </div>
         </div>
       </section>

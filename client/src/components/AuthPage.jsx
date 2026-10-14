@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Server, Wifi } from 'lucide-react';
-import { useStore, localAuthenticate } from '../store.js';
+import { useStore, localAuthenticate, connRegistry, knownProfiles, lastProfile } from '../store.js';
+import Avatar from './Avatar.jsx';
 import { isDesktop } from '../lib/env.js';
 import Logo from './Logo.jsx';
 import { SceneArt, TitleBar } from './Aero.jsx';
@@ -14,8 +15,12 @@ import { SceneArt, TitleBar } from './Aero.jsx';
 export default function AuthPage() {
   const serverUrl = useStore((s) => s.baseUrl);
   const localError = useStore((s) => s.localError);
+  // Onde o perfil mora: o nó local no app desktop, o servidor no navegador.
+  const base = (isDesktop ? connRegistry.get('local')?.getState().baseUrl : serverUrl) || '';
   const [mode, setMode] = useState('login');
-  const [form, setForm] = useState({ username: '', password: '', displayName: '' });
+  const [form, setForm] = useState(() => ({ username: lastProfile(base), password: '', displayName: '' }));
+  // Como no Messenger: a foto de quem já entrou neste PC aparece ao digitar o usuário.
+  const known = mode === 'login' ? knownProfiles(base)[form.username.trim().toLowerCase()] : null;
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -57,14 +62,20 @@ export default function AuthPage() {
             </span>
           </div>
 
-          <div className="frame on auth-pic" aria-hidden="true">
-            <div className="pic">
-              <svg width="112" height="112" viewBox="0 0 112 112">
-                <circle cx="56" cy="44" r="22" />
-                <path d="M14 112c0-26 19-42 42-42s42 16 42 42z" />
-              </svg>
+          {known ? (
+            <div className="auth-known" aria-hidden="true">
+              <Avatar user={known} base={base} size={104} status="on" />
             </div>
-          </div>
+          ) : (
+            <div className="frame on auth-pic" aria-hidden="true">
+              <div className="pic">
+                <svg width="112" height="112" viewBox="0 0 112 112">
+                  <circle cx="56" cy="44" r="22" />
+                  <path d="M14 112c0-26 19-42 42-42s42 16 42 42z" />
+                </svg>
+              </div>
+            </div>
+          )}
 
           <div className="aero-tabs" role="tablist" aria-label="Acesso">
             <button
@@ -96,7 +107,7 @@ export default function AuthPage() {
                 autoComplete="username"
                 placeholder="seu_usuario"
                 required
-                autoFocus
+                autoFocus={!form.username}
               />
             </label>
             {mode === 'register' && (
@@ -114,6 +125,7 @@ export default function AuthPage() {
                 autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
                 placeholder="••••••••"
                 required
+                autoFocus={Boolean(form.username)}
               />
             </label>
 

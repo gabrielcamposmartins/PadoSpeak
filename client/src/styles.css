@@ -1785,6 +1785,8 @@ html.framed .overlay {
   line-height: 1.45;
   color: var(--text);
   margin: 2px 0 0;
+  /* recuo em relação ao "fulano diz:", como no Messenger */
+  padding-left: 18px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -1823,14 +1825,22 @@ html.framed .overlay {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 30px;
+  height: 30px;
+  overflow: hidden;
+  white-space: nowrap;
   font-size: 12px;
   color: var(--muted);
   padding: 6px 2px;
   border-top: 1px solid var(--line-soft);
 }
-.typing b {
+.typing b,
+.typing-foot b {
   color: var(--text-2);
+}
+.typing span,
+.typing-foot span {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .typing-ico {
   color: var(--typing-ico);
@@ -1969,21 +1979,6 @@ html.framed .overlay {
 .chat.dm .composer {
   padding: 0;
 }
-.chat.dm .typing {
-  border-top: 0;
-  min-height: 0;
-  padding: 5px 12px;
-}
-.typing-text {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.chat.dm .typing .count {
-  margin: 0;
-}
 .chat.dm .compose-row {
   padding: 8px 10px;
 }
@@ -1999,7 +1994,15 @@ html.framed .overlay {
   height: 48px;
 }
 .panel-foot {
-  padding: 4px 12px;
+  height: 24px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: 0 12px;
   font-size: 11.5px;
   color: var(--muted);
   border-top: 1px solid var(--panel-line);
@@ -2437,9 +2440,6 @@ html.framed .overlay {
   height: 100%;
   object-fit: contain;
   background: #03101f;
-}
-.tile video.cover {
-  object-fit: cover;
 }
 .tile video.mirror {
   transform: scaleX(-1);
@@ -3222,6 +3222,14 @@ html.framed .overlay {
   flex: none;
   position: relative;
 }
+/* Prévia do banner no editor de perfil */
+.banner-preview {
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  box-shadow: inset 0 10px 12px -8px rgba(255, 255, 255, 0.5);
+  margin-bottom: 4px;
+}
 .profile-banner::after {
   content: '';
   position: absolute;
@@ -3529,6 +3537,11 @@ html.framed .overlay {
 .brand em {
   font-style: normal;
   color: var(--brand-accent);
+}
+/* Foto de quem já entrou neste PC (como no Messenger) */
+.auth-known {
+  display: flex;
+  justify-content: center;
 }
 .auth-pic {
   padding: 5px;
@@ -4231,11 +4244,6 @@ fieldset.plain {
 .tools-head .composer-tools {
   flex: 1;
   padding: 0;
-}
-.dm-typing {
-  border-top: 0;
-  min-height: 0;
-  padding: 4px 12px 0;
 }
 
 /* Aviso de "chamar atenção" dentro da conversa */

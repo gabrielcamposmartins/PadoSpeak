@@ -109,6 +109,14 @@ pub async fn guild_ids_of(app: &App, user_id: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Servidor de que o usuário é membro; para quem não é, ele "não existe" (404).
+async fn member_guild(app: &App, guild_id: &str, user_id: &str) -> ApiResult<GuildFull> {
+    if !is_member(app, guild_id, user_id).await? {
+        return Err(not_found("Servidor não encontrado"));
+    }
+    guild_full(app, guild_id).await?.ok_or_else(|| not_found("Servidor não encontrado"))
+}
+
 async fn guild_full(app: &App, guild_id: &str) -> ApiResult<Option<GuildFull>> {
     let sql = format!("SELECT {GUILD_COLS} FROM guilds g WHERE g.id = ?1");
     let Some(guild) = app.db.query_one(&sql, [guild_id], guild_from_row).await? else {
@@ -211,7 +219,7 @@ async fn register(
         .and_then(|d| crate::models::fit_formatted(&d, crate::models::NAME_MAX, crate::models::NAME_RAW_MAX))
         .filter(|d| crate::models::visible_len(d) > 0)
         .unwrap_or_else(|| username.clone());
-    let user = User { id: new_id(), username, display_name, avatar_color: random_color(), avatar_url: None, bio: String::new(), name_color: None, bio_color: None, lan: false };
+    let user = User { id: new_id(), username, display_name, avatar_color: random_color(), avatar_url: None, bio: String::new(), name_color: None, bio_color: None, banner_color: None, lan: false };
     let hash = auth::hash_password(body.password).await;
     app.db
         .execute(
@@ -347,7 +355,7 @@ async fn get_guild(State(app): AppState, AuthUser(user, _): AuthUser, Path(id): 
 }
 
 async fn delete_guild(State(app): AppState, AuthUser(user, _): AuthUser, Path(id): Path<String>) -> ApiResult<StatusCode> {
-    let g = guild_full(&app, &id).await?.ok_or_else(|| not_found("Servidor não encontrado"))?;
+    let g = member_guild(&app, &id, &user.id).await?;
     if g.guild.owner_id != user.id {
         return Err(forbidden("Apenas o dono pode excluir o servidor"));
     }
@@ -365,7 +373,7 @@ async fn delete_guild(State(app): AppState, AuthUser(user, _): AuthUser, Path(id
 }
 
 async fn leave_guild(State(app): AppState, AuthUser(user, _): AuthUser, Path(id): Path<String>) -> ApiResult<StatusCode> {
-    let g = guild_full(&app, &id).await?.ok_or_else(|| not_found("Servidor não encontrado"))?;
+    let g = member_guild(&app, &id, &user.id).await?;
     if g.guild.owner_id == user.id {
         return Err(bad("O dono não pode sair; exclua o servidor"));
     }
@@ -383,7 +391,7 @@ async fn create_channel(
     Path(id): Path<String>,
     Json(body): Json<NameBody>,
 ) -> ApiResult<(StatusCode, Json<Channel>)> {
-    let g = guild_full(&app, &id).await?.ok_or_else(|| not_found("Servidor não encontrado"))?;
+    let g = member_guild(&app, &id, &user.id).await?;
     if g.guild.owner_id != user.id {
         return Err(forbidden("Apenas o dono pode criar canais"));
     }

@@ -66,6 +66,7 @@ struct ProfileBody {
     /// `#rrggbb`, ou "" para voltar à cor padrão.
     name_color: Option<String>,
     bio_color: Option<String>,
+    banner_color: Option<String>,
 }
 
 async fn update_profile(State(app): AppState, AuthUser(me, _): AuthUser, Json(body): Json<ProfileBody>) -> ApiResult<Json<Value>> {
@@ -82,7 +83,7 @@ async fn update_profile(State(app): AppState, AuthUser(me, _): AuthUser, Json(bo
             .ok_or_else(|| bad("O \"Sobre mim\" pode ter até 190 caracteres (e formatação de até 600)"))?;
         app.db.execute("UPDATE users SET bio = ?1 WHERE id = ?2", [bio.as_str(), me.id.as_str()]).await?;
     }
-    for (col, value) in [("name_color", body.name_color), ("bio_color", body.bio_color)] {
+    for (col, value) in [("name_color", body.name_color), ("bio_color", body.bio_color), ("banner_color", body.banner_color)] {
         let Some(value) = value else { continue };
         let value = value.trim().to_string();
         if !value.is_empty() && !valid_color(&value) {

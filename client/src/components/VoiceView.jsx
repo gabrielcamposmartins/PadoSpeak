@@ -25,7 +25,7 @@ import Avatar from './Avatar.jsx';
 import { useServerPing } from './hooks.js';
 
 /** <video> que acompanha o MediaStream e mede o que é de fato desenhado (resolução/fps). */
-function StreamVideo({ stream, mirror, cover, onStats }) {
+function StreamVideo({ stream, mirror, onStats }) {
   const ref = useRef(null);
   useEffect(() => {
     const el = ref.current;
@@ -43,7 +43,7 @@ function StreamVideo({ stream, mirror, cover, onStats }) {
     }, 1000);
     return () => clearInterval(t);
   }, [onStats]);
-  return <video ref={ref} autoPlay playsInline muted className={`${mirror ? 'mirror' : ''} ${cover ? 'cover' : ''}`} />;
+  return <video ref={ref} autoPlay playsInline muted className={mirror ? 'mirror' : undefined} />;
 }
 
 const LIMIT = { bandwidth: 'banda', cpu: 'CPU', other: 'outro' };
@@ -94,7 +94,6 @@ function Tile({ tile, focused, onFocus }) {
         <StreamVideo
           stream={tile.stream}
           mirror={tile.self && !isScreen}
-          cover={!isScreen && !focused}
           onStats={setRendered}
         />
       ) : tile.pending ? (

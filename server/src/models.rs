@@ -17,6 +17,8 @@ pub struct User {
     /// Cores escolhidas para o nome e para a mensagem pessoal (`#rrggbb`).
     pub name_color: Option<String>,
     pub bio_color: Option<String>,
+    /// Cor do banner do perfil (`#rrggbb`); sem ela, o banner usa a cor da foto.
+    pub banner_color: Option<String>,
     /// Perfil de outro PC da rede local, conectado como convidado (só nos nós locais).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub lan: bool,
@@ -27,10 +29,10 @@ pub fn avatar_url(user_id: &str, avatar_at: Option<i64>) -> Option<String> {
 }
 
 /// Espera as colunas: id, username, display_name, avatar_color, avatar_at, bio, name_color, bio_color,
-/// origin (a partir de `start`).
+/// origin, banner_color (a partir de `start`).
 pub const USER_COLS: &str =
-    "u.id, u.username, u.display_name, u.avatar_color, u.avatar_at, u.bio, u.name_color, u.bio_color, u.origin";
-pub const USER_COLS_LEN: i32 = 9;
+    "u.id, u.username, u.display_name, u.avatar_color, u.avatar_at, u.bio, u.name_color, u.bio_color, u.origin, u.banner_color";
+pub const USER_COLS_LEN: i32 = 10;
 pub fn user_at(r: &Row, start: i32) -> DbResult<User> {
     let id: String = r.get(start)?;
     let avatar_at: Option<i64> = r.get(start + 4)?;
@@ -44,6 +46,7 @@ pub fn user_at(r: &Row, start: i32) -> DbResult<User> {
         name_color: r.get(start + 6)?,
         bio_color: r.get(start + 7)?,
         lan: r.get::<Option<String>>(start + 8)?.as_deref() == Some("lan"),
+        banner_color: r.get(start + 9)?,
     })
 }
 /// `#rrggbb` válido (cores do nome e da mensagem pessoal).
@@ -133,10 +136,12 @@ pub struct Message {
 }
 
 pub const MESSAGE_SELECT: &str = "SELECT m.id, m.channel_id, m.content, m.created_at, m.edited_at, \
-     u.id, u.username, u.display_name, u.avatar_color, u.avatar_at, u.bio, u.name_color, u.bio_color, u.origin FROM messages m JOIN users u ON u.id = m.author_id";
+     u.id, u.username, u.display_name, u.avatar_color, u.avatar_at, u.bio, u.name_color, u.bio_color, u.origin, u.banner_color \
+     FROM messages m JOIN users u ON u.id = m.author_id";
 /// Mesmo formato para mensagens diretas (`channel_id` = id da conversa).
 pub const DM_MESSAGE_SELECT: &str = "SELECT m.id, m.dm_id, m.content, m.created_at, m.edited_at, \
-     u.id, u.username, u.display_name, u.avatar_color, u.avatar_at, u.bio, u.name_color, u.bio_color, u.origin FROM dm_messages m JOIN users u ON u.id = m.author_id";
+     u.id, u.username, u.display_name, u.avatar_color, u.avatar_at, u.bio, u.name_color, u.bio_color, u.origin, u.banner_color \
+     FROM dm_messages m JOIN users u ON u.id = m.author_id";
 pub fn message_from_row(r: &Row) -> DbResult<Message> {
     Ok(Message {
         id: r.get(0)?,

@@ -81,20 +81,28 @@ export const STICKER_RE = /^\[sticker:(emote:)?([^\]\s]+)\]$/;
 export const connRegistry = new Map();
 const syncConnKeys = () => useStore?.setState({ connKeys: [...connRegistry.keys()] });
 
+/**
+ * Perfil local que está usando o app desktop. A sessão do servidor de comunidade é guardada por perfil:
+ * ao trocar de perfil no mesmo PC, o servidor não continua logado na conta do anterior.
+ */
+let profileScope = null;
+const tokenScope = (kind) => (isDesktop && kind === 'server' ? profileScope : null);
+
 /** Store de uma conexão. `primary`: o store principal (`server`), que também guarda a interface. */
 export function createConnStore({ key, kind, base, primary = false }) {
   let rt = null;
   let voiceClient = null;
   const typingTimers = new Map();
   let baseUrl = base;
-  let token = loadToken(baseUrl);
+  // No desktop, o servidor só tem token depois que um perfil local entra (veja `reloadToken`).
+  let token = isDesktop && kind === 'server' ? null : loadToken(baseUrl, tokenScope(kind));
   const api = createApi(
     () => baseUrl,
     () => token,
   );
   const setToken = (t) => {
     token = t;
-    saveToken(baseUrl, t);
+    saveToken(baseUrl, t, tokenScope(kind));
   };
   let store = null;
   /** Store da interface (este mesmo, se for o principal). */
@@ -203,8 +211,13 @@ export function createConnStore({ key, kind, base, primary = false }) {
     /** Troca o endereço desta conexão (o token salvo passa a ser o do endereço novo). */
     setBase(url) {
       baseUrl = normalizeUrl(url);
-      token = loadToken(baseUrl);
+      token = loadToken(baseUrl, tokenScope(kind));
       set({ baseUrl, serverUrl: baseUrl });
+    },
+
+    /** O perfil local mudou: passa a usar a sessão salva desse perfil (ou nenhuma). */
+    reloadToken() {
+      token = loadToken(baseUrl, tokenScope(kind));
     },
 
     /** Entra (ou cria a conta) nesta conexão. */
@@ -1089,8 +1102,40 @@ export function createConnStore({ key, kind, base, primary = false }) {
     }
   });
 
+  // Perfis que já entraram neste PC: a tela de login mostra a foto de quem for digitado.
+  if (kind === 'local' || (primary && !isDesktop)) {
+    store.subscribe((s, prev) => s.me && s.me !== prev.me && rememberProfile(baseUrl, s.me));
+  }
+
   return store;
 }
+
+const knownKey = (base) => `padospeak.knownProfiles:${base}`;
+
+/** Guarda nome e foto de quem entrou (só neste PC), e quem foi o último. */
+function rememberProfile(base, me) {
+  const known = knownProfiles(base);
+  known[me.username.toLowerCase()] = {
+    id: me.id,
+    username: me.username,
+    displayName: me.displayName,
+    avatarUrl: me.avatarUrl || null,
+    avatarColor: me.avatarColor,
+  };
+  storage.set(knownKey(base), JSON.stringify(known));
+  storage.set(`padospeak.lastProfile:${base}`, me.username);
+}
+
+export function knownProfiles(base) {
+  try {
+    return JSON.parse(storage.get(knownKey(base))) || {};
+  } catch {
+    return {};
+  }
+}
+
+/** Último perfil que entrou neste PC (para já vir preenchido no login). */
+export const lastProfile = (base) => storage.get(`padospeak.lastProfile:${base}`) || '';
 
 /** Fecha e esquece uma conexão secundária. */
 export function dropConn(key) {
@@ -1168,9 +1213,36 @@ async function bootDesktop() {
   }
 }
 
+/** Passa a usar a sessão do servidor de comunidade deste perfil local (cada perfil tem a sua). */
+async function useProfileSession(me) {
+  useStore.getState().teardown();
+  profileScope = me.id;
+  const url = useStore.getState().baseUrl;
+  // Até a 1.2.0 havia uma sessão só por PC: ela passa para este perfil apenas se for a conta dele.
+  const legacy = url && loadToken(url);
+  if (legacy && !loadToken(url, me.id)) {
+    try {
+      const owner = await createApi(
+        () => url,
+        () => legacy,
+      ).get('/api/me');
+      // De outro perfil: fica guardada (sem uso) até o dono dela entrar.
+      if (owner.username.toLowerCase() === me.username.toLowerCase()) {
+        saveToken(url, legacy, me.id);
+        saveToken(url, null);
+      }
+    } catch (e) {
+      // Servidor fora do ar: decide na próxima vez. Sessão expirada: descarta.
+      if (e instanceof ApiError) saveToken(url, null);
+    }
+  }
+  useStore.getState().reloadToken();
+}
+
 async function enterLocal(local, me, password, token) {
   if (token) await local.getState().enterWithToken(token, me);
   else await local.getState().enterApp(me);
+  await useProfileSession(me);
   useStore.setState({ phase: 'app', view: { type: 'friends' }, currentGuildId: null });
   startLanMesh();
   connectServer({ username: me.username, password });
@@ -1196,6 +1268,8 @@ export async function localLogout() {
   useStore.getState().teardown();
   useStore.setState({ serverStatus: 'off' });
   clearTimeout(serverRetry);
+  profileScope = null;
+  useStore.getState().reloadToken();
   await connRegistry.get('local')?.getState().logout();
   useStore.setState({ phase: 'auth', view: null });
 }
@@ -1213,10 +1287,10 @@ export async function connectServer({ username, password = localPassword } = {})
   useStore.setState({ serverStatus: 'connecting' });
   const api = createApi(
     () => url,
-    () => loadToken(url),
+    () => loadToken(url, profileScope),
   );
   try {
-    if (loadToken(url)) {
+    if (loadToken(url, profileScope)) {
       try {
         const me = await api.get('/api/me');
         await st.enterApp(me);
@@ -1224,7 +1298,7 @@ export async function connectServer({ username, password = localPassword } = {})
         return;
       } catch (e) {
         if (!(e instanceof ApiError && e.status === 401)) throw e;
-        saveToken(url, null);
+        saveToken(url, null, profileScope);
         if (!password) return useStore.setState({ serverStatus: 'login' });
       }
     }
@@ -1279,18 +1353,19 @@ export async function syncProfileTo(target) {
   if (target.getState().kind === 'server' && theirs.username.toLowerCase() !== mine.username.toLowerCase()) return;
   try {
     const patch = {};
-    for (const k of ['displayName', 'bio', 'nameColor', 'bioColor']) {
+    for (const k of ['displayName', 'bio', 'nameColor', 'bioColor', 'bannerColor']) {
       if ((mine[k] || '') !== (theirs[k] || '')) patch[k] = mine[k] || '';
     }
     if (Object.keys(patch).length) await target.getState().updateProfile(patch);
-    const synced = storage.get(`padospeak.avatarSync:${target.getState().baseUrl}`);
+    const syncKey = `padospeak.avatarSync:${target.getState().baseUrl}#${theirs.id}`;
+    const synced = storage.get(syncKey);
     const want = mine.avatarUrl || '';
     if (want !== synced || (!!want !== !!theirs.avatarUrl)) {
       if (want) {
         const blob = await local.getState().avatarBlob();
         if (blob) await target.getState().uploadAvatar(blob);
       } else if (theirs.avatarUrl) await target.getState().removeAvatar();
-      storage.set(`padospeak.avatarSync:${target.getState().baseUrl}`, want);
+      storage.set(syncKey, want);
     }
   } catch (e) {
     console.warn('[perfil] sincronização', e);
@@ -1358,6 +1433,7 @@ function openPeer(nodeUrl) {
       bio: me.bio,
       nameColor: me.nameColor,
       bioColor: me.bioColor,
+      bannerColor: me.bannerColor,
       key: lanKey(),
     });
     const key = `peer:${nodeUrl}`;

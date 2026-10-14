@@ -48,6 +48,8 @@ struct BeaconUser {
     bio: String,
     name_color: Option<String>,
     bio_color: Option<String>,
+    #[serde(default)]
+    banner_color: Option<String>,
     status: String,
 }
 
@@ -81,6 +83,7 @@ pub struct LanPeer {
     pub bio: String,
     pub name_color: Option<String>,
     pub bio_color: Option<String>,
+    pub banner_color: Option<String>,
     pub status: String,
     /// Endereço do nó local daquele PC (onde ficam as conversas em que ele é o "dono").
     pub node_url: String,
@@ -135,6 +138,7 @@ impl Lan {
                     bio: u.bio.clone(),
                     name_color: u.name_color.clone(),
                     bio_color: u.bio_color.clone(),
+                    banner_color: u.banner_color.clone(),
                     status: u.status.clone(),
                     node_url: base.clone(),
                     node: node.clone(),
@@ -274,7 +278,7 @@ async fn announced_users(app: &App) -> Vec<BeaconUser> {
         let row = app
             .db
             .query_one(
-                "SELECT id, username, display_name, avatar_color, avatar_at, bio, name_color, bio_color FROM users \
+                "SELECT id, username, display_name, avatar_color, avatar_at, bio, name_color, bio_color, banner_color FROM users \
                  WHERE id = ?1 AND origin = 'local'",
                 [id.as_str()],
                 |r| {
@@ -287,6 +291,7 @@ async fn announced_users(app: &App) -> Vec<BeaconUser> {
                         bio: r.get::<Option<String>>(5)?.unwrap_or_default(),
                         name_color: r.get(6)?,
                         bio_color: r.get(7)?,
+                        banner_color: r.get(8)?,
                         status: status.clone(),
                     })
                 },
@@ -331,6 +336,8 @@ struct SessionBody {
     bio: String,
     name_color: Option<String>,
     bio_color: Option<String>,
+    #[serde(default)]
+    banner_color: Option<String>,
     /// Chave secreta do PC de quem entra (fixada na primeira conexão).
     key: String,
 }
@@ -361,6 +368,7 @@ async fn session(
     let bio = fit_formatted(&body.bio, BIO_MAX, BIO_RAW_MAX).unwrap_or_default();
     let avatar_color = clean_color(Some(body.avatar_color)).unwrap_or_else(|| "#3a8ee0".into());
     let (name_color, bio_color) = (clean_color(body.name_color), clean_color(body.bio_color));
+    let banner_color = clean_color(body.banner_color);
 
     let existing = app
         .db
@@ -384,8 +392,8 @@ async fn session(
         app.db
             .execute(
                 "UPDATE users SET display_name = ?1, bio = ?2, avatar_color = ?3, name_color = ?4, bio_color = ?5, \
-                 lan_key_hash = COALESCE(lan_key_hash, ?6) WHERE id = ?7",
-                libsql::params![display_name.as_str(), bio.as_str(), avatar_color.as_str(), name_color, bio_color, key_hash, id.as_str()],
+                 lan_key_hash = COALESCE(lan_key_hash, ?6), banner_color = ?8 WHERE id = ?7",
+                libsql::params![display_name.as_str(), bio.as_str(), avatar_color.as_str(), name_color, bio_color, key_hash, id.as_str(), banner_color],
             )
             .await?;
     } else {
@@ -393,7 +401,7 @@ async fn session(
         app.db
             .execute(
                 "INSERT INTO users (id, username, display_name, password_hash, avatar_color, created_at, bio, name_color, \
-                 bio_color, origin, lan_key_hash) VALUES (?1, ?2, ?3, '!lan', ?4, ?5, ?6, ?7, ?8, 'lan', ?9)",
+                 bio_color, origin, lan_key_hash, banner_color) VALUES (?1, ?2, ?3, '!lan', ?4, ?5, ?6, ?7, ?8, 'lan', ?9, ?10)",
                 libsql::params![
                     id.as_str(),
                     username,
@@ -403,7 +411,8 @@ async fn session(
                     bio.as_str(),
                     name_color,
                     bio_color,
-                    key_hash
+                    key_hash,
+                    banner_color
                 ],
             )
             .await?;
@@ -461,6 +470,7 @@ mod tests {
             bio: String::new(),
             name_color: None,
             bio_color: None,
+            banner_color: None,
             status: "online".into(),
         };
         assert!(lan.see("192.168.0.9".parse().unwrap(), beacon(vec![ana.clone()])));

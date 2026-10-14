@@ -45,6 +45,9 @@ const TITLES = {
   serverLogin: 'Entrar no servidor',
 };
 
+/** Fundo do banner do perfil (acima da foto) a partir de uma cor. */
+const bannerBackground = (c) => `linear-gradient(135deg, color-mix(in srgb, ${c} 55%, #fff), ${c})`;
+
 /** Paleta pronta da cor do sistema (todas combinam com o visual Aero). */
 export const ACCENTS = [
   ['#1a8fd6', 'Céu'],
@@ -677,10 +680,7 @@ function ProfileCard({ close, userId }) {
 
   return (
     <div className="profile-card">
-      <div
-        className="profile-banner"
-        style={{ background: `linear-gradient(135deg, color-mix(in srgb, ${user.avatarColor} 55%, #fff), ${user.avatarColor})` }}
-      />
+      <div className="profile-banner" style={{ background: bannerBackground(user.bannerColor || user.avatarColor) }} />
       <div className="profile-head">
         <Avatar user={user} size={80} status={online ? undefined : 'off'} />
         {isMe && (
@@ -820,11 +820,12 @@ function EditProfileModal({ close }) {
   const base = prim((s) => s.baseUrl);
   const [name, setName] = useState(() => withLegacyColor(me.displayName, me.nameColor));
   const [bio, setBio] = useState('');
+  const [banner, setBanner] = useState(me.bannerColor || null);
   const [loaded, setLoaded] = useState(false);
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef(null);
   const { busy, error, run } = useAction(async () => {
-    await prim.getState().updateProfile({ displayName: name, bio, nameColor: '', bioColor: '' });
+    await prim.getState().updateProfile({ displayName: name, bio, nameColor: '', bioColor: '', bannerColor: banner || '' });
     syncProfileEverywhere();
   }, close);
 
@@ -859,6 +860,17 @@ function EditProfileModal({ close }) {
       <div className="modal-body">
         <h2>Meu perfil</h2>
         <p className="sub">Como as outras pessoas veem você.</p>
+        <div className="field">
+          <span>Cor do banner</span>
+          <div className="banner-preview" style={{ background: bannerBackground(banner || me.avatarColor) }} />
+          <ColorChoice
+            label="Cor do banner"
+            value={banner}
+            palette={ACCENTS}
+            defaultLabel="Da foto"
+            onChange={setBanner}
+          />
+        </div>
         <div className="avatar-edit">
           <button
             type="button"
