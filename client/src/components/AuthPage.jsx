@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { Server, Wifi } from 'lucide-react';
+import { Server, Wifi, Download } from 'lucide-react';
 import { useStore, localAuthenticate, connRegistry, knownProfiles, lastProfile } from '../store.js';
 import Avatar from './Avatar.jsx';
-import { isDesktop } from '../lib/env.js';
+import { isDesktop, DOWNLOAD_URL } from '../lib/env.js';
 import Logo from './Logo.jsx';
 import { SceneArt, TitleBar } from './Aero.jsx';
 
@@ -156,6 +156,17 @@ export default function AuthPage() {
               {busy ? 'Aguarde…' : mode === 'login' ? 'Entrar' : isDesktop ? 'Criar perfil' : 'Criar conta'}
             </button>
           </form>
+
+          {/* No navegador: convite para baixar o app (perfil local, rede local, bandeja do Windows). */}
+          {!isDesktop && (
+            <div className="auth-download">
+              <span>ou use o app</span>
+              <a className="btn secondary block" href={DOWNLOAD_URL}>
+                <Download size={16} /> Baixar o PadoSpeak para Windows
+              </a>
+              <small>Última versão · Windows 10 e 11 · atualiza sozinho</small>
+            </div>
+          )}
         </div>
       </div>
     </div>

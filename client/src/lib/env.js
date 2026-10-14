@@ -6,6 +6,9 @@ export const isPanel =
   typeof window !== 'undefined' &&
   (window.__PADOSPEAK_PANEL__ === true || (import.meta.env.DEV && location.pathname === '/host'));
 
+/** Instalador da última versão do app desktop (link fixo da release mais recente no GitHub). */
+export const DOWNLOAD_URL = 'https://github.com/gabrielcamposmartins/PadoSpeak/releases/latest/download/PadoSpeak-setup.exe';
+
 /** Servidor de comunidade padrão do app desktop. */
 export const DEFAULT_SERVER = 'https://padospeak.padoru.org';
 
