@@ -1,5 +1,14 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.6.1 — 15/10/2026
+
+### Correções
+- Nas conversas privadas, os botões de câmera e de gravar áudio ficam da mesma altura do botão Enviar.
+- A janela de configurações abre direto nas abas (sem o título repetido).
+
+### Segurança
+- Login com limite de tentativas: depois de 5 senhas erradas seguidas, é preciso esperar 15 minutos para tentar de novo.
+
 ## 1.6.0 — 15/10/2026
 
 ### Mensagens

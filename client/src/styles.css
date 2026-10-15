@@ -6481,6 +6481,7 @@ html[data-touch] [data-tip]::after {
 /* ---------- Configurações do usuário em abas ---------- */
 .settings-tabs {
   justify-content: center;
+  margin-top: 0;
 }
 .settings-tabs button {
   display: inline-flex;
@@ -6653,6 +6654,16 @@ kbd {
   width: 40px;
   flex: none;
   padding: 0;
+}
+/* Conversa privada: câmera e microfone da mesma altura do Enviar. */
+.chat.dm .compose-ico {
+  align-self: center;
+  height: 48px;
+}
+.mobile-app .compose-ico,
+.mobile-app .chat.dm .compose-ico {
+  align-self: center;
+  height: 44px;
 }
 .voice-rec {
   flex: 1;

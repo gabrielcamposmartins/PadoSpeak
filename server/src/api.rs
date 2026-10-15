@@ -363,20 +363,35 @@ async fn register(
 async fn login(
     State(app): AppState,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<Credentials>,
 ) -> ApiResult<Json<Value>> {
     local_only(&app, addr)?;
+    // No máximo 5 tentativas erradas seguidas (por usuário e endereço) a cada 15 minutos.
+    let ip = crate::hub::client_ip(addr, &headers).to_string();
+    let limiter = &crate::ratelimit::LOGIN;
+    if let Err(wait) = limiter.check(&ip, &body.username, crate::now_ms()) {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            format!("Muitas tentativas de login. Tente de novo em {}.", crate::ratelimit::wait_text(wait)),
+        ));
+    }
+    let wrong = || {
+        limiter.fail(&ip, &body.username, crate::now_ms());
+        ApiError::new(StatusCode::UNAUTHORIZED, "Usuário ou senha incorretos")
+    };
     let sql = format!("SELECT {USER_COLS}, u.password_hash FROM users u WHERE u.username = ?1");
     let found = app
         .db
         .query_one(&sql, [body.username.trim()], |r| Ok((user_from_row(r)?, r.get::<String>(USER_COLS_LEN)?)))
         .await?;
     let Some((user, hash)) = found else {
-        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "Usuário ou senha incorretos"));
+        return Err(wrong());
     };
-    if !auth::verify_password(body.password, hash).await {
-        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "Usuário ou senha incorretos"));
+    if !auth::verify_password(body.password.clone(), hash).await {
+        return Err(wrong());
     }
+    limiter.success(&ip, &body.username);
     let token = auth::create_session(&app.db, &user.id).await?;
     Ok(Json(json!({ "token": token, "user": user })))
 }

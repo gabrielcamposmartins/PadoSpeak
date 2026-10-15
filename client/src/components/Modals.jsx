@@ -824,18 +824,6 @@ function SettingsModal({ close }) {
   return (
     <>
       <div className="modal-body settings-body">
-        <h2>Configurações</h2>
-        <p className="sub">
-          {isDesktop ? (
-            <>
-              Perfil local <b>@{me.username}</b> neste PC
-            </>
-          ) : (
-            <>
-              Conectado como <b>@{me.username}</b> em {serverUrl}
-            </>
-          )}
-        </p>
         <div className="gs-tabs settings-tabs" role="tablist">
           {SETTINGS_TABS.map(([id, label, Icon]) => (
             <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? 'on' : ''} onClick={() => setTab(id)}>

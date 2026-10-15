@@ -22,6 +22,7 @@ pub mod stickers;
 pub mod music;
 pub mod panel;
 pub mod push;
+pub mod ratelimit;
 pub mod tls;
 
 pub use config::HostConfig;
