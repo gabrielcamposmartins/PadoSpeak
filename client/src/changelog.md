@@ -1,5 +1,21 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.6.7 — 15/10/2026
+
+### Novidades
+- **Marcar como NSFW ao enviar**: cada anexo na caixa de mensagem tem o botão “NSFW”. Marcada, a imagem (ou vídeo) chega borrada para todos e só aparece ao clicar; depois dá para borrar de novo.
+- **Só para mim**: na barra de uma mensagem, “NSFW” borra uma foto ou vídeo só para você, e “Excluir para mim” some com a mensagem de outra pessoa só para você — em todos os seus aparelhos. Os outros continuam vendo normalmente.
+- **Atalhos para silenciar e ensurdecer** (Configurações → Funcionalidade): padrão Ctrl+Shift+M e Ctrl+Shift+D, e dá para trocar. No app do Windows funcionam em qualquer lugar, mesmo com o PadoSpeak minimizado ou atrás de um jogo.
+- **Foto de perfil em GIF animado** (até 2 MB): continua animada em vez de parar no primeiro quadro.
+- **Muitas tentativas de login**: perto do bloqueio, o aviso diz quantas tentativas restam; bloqueado, mostra quanto tempo falta para tentar de novo.
+- O nome dos arquivos enviados também fica guardado com criptografia no servidor.
+
+### Correções
+- **App do Windows e o perfil da conta**: o perfil do servidor (nome, foto, mensagem pessoal) é o que vale. Quem já tinha conta pelo site ou celular e instalou o app não perde mais o perfil; o perfil do PC é uma cópia para entrar sem internet.
+- **Primeira vez no app do Windows**: dá para entrar direto com o usuário e a senha da conta do servidor (antes aparecia “senha incorreta”).
+- **App do Windows**: quando o servidor recusa o login, a mensagem agora diz o motivo de verdade (ex.: muitas tentativas) em vez de “senha incorreta”.
+- **Prévia do sticker** na caixa de mensagem: o sticker aparece inteiro, sem cortar.
+
 ## 1.6.6 — 15/10/2026
 
 ### Novidades

@@ -41,9 +41,12 @@ export const loadToken = (url, scope) => storage.get(tokenKey(url, scope));
 export const saveToken = (url, t, scope) => storage.set(tokenKey(url, scope), t);
 
 export class ApiError extends Error {
-  constructor(status, message) {
+  /** `data`: o resto da resposta (ex.: `retryAfter` ms e `attemptsLeft` do login). */
+  constructor(status, message, data) {
     super(message);
     this.status = status;
+    if (data?.retryAfter) this.retryAfter = data.retryAfter;
+    if (data?.attemptsLeft != null) this.attemptsLeft = data.attemptsLeft;
   }
 }
 
@@ -70,7 +73,7 @@ export function createApi(base, token) {
     }
     if (res.status === 204) return null;
     const data = await res.json().catch(() => null);
-    if (!res.ok) throw new ApiError(res.status, data?.error || `Erro ${res.status}`);
+    if (!res.ok) throw new ApiError(res.status, data?.error || `Erro ${res.status}`, data);
     return data;
   }
   return {

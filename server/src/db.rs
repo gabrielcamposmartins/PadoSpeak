@@ -374,6 +374,27 @@ CREATE TABLE IF NOT EXISTS app_admins (
 ALTER TABLE users ADD COLUMN must_reset INTEGER NOT NULL DEFAULT 0;
 "#,
     ),
+    (
+        15,
+        r#"
+-- Arquivo marcado como NSFW por quem enviou: aparece borrado até a pessoa clicar.
+ALTER TABLE files ADD COLUMN nsfw INTEGER NOT NULL DEFAULT 0;
+"#,
+    ),
+    (
+        16,
+        r#"
+-- Marcas que valem só para quem marcou: mensagem excluída para mim (`hidden`) e foto/vídeo que eu
+-- marquei como NSFW (`nsfw`).
+CREATE TABLE IF NOT EXISTS message_marks (
+  user_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, message_id, kind)
+);
+"#,
+    ),
 ];
 
 impl Db {

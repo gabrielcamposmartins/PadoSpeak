@@ -2,7 +2,11 @@
 //!
 //! O conteúdo fica no disco do servidor (`<dados>/arquivos/<id>`), cifrado como as mensagens, em
 //! pedaços de 64 KiB: dá para abrir só o trecho pedido (avançar no vídeo sem decifrar o arquivo todo).
-//! Só baixa quem tem acesso à conversa ou ao canal onde o arquivo foi enviado.
+//! Só baixa quem tem acesso à conversa ou ao canal onde o arquivo foi enviado. O nome do arquivo
+//! também fica cifrado no banco.
+//!
+//! NSFW: quem envia pode marcar o arquivo (`nsfw=1`); a mensagem leva o tipo como `nsfw;<tipo>` e o
+//! app mostra a imagem/vídeo borrado até a pessoa clicar.
 //!
 //! Compressão: o app já manda texto, documentos e afins comprimidos em gzip (`encoding=gzip`); o que
 //! chegar sem compressão e valer a pena é comprimido aqui. O disco guarda o gzip, e o download vai com
@@ -151,6 +155,8 @@ pub struct FileInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
     pub big: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub nsfw: bool,
 }
 
 pub fn router() -> Router<Arc<App>> {
@@ -171,6 +177,15 @@ struct UploadQuery {
     /// `voice`: mensagem de voz gravada no app.
     #[serde(default)]
     kind: Option<String>,
+    /// `1`: marcado como NSFW (aparece borrado até clicar).
+    #[serde(default)]
+    nsfw: Option<String>,
+}
+
+impl UploadQuery {
+    fn nsfw(&self) -> bool {
+        matches!(self.nsfw.as_deref(), Some("1" | "true"))
+    }
 }
 
 /// Formatos que já são comprimidos: comprimir de novo só gasta CPU.
@@ -337,6 +352,7 @@ async fn upload(
         return Err(bad("Arquivo vazio"));
     }
     let voice = q.kind.as_deref() == Some("voice");
+    let nsfw = q.nsfw() && !voice;
     let (channel_id, guild_id) =
         place(&app, &q.channel, &me.id).await.ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "Conversa não encontrada".into()))?;
     let declared: Option<u64> =
@@ -344,7 +360,7 @@ async fn upload(
     let sent_gzip = q.encoding.as_deref() == Some("gzip");
     let limit = if voice { VOICE_MAX } else { max_bytes() };
     if declared.is_some_and(|n| n as usize > limit) && !voice && !sent_gzip {
-        return upload_big(&app, &me, name, channel_id, guild_id, declared.unwrap_or_default(), body).await;
+        return upload_big(&app, &me, name, channel_id, guild_id, declared.unwrap_or_default(), nsfw, body).await;
     }
     let too_big = || {
         if voice {
@@ -407,25 +423,26 @@ async fn upload(
     let expires_at = ttl.map(|t| now + t);
     app.db
         .execute(
-            "INSERT INTO files (id, owner_id, guild_id, channel_id, name, mime, size, created_at, encoding, stored, expires_at, kind) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO files (id, owner_id, guild_id, channel_id, name, mime, size, created_at, encoding, stored, expires_at, kind, nsfw) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             libsql::params![
                 id.as_str(),
                 me.id.as_str(),
                 guild_id,
                 channel_id.as_str(),
-                name.as_str(),
+                app.db.cipher.seal(&name),
                 mime,
                 body.len() as i64,
                 now,
                 encoding,
                 content.len() as i64,
                 expires_at,
-                voice.then_some("voice")
+                voice.then_some("voice"),
+                nsfw as i64
             ],
         )
         .await?;
-    Ok(Json(FileInfo { id, name, mime: mime.into(), size: body.len() as i64, expires_at, big: false }))
+    Ok(Json(FileInfo { id, name, mime: mime.into(), size: body.len() as i64, expires_at, big: false, nsfw }))
 }
 
 /// Arquivo maior que o limite normal: vai direto para o disco aos poucos e some em 10 minutos.
@@ -436,6 +453,7 @@ async fn upload_big(
     channel_id: String,
     guild_id: Option<String>,
     size: u64,
+    nsfw: bool,
     body: Body,
 ) -> ApiResult<Json<FileInfo>> {
     let bad = |m: &str| ApiError(StatusCode::BAD_REQUEST, m.into());
@@ -493,13 +511,24 @@ async fn upload_big(
     let expires_at = now + BIG_TTL_MS;
     app.db
         .execute(
-            "INSERT INTO files (id, owner_id, guild_id, channel_id, name, mime, size, created_at, encoding, stored, expires_at, big) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?7, ?9, 1)",
-            libsql::params![id.as_str(), me.id.as_str(), guild_id, channel_id.as_str(), name.as_str(), mime, size as i64, now, expires_at],
+            "INSERT INTO files (id, owner_id, guild_id, channel_id, name, mime, size, created_at, encoding, stored, expires_at, big, nsfw) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?7, ?9, 1, ?10)",
+            libsql::params![
+                id.as_str(),
+                me.id.as_str(),
+                guild_id,
+                channel_id.as_str(),
+                app.db.cipher.seal(&name),
+                mime,
+                size as i64,
+                now,
+                expires_at,
+                nsfw as i64
+            ],
         )
         .await?;
     app.logs.info(format!("Arquivo grande recebido: {name} ({} MB, some em 10 min)", size / 1024 / 1024));
-    Ok(Json(FileInfo { id, name, mime: mime.into(), size: size as i64, expires_at: Some(expires_at), big: true }))
+    Ok(Json(FileInfo { id, name, mime: mime.into(), size: size as i64, expires_at: Some(expires_at), big: true, nsfw }))
 }
 
 /// A mensagem `[arquivo:…]`/`[voz:…]` acabou de ser enviada: o arquivo passa a ser dela (some junto
@@ -552,7 +581,7 @@ async fn file_row(app: &App, id: &str) -> Option<FileRow> {
                     owner_id: r.get(0)?,
                     guild_id: r.get(1)?,
                     channel_id: r.get(2)?,
-                    name: r.get(3)?,
+                    name: app.db.cipher.reveal(&r.get::<String>(3)?),
                     mime: r.get(4)?,
                     size: r.get(5)?,
                     encoding: r.get(6)?,
@@ -873,16 +902,16 @@ async fn guild_files(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): 
         .db
         .query_all(
             "SELECT f.id, f.name, f.mime, f.size, f.created_at, f.channel_id, COALESCE(c.name, ''), u.display_name, u.username, \
-             COALESCE(f.stored, f.size), f.expires_at, f.big, f.kind FROM files f LEFT JOIN channels c ON c.id = f.channel_id \
+             COALESCE(f.stored, f.size), f.expires_at, f.big, f.kind, f.nsfw FROM files f LEFT JOIN channels c ON c.id = f.channel_id \
              JOIN users u ON u.id = f.owner_id WHERE f.guild_id = ?1 ORDER BY f.created_at DESC",
             [id.as_str()],
             |r| {
                 Ok(json!({
-                    "id": r.get::<String>(0)?, "name": r.get::<String>(1)?, "mime": r.get::<String>(2)?,
+                    "id": r.get::<String>(0)?, "name": app.db.cipher.reveal(&r.get::<String>(1)?), "mime": r.get::<String>(2)?,
                     "size": r.get::<i64>(3)?, "createdAt": r.get::<i64>(4)?, "channelId": r.get::<String>(5)?,
                     "channelName": r.get::<String>(6)?, "by": r.get::<String>(7)?, "byUsername": r.get::<String>(8)?,
                     "stored": r.get::<i64>(9)?, "expiresAt": r.get::<Option<i64>>(10)?, "big": r.get::<i64>(11)? != 0,
-                    "kind": r.get::<Option<String>>(12)?,
+                    "kind": r.get::<Option<String>>(12)?, "nsfw": r.get::<i64>(13)? != 0,
                 }))
             },
         )

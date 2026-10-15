@@ -63,8 +63,11 @@ function Sheet({ title, onClose, className = '', children }) {
   );
 }
 
-/** Miniatura de um anexo na caixa de mensagem (imagem, vídeo, sticker ou cartão do arquivo). */
-function AttachTile({ item, big, onRemove }) {
+/**
+ * Miniatura de um anexo na caixa de mensagem (imagem, vídeo, sticker ou cartão do arquivo). Arquivos
+ * têm o botão "NSFW": marcado, quem receber vê borrado até clicar.
+ */
+function AttachTile({ item, big, onRemove, onNsfw }) {
   const file = item.kind === 'file' ? item.file : null;
   const url = useMemo(() => (file && /^(image|video)\//.test(file.type) ? URL.createObjectURL(file) : null), [file]);
   useEffect(() => () => url && URL.revokeObjectURL(url), [url]);
@@ -78,7 +81,10 @@ function AttachTile({ item, big, onRemove }) {
         ? FileText
         : FileIcon;
   return (
-    <div className={`attach-tile ${kind}${big ? ' big' : ''}`} title={file ? `${file.name} · ${fmtSize(file.size)}` : 'Sticker'}>
+    <div
+      className={`attach-tile ${kind}${big ? ' big' : ''}${item.nsfw ? ' nsfw' : ''}`}
+      title={file ? `${file.name} · ${fmtSize(file.size)}${item.nsfw ? ' · NSFW' : ''}` : 'Sticker'}
+    >
       {item.kind === 'sticker' ? (
         <StickerView sticker={item.sticker} />
       ) : kind === 'image' ? (
@@ -100,6 +106,18 @@ function AttachTile({ item, big, onRemove }) {
       <button type="button" className="attach-x" onClick={onRemove} aria-label={`Tirar ${name}`} title="Tirar">
         <X size={12} />
       </button>
+      {file && (
+        <button
+          type="button"
+          className="attach-nsfw"
+          onClick={onNsfw}
+          aria-pressed={Boolean(item.nsfw)}
+          aria-label={`Marcar ${name} como NSFW`}
+          title={item.nsfw ? 'NSFW: aparece borrado até clicar (clique para desmarcar)' : 'Marcar como NSFW (aparece borrado até clicar)'}
+        >
+          NSFW
+        </button>
+      )}
     </div>
   );
 }
@@ -125,7 +143,7 @@ export function oversized(items, config) {
  * Anexos esperando o envio, acima da caixa de mensagem: o texto escrito na caixa vai junto ao enviar.
  * `items`: `{ kind: 'file', file }` ou `{ kind: 'sticker', sticker }`.
  */
-export function AttachTray({ items, onRemove, onClear }) {
+export function AttachTray({ items, onRemove, onClear, onNsfw }) {
   const { maxFile, maxTotal, ttlMs, maxCount } = useFileLimits();
   if (!items.length) return null;
   const files = items.filter((i) => i.kind === 'file').map((i) => i.file);
@@ -135,7 +153,13 @@ export function AttachTray({ items, onRemove, onClear }) {
     <div className="attach-tray" role="group" aria-label="Anexos para enviar">
       <div className="attach-row">
         {items.map((it, i) => (
-          <AttachTile key={it.key} item={it} big={it.kind === 'file' && it.file.size > maxFile} onRemove={() => onRemove(i)} />
+          <AttachTile
+            key={it.key}
+            item={it}
+            big={it.kind === 'file' && it.file.size > maxFile}
+            onRemove={() => onRemove(i)}
+            onNsfw={() => onNsfw(i)}
+          />
         ))}
         {items.length > 1 && (
           <button type="button" className="gloss mini attach-clear" onClick={onClear} title="Tirar todos" aria-label="Tirar todos os anexos">

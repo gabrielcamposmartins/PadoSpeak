@@ -59,6 +59,14 @@ impl LoginLimiter {
         }
     }
 
+    /// Quantos erros ainda faltam para bloquear esse usuário nesse endereço.
+    pub fn remaining(&self, ip: &str, user: &str, now: i64) -> usize {
+        let (uk, ik) = keys(ip, user);
+        let map = self.fails.lock().unwrap();
+        let used = |key: &str| map.get(key).map_or(0, |l| l.iter().filter(|t| now - **t < WINDOW_MS).count());
+        MAX_PER_USER.saturating_sub(used(&uk)).min(MAX_PER_IP.saturating_sub(used(&ik)))
+    }
+
     /// Entrou: zera os erros desse usuário nesse endereço.
     pub fn success(&self, ip: &str, user: &str) {
         let (uk, _) = keys(ip, user);
@@ -84,6 +92,8 @@ mod tests {
             assert!(l.check("1.2.3.4", "Ana", t + i as i64).is_ok(), "tentativa {}", i + 1);
             l.fail("1.2.3.4", "ana", t + i as i64);
         }
+        assert_eq!(l.remaining("1.2.3.4", "ana", t + 10), 0);
+        assert_eq!(l.remaining("1.2.3.4", "bia", t + 10), MAX_PER_USER);
         let wait = l.check("1.2.3.4", "ANA", t + 10).unwrap_err();
         assert!(wait > 14 * 60 * 1000 && wait <= WINDOW_MS);
         // Outro endereço e outro usuário continuam podendo tentar.

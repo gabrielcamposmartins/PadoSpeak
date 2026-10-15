@@ -97,7 +97,7 @@ export default function AttachSheet({ target, onFiles, onCamera, onClose }) {
       for (const m of list || []) {
         const f = parseFile(m.content);
         if (!f) continue;
-        out.push({ kind: 'remote', key: `r-${f.id}`, id: f.id, name: f.name, type: f.mime, size: f.size, at: typeof m.createdAt === 'number' ? m.createdAt : Date.parse(m.createdAt) || 0, source: m.author?.id === me ? 'enviado' : 'recebido', url: fileUrl(f.id) });
+        out.push({ kind: 'remote', key: `r-${f.id}`, id: f.id, name: f.name, type: f.mime, size: f.size, nsfw: f.nsfw, at: typeof m.createdAt === 'number' ? m.createdAt : Date.parse(m.createdAt) || 0, source: m.author?.id === me ? 'enviado' : 'recebido', url: fileUrl(f.id) });
       }
     // o mesmo arquivo (mandado de novo, por exemplo) aparece uma vez só, no mais recente
     const seen = new Set();
@@ -179,7 +179,7 @@ export default function AttachSheet({ target, onFiles, onCamera, onClose }) {
                   disabled={Boolean(busy)}
                   aria-label={t.kind === 'clip-ask' ? 'Ver o que está copiado' : `${t.name} (${t.source})`}
                 >
-                  <span className="as-thumb">{busy === t.key ? <LoaderCircle size={22} className="spin" /> : <Thumb tile={t} />}</span>
+                  <span className={`as-thumb${t.nsfw ? ' nsfw' : ''}`}>{busy === t.key ? <LoaderCircle size={22} className="spin" /> : <Thumb tile={t} />}</span>
                   <span className="as-name">{t.kind === 'clip-ask' ? 'Copiado' : label(t.name)}</span>
                   <small>{t.at ? `${t.source} · ${when(t.at)}` : t.source}</small>
                 </button>

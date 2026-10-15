@@ -89,8 +89,8 @@ function ConnectionSection({ hostedUrl }) {
       </div>
       <p className="kv">
         Seu perfil local, as conversas e as chamadas com a rede local funcionam sem servidor. Servidores (guilds) e
-        amigos ficam no servidor de comunidade. Se a conta lá tiver o mesmo usuário e senha do perfil local, nome, foto
-        e mensagem pessoal são copiados do perfil local.
+        amigos ficam no servidor de comunidade. Se a conta lá tiver o mesmo usuário do perfil local, o perfil do servidor
+        (nome, foto e mensagem pessoal) é o que vale: o perfil local guarda uma cópia para entrar sem internet.
       </p>
     </section>
   );

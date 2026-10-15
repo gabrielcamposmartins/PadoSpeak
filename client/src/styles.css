@@ -3124,6 +3124,99 @@ html.framed .overlay {
   font-size: 13.5px;
   margin: 0 0 10px;
 }
+/* Atalhos de voz (Configurações) */
+.hotkey-field {
+  display: grid;
+  gap: 4px;
+  margin: 0 0 10px;
+}
+.hotkey-label {
+  font-size: 13px;
+  color: var(--text);
+}
+.hotkey-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.hotkey-input {
+  min-width: 170px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--panel-border);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+  cursor: pointer;
+}
+.hotkey-input.empty {
+  color: var(--muted);
+  font-weight: 400;
+}
+.hotkey-input:hover {
+  border-color: var(--accent, #1a8fd6);
+}
+.hotkey-input.recording {
+  border-color: var(--accent, #1a8fd6);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent, #1a8fd6) 25%, transparent);
+  color: var(--accent, #1a8fd6);
+  animation: hotkey-blink 1.1s ease-in-out infinite;
+}
+@keyframes hotkey-blink {
+  50% {
+    opacity: 0.55;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hotkey-input.recording {
+    animation: none;
+  }
+}
+.hotkey-reset {
+  padding: 5px 12px;
+  font-size: 12.5px;
+}
+.hotkey-msg {
+  color: var(--danger-ink);
+  font-size: 12px;
+}
+/* Muitas tentativas de login: bloqueado, com a contagem regressiva */
+.login-lock {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--danger-ink) 45%, transparent);
+  background: color-mix(in srgb, var(--danger-ink) 9%, var(--panel, #fff));
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
+}
+.login-lock > svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--danger-ink);
+}
+.login-lock p {
+  margin: 0;
+}
+.login-lock small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.login-lock-time {
+  font-variant-numeric: tabular-nums;
+  color: var(--danger-ink);
+}
 .grid-2 {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -5598,6 +5691,108 @@ html[data-layout='phone'] .auth-page {
   font-variant-numeric: tabular-nums;
 }
 /* Arquivos na conversa */
+.nsfw-gate {
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 4px;
+  border-radius: 10px;
+  overflow: hidden;
+}
+/* mesma largura máxima da imagem/vídeo aberto (a borrada não fica maior) */
+.nsfw-gate.image {
+  max-width: min(360px, 100%);
+}
+.nsfw-gate.video {
+  width: min(480px, 100%);
+}
+.nsfw-gate:not(.shown) {
+  min-width: 220px;
+  min-height: 120px;
+  background: #1c2a3b;
+}
+.nsfw-gate > .nsfw-blur > *,
+.nsfw-gate.shown > :first-child {
+  margin-top: 0;
+}
+.nsfw-blur {
+  filter: blur(28px) saturate(0.85);
+  pointer-events: none;
+  user-select: none;
+}
+.nsfw-cover {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 7px;
+  padding: 8px;
+  border: 0;
+  border-radius: inherit;
+  background: rgba(10, 20, 35, 0.35);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+.nsfw-cover:hover {
+  background: rgba(10, 20, 35, 0.25);
+}
+.nsfw-cover:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: -4px;
+}
+.nsfw-badge {
+  padding: 3px 11px;
+  border-radius: 999px;
+  background: #d23a26;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+.nsfw-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+}
+.nsfw-cover:hover .nsfw-hint {
+  text-decoration: underline;
+}
+.nsfw-hide {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  background: rgba(20, 30, 45, 0.72);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.nsfw-hide:hover {
+  background: #d23a26;
+}
+/* Ferramenta da mensagem: marcar como NSFW só para mim */
+.icon-btn.nsfw-mark {
+  width: auto;
+  padding: 0 5px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.icon-btn.nsfw-mark.on {
+  background: #d23a26;
+  border-color: #d23a26;
+  color: #fff;
+}
 .file-image {
   display: block;
   margin-top: 4px;
@@ -7050,12 +7245,23 @@ kbd {
   height: 100%;
   object-fit: cover;
 }
+/* Sticker inteiro dentro da miniatura (o padrão é desenhado em 96px; a imagem fica sem cortar). */
 .attach-tile.sticker .sticker {
-  max-width: 68px;
-  max-height: 68px;
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  margin: 0;
+}
+.attach-tile.sticker .sticker .emote {
+  width: 100%;
+  height: 100%;
 }
 .attach-tile.sticker img {
+  max-width: none;
+  max-height: none;
   object-fit: contain;
+  border-radius: 6px;
 }
 .attach-play {
   position: absolute;
@@ -7109,6 +7315,36 @@ kbd {
 }
 .attach-clear {
   flex: none;
+}
+/* NSFW: quem receber vê borrado até clicar */
+.attach-nsfw {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  background: rgba(20, 30, 45, 0.72);
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 15px;
+}
+.attach-nsfw:hover {
+  background: rgba(20, 30, 45, 0.9);
+}
+.attach-nsfw[aria-pressed='true'] {
+  background: #d23a26;
+  border-color: #fff;
+}
+.attach-tile.nsfw {
+  border-color: #d23a26;
+}
+.attach-tile.nsfw img,
+.attach-tile.nsfw video,
+.attach-tile.nsfw .attach-file {
+  filter: blur(7px);
 }
 .attach-tray .sp-warn {
   margin: 4px 0 0;
@@ -8176,6 +8412,11 @@ a.downloading {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+.as-thumb.nsfw img,
+.as-thumb.nsfw video,
+.gs-card-thumb.nsfw img {
+  filter: blur(10px);
 }
 .as-name {
   max-width: 100%;

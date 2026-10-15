@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Hash,
   Pencil,
@@ -16,6 +16,7 @@ import {
   Check,
   CheckCheck,
   Eye,
+  EyeOff,
   ClipboardPaste,
 } from 'lucide-react';
 import { useStore, sendSticker, sendFile, sendVoice, usePerms } from '../store.js';
@@ -354,15 +355,20 @@ function messageColor(author, guild) {
 
 function Message({ m, head, canEdit: canEditText, canDelete, onReply, me, receipt, color }) {
   const sticker = parseSticker(m.content);
-  const file = !sticker && parseFile(m.content);
-  const voice = !sticker && !file && parseVoice(m.content);
-  const caption = sticker?.caption || file?.caption || '';
-  const canEdit = canEditText && !sticker && !file && !voice;
+  const parsedFile = !sticker && parseFile(m.content);
+  const voice = !sticker && !parsedFile && parseVoice(m.content);
+  const caption = sticker?.caption || parsedFile?.caption || '';
+  const canEdit = canEditText && !sticker && !parsedFile && !voice;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(m.content);
   const useC = useConn();
   const openProfile = useOpenProfile();
-  const { editMessage, deleteMessage } = useC.getState();
+  const { editMessage, deleteMessage, setMark } = useC.getState();
+  // Foto/vídeo que eu marquei como NSFW (só para mim) aparece borrado como os marcados por quem enviou.
+  const nsfwMine = useC((s) => Boolean(s.marks.nsfw[m.id]));
+  const file = parsedFile && (nsfwMine && !parsedFile.nsfw ? { ...parsedFile, nsfw: true } : parsedFile);
+  const canMarkNsfw = parsedFile && !parsedFile.nsfw && /^(image|video)\//.test(parsedFile.mime);
+  const mine = m.author.id === me.id;
   const { openModal } = useStore.getState();
   const [toolsOpen, setToolsOpen] = useState(false);
   const [picking, setPicking] = useState(false);
@@ -531,16 +537,49 @@ function Message({ m, head, canEdit: canEditText, canDelete, onReply, me, receip
               <Pencil size={14} />
             </button>
           )}
+          {canMarkNsfw && (
+            <button
+              className={`icon-btn nsfw-mark${nsfwMine ? ' on' : ''}`}
+              title={nsfwMine ? 'Tirar a marca NSFW (só para você)' : 'Marcar como NSFW: fica borrado só para você'}
+              aria-label={nsfwMine ? 'Tirar a marca NSFW' : 'Marcar como NSFW para mim'}
+              aria-pressed={nsfwMine}
+              onClick={() => {
+                setToolsOpen(false);
+                setMark('nsfw', m.id, !nsfwMine);
+              }}
+            >
+              NSFW
+            </button>
+          )}
+          {!mine && (
+            <button
+              className="icon-btn"
+              title="Excluir para mim"
+              aria-label="Excluir para mim"
+              onClick={(e) => {
+                setToolsOpen(false);
+                if (e.shiftKey) return setMark('hidden', m.id, true);
+                openModal({
+                  type: 'confirm',
+                  title: 'Excluir para você?',
+                  text: 'A mensagem some só para você, em todos os seus aparelhos; as outras pessoas continuam vendo. Dica: segure Shift ao clicar para excluir sem confirmar.',
+                  action: () => setMark('hidden', m.id, true),
+                });
+              }}
+            >
+              <EyeOff size={14} />
+            </button>
+          )}
           {canDelete && (
             <button
               className="icon-btn danger"
-              title="Excluir"
+              title={mine ? 'Excluir' : 'Excluir para todos'}
               onClick={(e) =>
                 e.shiftKey
                   ? deleteMessage(m.id)
                   : openModal({
                       type: 'confirm',
-                      title: 'Excluir mensagem?',
+                      title: mine ? 'Excluir mensagem?' : 'Excluir para todos?',
                       text: 'Dica: segure Shift ao clicar para excluir sem confirmar.',
                       action: () => deleteMessage(m.id),
                     })
@@ -596,7 +635,9 @@ export default function ChatView({ channel, variant = 'channel' }) {
   );
   const showTools = !phone || fmtOpen;
   const useC = useConn();
-  const messages = useC((s) => s.messages[channel.id]) || EMPTY;
+  const allMessages = useC((s) => s.messages[channel.id]) || EMPTY;
+  const hiddenForMe = useC((s) => s.marks.hidden);
+  const messages = useMemo(() => allMessages.filter((m) => !hiddenForMe[m.id]), [allMessages, hiddenForMe]);
   const loaded = useC((s) => channel.id in s.messages);
   const hasMore = useC((s) => s.hasMore[channel.id]);
   const typing = useC((s) => s.typing[channel.id]);
@@ -711,6 +752,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
         await sendFile(connKey, channel.id, file, {
           replyTo,
           caption: text,
+          nsfw: it.nsfw,
           onProgress: (p) => setUploads((u) => u.map((x) => (x.key === key ? { ...x, progress: p } : x))),
         });
         text = '';
@@ -1025,7 +1067,12 @@ export default function ChatView({ channel, variant = 'channel' }) {
         <div className="panel composer">
           <UploadList uploads={uploads} />
           {replyBar}
-          <AttachTray items={attach} onRemove={(i) => setAttach((a) => a.filter((_, j) => j !== i))} onClear={() => setAttach([])} />
+          <AttachTray
+            items={attach}
+            onRemove={(i) => setAttach((a) => a.filter((_, j) => j !== i))}
+            onClear={() => setAttach([])}
+            onNsfw={(i) => setAttach((a) => a.map((it, j) => (j === i ? { ...it, nsfw: !it.nsfw } : it)))}
+          />
           {showTools && (
             <div className="panel-head tools-head">
               {tools}

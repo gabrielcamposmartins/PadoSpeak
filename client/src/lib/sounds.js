@@ -238,6 +238,29 @@ export const SOUND_DEFS = {
       ],
       { type: 'triangle', volume: 0.14 },
     ),
+  // Atalho de silenciar/ensurdecer: dois toques curtos descendo (desligou) ou subindo (ligou de volta).
+  muteOn: (ac, out, t) =>
+    notes(
+      ac,
+      out,
+      t,
+      [
+        [587.33, 0.06],
+        [392.0, 0.1],
+      ],
+      { type: 'triangle', volume: 0.12 },
+    ),
+  muteOff: (ac, out, t) =>
+    notes(
+      ac,
+      out,
+      t,
+      [
+        [392.0, 0.06],
+        [587.33, 0.1],
+      ],
+      { type: 'triangle', volume: 0.12 },
+    ),
   // Alguém foi movido de canal de voz: um "vush" de três notas descendo e subindo.
   moved: (ac, out, t) =>
     notes(

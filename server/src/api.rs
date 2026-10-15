@@ -55,6 +55,51 @@ impl From<libsql::Error> for ApiError {
 fn bad(msg: &str) -> ApiError {
     ApiError::new(StatusCode::BAD_REQUEST, msg)
 }
+
+/// Erros do login que levam dados a mais para o app: quanto falta para desbloquear (`retryAfter`, ms,
+/// e o cabeçalho `Retry-After`) e quantas tentativas restam antes do bloqueio (`attemptsLeft`).
+enum LoginError {
+    Api(ApiError),
+    Limited(i64),
+    Wrong(&'static str, usize),
+}
+
+impl From<ApiError> for LoginError {
+    fn from(e: ApiError) -> Self {
+        Self::Api(e)
+    }
+}
+
+impl From<libsql::Error> for LoginError {
+    fn from(e: libsql::Error) -> Self {
+        Self::Api(e.into())
+    }
+}
+
+impl IntoResponse for LoginError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Api(e) => e.into_response(),
+            Self::Limited(wait) => {
+                let secs = ((wait + 999) / 1000).max(1);
+                let body = json!({
+                    "error": format!("Muitas tentativas de login. Tente de novo em {}.", crate::ratelimit::wait_text(wait)),
+                    "retryAfter": secs * 1000,
+                });
+                (StatusCode::TOO_MANY_REQUESTS, [(axum::http::header::RETRY_AFTER, secs.to_string())], Json(body)).into_response()
+            }
+            Self::Wrong(msg, left) => (StatusCode::UNAUTHORIZED, Json(json!({ "error": msg, "attemptsLeft": left }))).into_response(),
+        }
+    }
+}
+
+/// Senha errada: conta o erro e diz quantas tentativas restam.
+fn login_failed(ip: &str, user: &str, msg: &'static str) -> LoginError {
+    let limiter = &crate::ratelimit::LOGIN;
+    let now = crate::now_ms();
+    limiter.fail(ip, user, now);
+    LoginError::Wrong(msg, limiter.remaining(ip, user, now))
+}
 fn not_found(msg: &str) -> ApiError {
     ApiError::new(StatusCode::NOT_FOUND, msg)
 }
@@ -367,21 +412,13 @@ async fn login(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: axum::http::HeaderMap,
     Json(body): Json<Credentials>,
-) -> ApiResult<Json<Value>> {
+) -> Result<Json<Value>, LoginError> {
     local_only(&app, addr)?;
     // No máximo 5 tentativas erradas seguidas (por usuário e endereço) a cada 15 minutos.
     let ip = crate::hub::client_ip(addr, &headers).to_string();
     let limiter = &crate::ratelimit::LOGIN;
-    if let Err(wait) = limiter.check(&ip, &body.username, crate::now_ms()) {
-        return Err(ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            format!("Muitas tentativas de login. Tente de novo em {}.", crate::ratelimit::wait_text(wait)),
-        ));
-    }
-    let wrong = || {
-        limiter.fail(&ip, &body.username, crate::now_ms());
-        ApiError::new(StatusCode::UNAUTHORIZED, "Usuário ou senha incorretos")
-    };
+    limiter.check(&ip, &body.username, crate::now_ms()).map_err(LoginError::Limited)?;
+    let wrong = || login_failed(&ip, &body.username, "Usuário ou senha incorretos");
     let sql = format!("SELECT {USER_COLS}, u.password_hash, u.must_reset FROM users u WHERE u.username = ?1");
     let found = app
         .db
@@ -398,7 +435,7 @@ async fn login(
     limiter.success(&ip, &body.username);
     // Senha redefinida pelo administrador: entrou com o código, agora precisa criar uma senha nova.
     if must_reset {
-        return Err(ApiError::new(StatusCode::PRECONDITION_REQUIRED, "Sua senha foi redefinida. Crie uma senha nova para entrar."));
+        return Err(ApiError::new(StatusCode::PRECONDITION_REQUIRED, "Sua senha foi redefinida. Crie uma senha nova para entrar.").into());
     }
     let token = auth::create_session(&app.db, &user.id).await?;
     Ok(Json(json!({ "token": token, "user": user })))
@@ -444,7 +481,7 @@ async fn recover_local(
         .send()
         .await
         .and_then(|r| r.error_for_status())
-        .map_err(|_| ApiError::new(StatusCode::UNAUTHORIZED, "O servidor não confirmou a sua conta"))?
+        .map_err(|_| ApiError::new(StatusCode::BAD_GATEWAY, "O servidor não confirmou a sua conta"))?
         .bytes()
         .await
         .ok()
@@ -452,16 +489,57 @@ async fn recover_local(
         .ok_or_else(|| ApiError::new(StatusCode::BAD_GATEWAY, "Resposta inválida do servidor"))?;
     let theirs = them["username"].as_str().unwrap_or_default();
     if !theirs.eq_ignore_ascii_case(body.username.trim()) {
-        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "Essa conta do servidor é de outro usuário"));
+        return Err(ApiError::new(StatusCode::FORBIDDEN, "Essa conta do servidor é de outro usuário"));
     }
     let sql = format!("SELECT {USER_COLS} FROM users u WHERE u.username = ?1");
-    let Some(user) = app.db.query_one(&sql, [body.username.trim()], user_from_row).await? else {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, "Não há perfil com esse usuário neste PC: use “Criar perfil”"));
-    };
     let hash = auth::hash_password(body.new_password).await;
-    app.db
-        .execute("UPDATE users SET password_hash = ?1, must_reset = 0 WHERE id = ?2", (hash.as_str(), user.id.as_str()))
-        .await?;
+    let user = match app.db.query_one(&sql, [body.username.trim()], user_from_row).await? {
+        Some(user) => {
+            app.db
+                .execute("UPDATE users SET password_hash = ?1, must_reset = 0 WHERE id = ?2", (hash.as_str(), user.id.as_str()))
+                .await?;
+            user
+        }
+        // Primeira vez neste PC: o perfil local nasce como cópia da conta do servidor (mesmo usuário e
+        // senha); nome, foto e o resto chegam do servidor logo depois de entrar.
+        None => {
+            let valid = (3..=24).contains(&theirs.len()) && theirs.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.');
+            if !valid {
+                return Err(bad("Usuário inválido"));
+            }
+            let display_name = them["displayName"]
+                .as_str()
+                .and_then(|d| crate::models::fit_formatted(d, crate::models::NAME_MAX, crate::models::NAME_RAW_MAX))
+                .filter(|d| crate::models::visible_len(d) > 0)
+                .unwrap_or_else(|| theirs.to_string());
+            let avatar_color = them["avatarColor"]
+                .as_str()
+                .filter(|c| c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|x| x.is_ascii_hexdigit()))
+                .map(str::to_string)
+                .unwrap_or_else(random_color);
+            let user = User {
+                id: new_id(),
+                username: theirs.to_string(),
+                display_name,
+                avatar_color,
+                avatar_url: None,
+                bio: String::new(),
+                name_color: None,
+                bio_color: None,
+                banner_color: None,
+                lan: false,
+                message_color: None,
+            };
+            app.db
+                .execute(
+                    "INSERT INTO users (id, username, display_name, password_hash, avatar_color, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    libsql::params![user.id.as_str(), user.username.as_str(), user.display_name.as_str(), hash.as_str(), user.avatar_color.as_str(), crate::now_ms()],
+                )
+                .await?;
+            app.logs.info(format!("Perfil local criado a partir da conta @{theirs} do servidor"));
+            user
+        }
+    };
     let token = auth::create_session(&app.db, &user.id).await?;
     Ok(Json(json!({ "token": token, "user": user })))
 }
@@ -481,22 +559,14 @@ async fn new_password(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: axum::http::HeaderMap,
     Json(body): Json<NewPassword>,
-) -> ApiResult<Json<Value>> {
+) -> Result<Json<Value>, LoginError> {
     local_only(&app, addr)?;
     let ip = crate::hub::client_ip(addr, &headers).to_string();
     let limiter = &crate::ratelimit::LOGIN;
-    if let Err(wait) = limiter.check(&ip, &body.username, crate::now_ms()) {
-        return Err(ApiError::new(
-            StatusCode::TOO_MANY_REQUESTS,
-            format!("Muitas tentativas de login. Tente de novo em {}.", crate::ratelimit::wait_text(wait)),
-        ));
-    }
-    let wrong = || {
-        limiter.fail(&ip, &body.username, crate::now_ms());
-        ApiError::new(StatusCode::UNAUTHORIZED, "Usuário ou código incorretos")
-    };
+    limiter.check(&ip, &body.username, crate::now_ms()).map_err(LoginError::Limited)?;
+    let wrong = || login_failed(&ip, &body.username, "Usuário ou código incorretos");
     if body.new_password.chars().count() < 6 {
-        return Err(bad("A senha deve ter pelo menos 6 caracteres"));
+        return Err(bad("A senha deve ter pelo menos 6 caracteres").into());
     }
     let sql = format!("SELECT {USER_COLS}, u.password_hash, u.must_reset FROM users u WHERE u.username = ?1");
     let found = app
@@ -512,7 +582,7 @@ async fn new_password(
         return Err(wrong());
     }
     if body.new_password == body.password {
-        return Err(bad("Escolha uma senha diferente do código"));
+        return Err(bad("Escolha uma senha diferente do código").into());
     }
     limiter.success(&ip, &body.username);
     let new_hash = auth::hash_password(body.new_password).await;

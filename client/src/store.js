@@ -10,6 +10,7 @@ import { systemNotify, showAppWindow, appHasFocus } from './lib/background.js';
 import { currentLayout, isStandalone, isTouch } from './lib/layout.js';
 import { plain } from './lib/text.js';
 import { syncPush, disablePush } from './lib/pwa.js';
+import { applyHotkeys, hotkeysOf } from './lib/hotkeys.js';
 import { NearbyProbe, deviceLabel } from './lib/nearby.js';
 
 /*
@@ -90,8 +91,10 @@ export const VOICE_RE = /^\[voz:([0-9a-f]{32}):(\d+):([^:\]]*)\]$/;
 export function messageSummary(content) {
   const file = FILE_RE.exec(content);
   if (file) {
-    const what = file[3].startsWith('image/') ? 'uma foto' : file[3].startsWith('video/') ? 'um vídeo' : `o arquivo ${file[4]}`;
-    return { verb: `enviou ${what}`, text: file[5] || '' };
+    const nsfw = file[3].startsWith(NSFW_PREFIX);
+    const mime = nsfw ? file[3].slice(NSFW_PREFIX.length) : file[3];
+    const what = mime.startsWith('image/') ? 'uma foto' : mime.startsWith('video/') ? 'um vídeo' : nsfw ? 'um arquivo' : `o arquivo ${file[4]}`;
+    return { verb: `enviou ${what}${nsfw ? ' (NSFW)' : ''}`, text: file[5] || '' };
   }
   if (VOICE_RE.test(content)) return { verb: 'enviou uma mensagem de voz', text: '' };
   const sticker = STICKER_RE.exec(content);
@@ -208,6 +211,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
     statuses: {}, // userId -> online | away | busy (de quem está visível)
     myStatus: 'online', // online | away | busy | invisible
     nudgeSettings: null, // { allowNudges, nudgeBlocks: User[] }
+    marks: { hidden: {}, nsfw: {} }, // só para mim: mensagens excluídas e fotos marcadas como NSFW (id -> true)
     voiceStates: {}, // channelId -> participantes (visão do servidor)
     typing: {}, // channelId -> { userId: { user, until } }
     lanPeers: [], // perfis da rede local (só no nó local)
@@ -356,6 +360,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
         incomingCall: null,
         lanPeers: [],
         nudgeSettings: null,
+        marks: { hidden: {}, nsfw: {} },
       });
       if (primary) set({ currentGuildId: null, sidebarView: 'channels' });
       if (primary && (!get().view || get().view.conn == null) && get().view?.type !== 'dm') {
@@ -478,6 +483,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
           music: Object.fromEntries((d.music || []).map((m) => [m.channelId, m])),
           serverOffset: d.serverTime - Date.now(),
         });
+        get().loadMarks();
         // O que mudou entre o carregamento inicial e a conexão (ou durante uma queda) não chegou por evento.
         if (!firstReady) get().resync();
         else {
@@ -650,6 +656,9 @@ export function createConnStore({ key, kind, base, primary = false }) {
           };
         }),
       );
+      rt.on('mark:update', ({ kind: mark, id, on }) =>
+        set((s) => (s.marks[mark] ? { marks: { ...s.marks, [mark]: { ...s.marks[mark], [id]: on || undefined } } } : {})),
+      );
       rt.on('message:deleted', ({ id, channelId }) =>
         set((s) => {
           const list = s.messages[channelId];
@@ -805,6 +814,29 @@ export function createConnStore({ key, kind, base, primary = false }) {
             ...Object.fromEntries(list.filter((f) => f.presence).map((f) => [f.user.id, f.presence])),
           },
         }));
+    },
+
+    /** Minhas marcas (excluir para mim, NSFW para mim). Servidor antigo, sem elas: fica tudo vazio. */
+    async loadMarks() {
+      try {
+        const { hidden = [], nsfw = [] } = await api.get('/api/me/marks');
+        const map = (ids) => Object.fromEntries(ids.map((id) => [id, true]));
+        set({ marks: { hidden: map(hidden), nsfw: map(nsfw) } });
+      } catch {
+        /* servidor sem marcas */
+      }
+    },
+
+    /** Marca (ou desmarca) uma mensagem só para mim: `hidden` (excluir para mim) ou `nsfw`. */
+    async setMark(mark, id, on) {
+      const apply = (v) => set((s) => ({ marks: { ...s.marks, [mark]: { ...s.marks[mark], [id]: v || undefined } } }));
+      apply(on);
+      try {
+        await (on ? api.put(`/api/me/marks/${mark}/${id}`) : api.del(`/api/me/marks/${mark}/${id}`));
+      } catch (e) {
+        apply(!on);
+        notify(e instanceof ApiError && [404, 405].includes(e.status) ? 'Este servidor ainda não tem essa opção: atualize o servidor.' : e.message);
+      }
     },
 
     async loadDms() {
@@ -1483,7 +1515,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
      * Envia um arquivo para a conversa/canal e devolve { id, name, mime, size }. `onProgress(0..1)`.
      * Usa XHR para acompanhar o envio (o fetch não informa o progresso do upload).
      */
-    async uploadFile(channelId, file, onProgress, { kind: fileKind } = {}) {
+    async uploadFile(channelId, file, onProgress, { kind: fileKind, nsfw } = {}) {
       // Texto, documentos e afins vão comprimidos (gzip); o servidor guarda assim e o download volta
       // com Content-Encoding: gzip, que o navegador descomprime sozinho. Arquivo acima do limite
       // normal (grande, some em 10 min) vai como está.
@@ -1493,7 +1525,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
         const xhr = new XMLHttpRequest();
         xhr.open(
           'POST',
-          `${baseUrl}/api/files?channel=${encodeURIComponent(channelId)}&name=${encodeURIComponent(file.name)}${packed ? '&encoding=gzip' : ''}${fileKind ? `&kind=${fileKind}` : ''}`,
+          `${baseUrl}/api/files?channel=${encodeURIComponent(channelId)}&name=${encodeURIComponent(file.name)}${packed ? '&encoding=gzip' : ''}${fileKind ? `&kind=${fileKind}` : ''}${nsfw ? '&nsfw=1' : ''}`,
         );
         if (token) xhr.setRequestHeader('authorization', `Bearer ${token}`);
         xhr.setRequestHeader('content-type', file.type || 'application/octet-stream');
@@ -1732,6 +1764,34 @@ export function dropConn(key) {
 export const useStore = createConnStore({ key: 'server', kind: 'server', base: savedServerUrl(), primary: true });
 syncConnKeys();
 
+// Atalhos de silenciar/ensurdecer (globais no app do Windows), refeitos quando a pessoa muda nas Configurações.
+if (!isPanel) {
+  const hotkeyActions = {
+    mute: () => {
+      useStore.getState().toggleMute();
+      playSound(useStore.getState().selfMuted ? 'muteOn' : 'muteOff');
+    },
+    deafen: () => {
+      useStore.getState().toggleDeafen();
+      playSound(useStore.getState().selfDeafened ? 'muteOn' : 'muteOff');
+    },
+  };
+  applyHotkeys(hotkeysOf(useStore.getState().prefs), hotkeyActions);
+  useStore.subscribe((s, prev) => {
+    if (s.prefs.hotkeys !== prev.prefs.hotkeys) applyHotkeys(hotkeysOf(s.prefs), hotkeyActions);
+  });
+}
+
+// App desktop: o perfil mudou no servidor (editado no site, no celular…) → a cópia local acompanha.
+if (isDesktop) {
+  let pullTimer;
+  useStore.subscribe((s, prev) => {
+    if (!s.me || !prev.me || s.me === prev.me || s.me.id !== prev.me.id) return;
+    clearTimeout(pullTimer);
+    pullTimer = setTimeout(() => pullProfileFrom(useStore), 400);
+  });
+}
+
 // Ao sair do Início para um servidor, lembra o que estava aberto (o botão Início volta para lá).
 useStore.subscribe((s, prev) => {
   if (prev.currentGuildId == null && s.currentGuildId != null && prev.view) useStore.setState({ lastHomeView: prev.view });
@@ -1842,6 +1902,7 @@ globalThis.__padospeak = {
   changeServer: (...a) => changeServer(...a),
   openLanDm: (...a) => openLanDm(...a),
   connectServer: (...a) => connectServer(...a),
+  syncProfileEverywhere: () => syncProfileEverywhere(),
   NearbyProbe,
 };
 
@@ -1938,7 +1999,7 @@ export async function localAuthenticate(mode, form) {
 /**
  * App desktop, senha do perfil local esquecida: confere usuário e senha (ou o código de redefinição) no
  * servidor de comunidade. Devolve `{ needsNew: true }` se for o código (falta escolher a senha nova);
- * senão entra, com o perfil local já usando a senha do servidor. Sem conta lá, devolve null.
+ * senão entra, com o perfil local já usando a senha do servidor. Senha errada lá também: `{ wrong }`.
  */
 export async function localRecover({ username, password, newPassword }) {
   const local = connRegistry.get('local');
@@ -1955,7 +2016,7 @@ export async function localRecover({ username, password, newPassword }) {
       : await remote.post('/api/auth/login', { username, password });
   } catch (e) {
     if (e instanceof ApiError && e.status === 428) return { needsNew: true };
-    if (e instanceof ApiError && e.status === 401 && !newPassword) return null;
+    if (e instanceof ApiError && e.status === 401 && !newPassword) return { wrong: e };
     throw e;
   }
   const finalPassword = newPassword || password;
@@ -2002,7 +2063,7 @@ export async function connectServer({ username, password = localPassword } = {})
       try {
         const me = await api.get('/api/me');
         await st.enterApp(me);
-        await syncProfileTo(useStore);
+        await pullProfileFrom(useStore);
         return;
       } catch (e) {
         if (!(e instanceof ApiError && e.status === 401)) throw e;
@@ -2013,7 +2074,7 @@ export async function connectServer({ username, password = localPassword } = {})
     if (!username || !password) return useStore.setState({ serverStatus: 'login' });
     try {
       await st.authenticate('login', { username, password });
-      await syncProfileTo(useStore);
+      await pullProfileFrom(useStore);
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) return useStore.setState({ serverStatus: 'mismatch' });
       // Senha redefinida no servidor: a pessoa entra pela janela de login e cria a senha nova.
@@ -2028,11 +2089,15 @@ export async function connectServer({ username, password = localPassword } = {})
   }
 }
 
-/** Entra no servidor com outra conta (ou cria uma), pela janela de login do servidor. */
+/**
+ * Entra no servidor com outra conta (ou cria uma), pela janela de login do servidor. Conta que já
+ * existia: o perfil dela vale também neste PC. Conta recém-criada: começa com o perfil deste PC.
+ */
 export async function serverAuthenticate(mode, form) {
   clearTimeout(serverRetry);
   await useStore.getState().authenticate(mode, form);
-  await syncProfileTo(useStore);
+  if (mode === 'register') await syncProfileTo(useStore);
+  else await pullProfileFrom(useStore);
 }
 
 /** Troca o endereço do servidor de comunidade (página Hostear) e tenta conectar. */
@@ -2051,9 +2116,46 @@ export function disconnectServer() {
   useStore.setState({ serverStatus: 'login' });
 }
 
+const PROFILE_KEYS = ['displayName', 'bio', 'nameColor', 'bioColor', 'bannerColor', 'messageColor'];
+
 /**
- * O perfil local dita o perfil nos outros lugares — mas só onde a conta é a mesma (mesmo usuário):
- * no servidor de comunidade quando o login bate, e nos PCs da rede (lá sempre é o próprio perfil).
+ * O servidor de comunidade manda no perfil: ao conectar (mesmo usuário), nome, mensagem pessoal, cores
+ * e foto de lá passam para o perfil local, que é só uma cópia para entrar sem internet. Depois a cópia
+ * segue para os PCs da rede.
+ */
+export async function pullProfileFrom(target) {
+  const local = connRegistry.get('local');
+  const mine = local?.getState().me;
+  const theirs = target.getState().me;
+  if (!mine || !theirs || target === local) return;
+  if (theirs.username.toLowerCase() !== mine.username.toLowerCase()) return;
+  try {
+    const patch = {};
+    for (const k of PROFILE_KEYS) if ((mine[k] || '') !== (theirs[k] || '')) patch[k] = theirs[k] || '';
+    if (Object.keys(patch).length) await local.getState().updateProfile(patch);
+    // Foto: só baixa de novo quando a do servidor mudou (a URL leva a versão).
+    const base = target.getState().baseUrl;
+    const pulledKey = `padospeak.avatarPull:${base}#${theirs.id}`;
+    const want = theirs.avatarUrl || '';
+    const hasLocal = Boolean(local.getState().me?.avatarUrl);
+    if (want !== storage.get(pulledKey) || Boolean(want) !== hasLocal) {
+      if (want) {
+        const blob = await target.getState().avatarBlob();
+        if (blob) await local.getState().uploadAvatar(blob);
+      } else if (hasLocal) await local.getState().removeAvatar();
+      storage.set(pulledKey, want);
+      // A foto local agora é a do servidor: não precisa mandar de volta.
+      storage.set(`padospeak.avatarSync:${base}#${theirs.id}`, local.getState().me?.avatarUrl || '');
+    }
+    for (const [key, store] of connRegistry) if (key.startsWith('peer:')) syncProfileTo(store);
+  } catch (e) {
+    console.warn('[perfil] cópia do servidor', e);
+  }
+}
+
+/**
+ * Leva o perfil local para outra conexão (mesmo usuário): os PCs da rede, e o servidor de comunidade
+ * logo depois de a pessoa editar o perfil (ou ao criar a conta lá pelo app).
  */
 export async function syncProfileTo(target) {
   const local = connRegistry.get('local');
@@ -2063,9 +2165,7 @@ export async function syncProfileTo(target) {
   if (target.getState().kind === 'server' && theirs.username.toLowerCase() !== mine.username.toLowerCase()) return;
   try {
     const patch = {};
-    for (const k of ['displayName', 'bio', 'nameColor', 'bioColor', 'bannerColor', 'messageColor']) {
-      if ((mine[k] || '') !== (theirs[k] || '')) patch[k] = mine[k] || '';
-    }
+    for (const k of PROFILE_KEYS) if ((mine[k] || '') !== (theirs[k] || '')) patch[k] = mine[k] || '';
     if (Object.keys(patch).length) await target.getState().updateProfile(patch);
     const syncKey = `padospeak.avatarSync:${target.getState().baseUrl}#${theirs.id}`;
     const synced = storage.get(syncKey);
@@ -2076,6 +2176,8 @@ export async function syncProfileTo(target) {
         if (blob) await target.getState().uploadAvatar(blob);
       } else if (theirs.avatarUrl) await target.getState().removeAvatar();
       storage.set(syncKey, want);
+      // A foto que acabou de ir para o servidor já é a do perfil local: não precisa baixar de volta.
+      if (target.getState().kind === 'server') storage.set(`padospeak.avatarPull:${target.getState().baseUrl}#${theirs.id}`, target.getState().me?.avatarUrl || '');
     }
   } catch (e) {
     console.warn('[perfil] sincronização', e);
@@ -2199,15 +2301,19 @@ export const stickerHome = () => primaryConn();
 /**
  * Envia um arquivo numa conversa/canal: sobe para o servidor da conversa e manda a mensagem
  * `[arquivo:<id>:<tamanho>:<tipo>:<nome>]`. Programas e scripts só dentro de um .zip.
+ * Marcado como NSFW (`nsfw`), o tipo vai como `nsfw;<tipo>` e o arquivo aparece borrado até clicar
+ * (versões antigas do app mostram só o cartão do arquivo, sem a imagem).
  */
 export const FILE_RE = /^\[arquivo:([0-9a-f]{32}):(\d+):([^:\]]*):([^\]]*)\](?:\n([\s\S]*))?$/;
+export const NSFW_PREFIX = 'nsfw;';
 /** `caption`: texto que vai junto, na mesma mensagem (linha de baixo). */
 const withCaption = (tag, caption) => (caption?.trim() ? `${tag}\n${caption.trim()}` : tag);
-export async function sendFile(connKey, channelId, file, { onProgress, replyTo, caption } = {}) {
+export async function sendFile(connKey, channelId, file, { onProgress, replyTo, caption, nsfw } = {}) {
   const target = getConn(connKey);
-  const info = await target.getState().uploadFile(channelId, file, onProgress);
+  const info = await target.getState().uploadFile(channelId, file, onProgress, { nsfw });
   const name = info.name.replace(/[\]\n:]/g, '_');
-  return target.getState().sendMessage(channelId, withCaption(`[arquivo:${info.id}:${info.size}:${info.mime}:${name}]`, caption), replyTo);
+  const mime = nsfw ? `${NSFW_PREFIX}${info.mime}` : info.mime;
+  return target.getState().sendMessage(channelId, withCaption(`[arquivo:${info.id}:${info.size}:${mime}:${name}]`, caption), replyTo);
 }
 
 /** Mensagem de voz gravada no app (`blob` de áudio, `durationMs`). */

@@ -5,6 +5,7 @@ import Avatar from './Avatar.jsx';
 import { InstallCard } from './Mobile.jsx';
 import { isDesktop, DOWNLOAD_URL } from '../lib/env.js';
 import { isStandalone, isTouch } from '../lib/layout.js';
+import { useLoginLock, LoginLock } from './LoginLock.jsx';
 
 /** O app para Windows só é oferecido no navegador de um computador com Windows (nunca no celular, no tablet
  * ou no PadoSpeak instalado como app). */
@@ -30,6 +31,8 @@ export default function AuthPage() {
   const known = mode === 'login' ? knownProfiles(base)[form.username.trim().toLowerCase()] : null;
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const lockout = useLoginLock(form.username);
+  const locked = mode !== 'register' && lockout.locked;
 
   const update = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
@@ -49,9 +52,17 @@ export default function AuthPage() {
         } catch (err) {
           // Senha do perfil local esquecida: vale a da conta do servidor (ou o código de redefinição).
           if (mode !== 'login' || err.status !== 401) throw err;
-          const r = await localRecover({ username: form.username, password: form.password }).catch(() => null);
+          // Servidor fora do ar, muitas tentativas…: mostra o motivo de verdade (senha errada lá também
+          // cai na mensagem de sempre).
+          const r = await localRecover({ username: form.username, password: form.password }).catch((e) => ({ error: e }));
           if (r?.needsNew) return setMode('reset');
-          if (!r) throw err;
+          if (r?.error && r.error.status !== 401) throw r.error;
+          if (!r || r.error || r.wrong) {
+            // Vale o que estiver mais perto do bloqueio: aqui no PC ou no servidor.
+            const left = (r?.wrong || r?.error)?.attemptsLeft;
+            if (left != null) err.attemptsLeft = Math.min(err.attemptsLeft ?? left, left);
+            throw err;
+          }
         }
       } else await useStore.getState().authenticate(mode, form);
     } catch (err) {
@@ -60,10 +71,15 @@ export default function AuthPage() {
         setMode('reset');
         return;
       }
+      // Muitas tentativas: aviso com contagem regressiva no lugar do erro.
+      const { locked: nowLocked, hint } = lockout.track(err);
+      if (nowLocked) return setError('');
       setError(
         isDesktop && err.status === 401
-          ? 'Usuário ou senha incorretos neste PC. Ainda não tem perfil aqui? Use “Criar perfil”.'
-          : err.message,
+          ? `Usuário ou senha incorretos (neste PC e no servidor).${hint} Primeira vez neste PC? Entre com o usuário e a senha da sua conta do servidor — ou use “Criar perfil”.`
+          : hint
+            ? `${err.message.replace(/\.?$/, '.')}${hint}`
+            : err.message,
       );
     } finally {
       setBusy(false);
@@ -203,8 +219,8 @@ export default function AuthPage() {
               </div>
             )}
 
-            {(error || localError) && <p className="error-text">{error || localError}</p>}
-            <button className="go big-go" disabled={busy}>
+            {locked ? <LoginLock left={lockout.left} /> : (error || localError) && <p className="error-text">{error || localError}</p>}
+            <button className="go big-go" disabled={busy || locked}>
               {busy ? 'Aguarde…' : mode === 'login' ? 'Entrar' : mode === 'reset' ? 'Salvar e entrar' : isDesktop ? 'Criar perfil' : 'Criar conta'}
             </button>
           </form>

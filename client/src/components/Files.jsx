@@ -3,14 +3,16 @@
 // baixo, o texto que foi junto). Mensagens de voz: `[voz:<id>:<duração ms>:<tipo>]`.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Download, ArrowDown, FileText, FileArchive, File as FileIcon, X, ExternalLink, Play, Pause, Timer, ZoomIn, ZoomOut } from 'lucide-react';
+import { Download, ArrowDown, FileText, FileArchive, File as FileIcon, X, ExternalLink, Play, Pause, Timer, ZoomIn, ZoomOut, Eye, EyeOff } from 'lucide-react';
 import { startDownload, useDownload, useDownloads, percent } from '../lib/download.js';
-import { FILE_RE, VOICE_RE } from '../store.js';
+import { FILE_RE, VOICE_RE, NSFW_PREFIX } from '../store.js';
 import { useConn } from './conn.jsx';
 
 export const parseFile = (content) => {
   const m = FILE_RE.exec(content || '');
-  return m ? { id: m[1], size: Number(m[2]), mime: m[3], name: m[4], caption: m[5] || '' } : null;
+  if (!m) return null;
+  const nsfw = m[3].startsWith(NSFW_PREFIX);
+  return { id: m[1], size: Number(m[2]), mime: nsfw ? m[3].slice(NSFW_PREFIX.length) : m[3], name: m[4], caption: m[5] || '', nsfw };
 };
 
 export const parseVoice = (content) => {
@@ -362,7 +364,57 @@ function TextPreview({ src }) {
   return <pre className="file-text">{lines.slice(0, 12).join('\n') + (lines.length > 12 || text.length >= 4096 ? '\n…' : '')}</pre>;
 }
 
+/** Arquivos NSFW que a pessoa já abriu nesta sessão (não voltam a borrar ao trocar de conversa). */
+const revealed = new Set();
+
+/**
+ * Arquivo marcado como NSFW: fica borrado (imagem, vídeo ou o cartão com o nome) até a pessoa clicar.
+ * Depois de aberta, a imagem/vídeo tem um botão no canto para borrar de novo.
+ */
+function NsfwGate({ id, kind, children }) {
+  const media = kind === 'image' || kind === 'video';
+  const [shown, setShown] = useState(() => revealed.has(id));
+  const toggle = (on) => {
+    if (on) revealed.add(id);
+    else revealed.delete(id);
+    setShown(on);
+  };
+  if (shown && !media) return children;
+  if (shown)
+    return (
+      <div className={`nsfw-gate shown ${kind}`}>
+        {children}
+        <button type="button" className="nsfw-hide" onClick={() => toggle(false)} title="Borrar de novo" aria-label="Borrar de novo">
+          <EyeOff size={13} /> NSFW
+        </button>
+      </div>
+    );
+  return (
+    <div className={`nsfw-gate ${kind}`}>
+      <div className="nsfw-blur" aria-hidden="true" inert>
+        {children}
+      </div>
+      <button type="button" className="nsfw-cover" onClick={() => toggle(true)}>
+        <span className="nsfw-badge">NSFW</span>
+        <span className="nsfw-hint">
+          <Eye size={15} /> Clique para ver
+        </span>
+      </button>
+    </div>
+  );
+}
+
 export function FileView({ file }) {
+  const view = <FileContent file={file} />;
+  if (!file.nsfw) return view;
+  return (
+    <NsfwGate id={file.id} kind={file.mime.split('/')[0]}>
+      {view}
+    </NsfwGate>
+  );
+}
+
+function FileContent({ file }) {
   const useC = useConn();
   const fileUrl = useC((s) => s.fileUrl);
   const [big, setBig] = useState(false);

@@ -275,6 +275,7 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             // Banco Turso/libSQL e certificados ficam na pasta de dados do app (ou em DATA_DIR).
             let data_dir: std::path::PathBuf = match std::env::var("DATA_DIR") {

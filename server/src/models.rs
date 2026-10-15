@@ -307,8 +307,10 @@ pub fn reply_preview(content: &str) -> String {
         return with("Sticker".into());
     }
     if let Some(rest) = tag.strip_prefix("[arquivo:") {
-        let name = rest.splitn(4, ':').nth(3).unwrap_or("arquivo");
-        return with(format!("📎 {name}"));
+        let mut parts = rest.splitn(4, ':');
+        let nsfw = parts.nth(2).is_some_and(|mime| mime.starts_with("nsfw;"));
+        let name = parts.next().unwrap_or("arquivo");
+        return with(format!("{} {name}", if nsfw { "🔞" } else { "📎" }));
     }
     if tag.starts_with("[voz:") {
         return "🎤 Mensagem de voz".into();
@@ -390,6 +392,7 @@ mod tests {
     fn citacao_de_arquivo_com_texto() {
         let id = "0123456789abcdef0123456789abcdef";
         assert_eq!(reply_preview(&format!("[arquivo:{id}:10:image/png:foto.png]")), "📎 foto.png");
+        assert_eq!(reply_preview(&format!("[arquivo:{id}:10:nsfw;image/png:foto.png]")), "🔞 foto.png");
         assert_eq!(reply_preview(&format!("[arquivo:{id}:10:image/png:foto.png]
 olha **isso**")), "📎 foto.png — olha isso");
         assert_eq!(reply_preview("[sticker:emote::)]

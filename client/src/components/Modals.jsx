@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Hash,
+  TriangleAlert,
   Volume2,
   MessageSquare,
   Phone,
@@ -71,6 +72,20 @@ import FormatTools, { formatKey, usePalette, DEFAULT_PALETTE, SHORTCUTS, MOD } f
 import { fmtSize, fmtLeft, useNow, DownloadLink } from './Files.jsx';
 import { plain, visibleLength } from '../lib/text.js';
 import changelogMd from '../changelog.md?raw';
+import { useLoginLock, LoginLock } from './LoginLock.jsx';
+import {
+  HOTKEY_ACTIONS,
+  DEFAULT_HOTKEYS,
+  hotkeysOf,
+  formatHotkey,
+  hotkeyFromEvent,
+  sameHotkey,
+  pauseGlobalHotkeys,
+  refreshHotkeys,
+  hotkeyProblems,
+  onHotkeyProblems,
+} from '../lib/hotkeys.js';
+import { isTouch as touchDevice } from '../lib/layout.js';
 
 const TITLES = {
   profile: 'Perfil',
@@ -636,6 +651,106 @@ function TextFormatting() {
   );
 }
 
+/** Um atalho de voz: clique no campo e aperte as teclas (Esc cancela). */
+function HotkeyField({ action, label, value, others, onChange }) {
+  const [recording, setRecording] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [, bump] = useState(0);
+  useEffect(() => onHotkeyProblems(() => bump((n) => n + 1)), []);
+  useEffect(() => {
+    if (!recording) return;
+    // O atalho global engoliria as teclas: fica desligado enquanto grava.
+    pauseGlobalHotkeys();
+    const onKey = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key === 'Escape' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+        setRecording(false);
+        setMsg('');
+        return refreshHotkeys();
+      }
+      const r = hotkeyFromEvent(e);
+      if (r.waiting) return;
+      if (r.error) return setMsg(r.error);
+      const taken = others.find((o) => sameHotkey(o.value, r.hotkey));
+      if (taken) return setMsg(`Esse atalho já é de “${taken.label}”.`);
+      setRecording(false);
+      setMsg('');
+      onChange(r.hotkey);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [recording, others, onChange]);
+  const stop = () => {
+    if (!recording) return;
+    setRecording(false);
+    setMsg('');
+    refreshHotkeys();
+  };
+  const isDefault = sameHotkey(value, DEFAULT_HOTKEYS[action]);
+  return (
+    <div className="hotkey-field">
+      <span className="hotkey-label">{label}</span>
+      <div className="hotkey-row">
+        <button
+          type="button"
+          className={`hotkey-input${recording ? ' recording' : ''}${value ? '' : ' empty'}`}
+          onClick={() => (recording ? stop() : setRecording(true))}
+          onBlur={stop}
+          aria-label={`Atalho: ${label}`}
+          title={recording ? 'Aperte as teclas do atalho (Esc cancela)' : 'Clique para trocar o atalho'}
+        >
+          {recording ? 'Aperte as teclas…' : formatHotkey(value)}
+        </button>
+        {value && (
+          <button type="button" className="btn ghost mini" onClick={() => onChange(null)} title="Sem atalho" aria-label={`Tirar o atalho: ${label}`}>
+            <X size={14} />
+          </button>
+        )}
+        {!isDefault && (
+          <button type="button" className="btn ghost hotkey-reset" onClick={() => onChange(DEFAULT_HOTKEYS[action])} title={`Voltar ao padrão (${formatHotkey(DEFAULT_HOTKEYS[action])})`}>
+            Padrão
+          </button>
+        )}
+      </div>
+      {msg && <small className="hotkey-msg">{msg}</small>}
+      {!msg && hotkeyProblems.has(action) && (
+        <small className="hotkey-msg">
+          O Windows não deixou usar esse atalho em segundo plano (outro programa já usa): ele só funciona com o PadoSpeak em foco.
+          Escolha outro.
+        </small>
+      )}
+    </div>
+  );
+}
+
+/** Atalhos de silenciar e ensurdecer. */
+function VoiceHotkeys() {
+  const prefs = useStore((s) => s.prefs);
+  const map = hotkeysOf(prefs);
+  const set = (action) => (value) => useStore.getState().setAppearance({ hotkeys: { ...hotkeysOf(useStore.getState().prefs), [action]: value } });
+  return (
+    <>
+      <div className="settings-sec">Atalhos de voz</div>
+      {HOTKEY_ACTIONS.map((a) => (
+        <HotkeyField
+          key={a.id}
+          action={a.id}
+          label={a.label}
+          value={map[a.id]}
+          others={HOTKEY_ACTIONS.filter((o) => o.id !== a.id).map((o) => ({ label: o.label, value: map[o.id] }))}
+          onChange={set(a.id)}
+        />
+      ))}
+      <p className="kv">
+        {isTauri
+          ? 'Funcionam em qualquer lugar do Windows: com o PadoSpeak minimizado, na bandeja ou atrás de um jogo.'
+          : 'Funcionam com o PadoSpeak aberto e em foco (o navegador não deixa usar atalhos com a janela em segundo plano). Para usar em qualquer lugar, use o app para Windows.'}
+      </p>
+    </>
+  );
+}
+
 function SettingsModal({ close }) {
   const prim = primaryConn();
   const me = prim((s) => s.me);
@@ -795,6 +910,7 @@ function SettingsModal({ close }) {
         {needsPermission && (
           <p className="kv">Os nomes dos dispositivos aparecem depois que você permitir o acesso (entre em um canal de voz).</p>
         )}
+        {(isTauri || !touchDevice) && <VoiceHotkeys />}
         <div className="settings-sec">Vídeo e transmissões</div>
         <p className="kv">Câmeras e transmissões só chegam quando você clica para ver — assim não gastam sua internet à toa.</p>
         {[
@@ -1280,7 +1396,33 @@ function ProfileCard({ close, userId }) {
 }
 
 /** Recorta no centro e reduz para 256×256 (WebP, ou PNG se o navegador não gerar WebP). */
-async function prepareAvatar(file) {
+/** Foto animada até este tamanho vai como está (o servidor aceita até 2 MB). */
+const ANIMATED_MAX = 2 * 1024 * 1024;
+
+/** GIF com mais de um quadro ou WebP animado (desenhar no canvas guardaria só o primeiro quadro). */
+async function isAnimated(file) {
+  const head = new Uint8Array(await file.slice(0, 64 * 1024).arrayBuffer());
+  const ascii = (from, n) => String.fromCharCode(...head.subarray(from, from + n));
+  if (ascii(0, 3) === 'GIF') {
+    // cada quadro tem um bloco de controle 21 F9 04; a partir do segundo, é animado
+    const all = new Uint8Array(await file.arrayBuffer());
+    let frames = 0;
+    for (let i = 0; i < all.length - 2; i++) if (all[i] === 0x21 && all[i + 1] === 0xf9 && all[i + 2] === 0x04 && ++frames > 1) return true;
+    return false;
+  }
+  // WebP estendido (VP8X) com o bit de animação
+  return ascii(0, 4) === 'RIFF' && ascii(8, 4) === 'WEBP' && ascii(12, 4) === 'VP8X' && (head[20] & 0x02) !== 0;
+}
+
+/**
+ * Foto pronta para enviar: recortada em quadrado de 256 px (WebP). Com `animated`, GIF/WebP animado
+ * vai como está (o recorte em quadrado fica por conta da tela), para não parar no primeiro quadro.
+ */
+async function prepareAvatar(file, { animated = false } = {}) {
+  if (animated && (await isAnimated(file))) {
+    if (file.size > ANIMATED_MAX) throw new Error('A foto animada deve ter até 2 MB');
+    return file;
+  }
   const bitmap = await createImageBitmap(file);
   const side = Math.min(bitmap.width, bitmap.height);
   const canvas = document.createElement('canvas');
@@ -1336,6 +1478,9 @@ function EditProfileModal({ close }) {
   const prim = primaryConn();
   const me = prim((s) => s.me);
   const base = prim((s) => s.baseUrl);
+  // App desktop sem alcançar o servidor: o perfil de lá é o que vale, então a mudança feita agora fica só
+  // neste PC até o servidor voltar (e aí é trocada pelo perfil do servidor).
+  const offline = useStore((s) => isDesktop && ['unreachable', 'connecting'].includes(s.serverStatus));
   const [name, setName] = useState(() => withLegacyColor(me.displayName, me.nameColor));
   const [bio, setBio] = useState('');
   const [banner, setBanner] = useState(me.bannerColor || null);
@@ -1364,7 +1509,7 @@ function EditProfileModal({ close }) {
     if (!file) return;
     setUploading(true);
     try {
-      await prim.getState().uploadAvatar(await prepareAvatar(file));
+      await prim.getState().uploadAvatar(await prepareAvatar(file, { animated: true }));
       syncProfileEverywhere();
     } catch (err) {
       useStore.getState().notify(err.message || 'Não foi possível usar essa imagem');
@@ -1423,7 +1568,7 @@ function EditProfileModal({ close }) {
                 <Trash2 size={16} /> Remover foto
               </button>
             )}
-            <small>PNG, JPEG, WebP ou GIF. A imagem é recortada em quadrado.</small>
+            <small>PNG, JPEG, WebP ou GIF (animado também, até 2 MB). A imagem é recortada em quadrado.</small>
           </div>
           <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={pick} />
         </div>
@@ -1463,6 +1608,13 @@ function EditProfileModal({ close }) {
             </span>
           )}
         </div>
+        {offline && (
+          <p className="sp-warn" role="status">
+            <TriangleAlert size={15} />
+            Sem conexão com o servidor: o perfil de lá é o que vale. O que você mudar agora fica só neste PC e volta a
+            ser o do servidor quando ele conectar.
+          </p>
+        )}
         {error && <p className="error-text">{error}</p>}
       </div>
       <div className="modal-foot">
@@ -1615,7 +1767,19 @@ function ServerLoginModal({ close }) {
   const localName = connRegistry.get('local')?.getState().me?.username || '';
   const [mode, setMode] = useState('login');
   const [form, setForm] = useState({ username: localName, password: '', newPassword: '', repeat: '' });
+  // Muitas tentativas: aviso com contagem regressiva; perto do bloqueio, quantas tentativas restam.
+  const lockout = useLoginLock(form.username);
+  const locked = mode !== 'register' && lockout.locked;
   const { busy, error, run } = useAction(async () => {
+    try {
+      await serverLogin();
+    } catch (e) {
+      const { locked: nowLocked, hint } = lockout.track(e);
+      if (nowLocked) throw new Error('');
+      throw hint ? new Error(`${e.message.replace(/\.?$/, '.')}${hint}`) : e;
+    }
+  }, close);
+  async function serverLogin() {
     if (mode === 'reset') {
       if (form.newPassword !== form.repeat) throw new Error('As duas senhas não são iguais.');
       return serverAuthenticate('new-password', { username: form.username, password: form.password, newPassword: form.newPassword });
@@ -1630,15 +1794,15 @@ function ServerLoginModal({ close }) {
       }
       throw e;
     }
-  }, close);
+  }
   const update = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
   return (
     <form onSubmit={run}>
       <div className="modal-body">
         <h2>{url.replace(/^https?:\/\//, '')}</h2>
         <p className="sub">
-          Amigos e servidores ficam nesta conta. Se o usuário for o mesmo do seu perfil local, nome, foto e mensagem
-          pessoal são copiados do perfil local.
+          Amigos e servidores ficam nesta conta. Se o usuário for o mesmo do seu perfil local, o perfil do servidor
+          (nome, foto e mensagem pessoal) passa a valer também neste PC. Uma conta nova começa com o perfil deste PC.
         </p>
         <div className="tabs">
           <button type="button" className={mode === 'login' ? 'active' : ''} onClick={() => setMode('login')}>
@@ -1685,7 +1849,7 @@ function ServerLoginModal({ close }) {
             />
           </label>
         )}
-        {error && <p className="error-text">{error}</p>}
+        {locked ? <LoginLock left={lockout.left} /> : error && <p className="error-text">{error}</p>}
       </div>
       <div className="modal-foot">
         <button
@@ -1698,7 +1862,7 @@ function ServerLoginModal({ close }) {
         >
           Trocar servidor
         </button>
-        <button className="btn" disabled={busy}>
+        <button className="btn" disabled={busy || locked}>
           {mode === 'login' ? 'Entrar' : mode === 'reset' ? 'Salvar e entrar' : 'Criar conta'}
         </button>
       </div>
@@ -1849,7 +2013,7 @@ function GuildFiles({ guildId }) {
                 const Icon = fileKindIcon(f);
                 return (
                   <div className={`gs-card${f.big ? ' big' : ''}`} key={f.id}>
-                    <a className="gs-card-thumb" href={st.fileUrl(f.id)} target="_blank" rel="noreferrer" title={f.name}>
+                    <a className={`gs-card-thumb${f.nsfw ? ' nsfw' : ''}`} href={st.fileUrl(f.id)} target="_blank" rel="noreferrer" title={f.name}>
                       {f.mime.startsWith('image/') ? (
                         <img src={st.fileUrl(f.id)} alt="" loading="lazy" />
                       ) : (

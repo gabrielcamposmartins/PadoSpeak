@@ -17,6 +17,8 @@ type ApiResult<T> = Result<T, ApiError>;
 
 /// Tamanho máximo da foto de perfil (o cliente já reduz para 256×256).
 const MAX_AVATAR: usize = 1024 * 1024;
+/// GIF/WebP animado vai como está (reduzir pararia a animação no primeiro quadro).
+const MAX_AVATAR_ANIMATED: usize = 2 * 1024 * 1024;
 
 fn bad(msg: &str) -> ApiError {
     ApiError::new(StatusCode::BAD_REQUEST, msg)
@@ -42,6 +44,72 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/dms", get(list_dms).post(open_dm))
         .route("/api/me/settings", get(get_settings).patch(update_settings))
         .route("/api/me/nudge-blocks/{id}", put(block_nudges).delete(unblock_nudges))
+        .route("/api/me/marks", get(list_marks))
+        .route("/api/me/marks/{kind}/{id}", put(add_mark).delete(remove_mark))
+}
+
+// ---------- Marcas só para mim: "excluir para mim" e "marcar como NSFW" ----------
+
+const MARK_KINDS: [&str; 2] = ["hidden", "nsfw"];
+/// Quantas marcas cada pessoa guarda (as mais antigas saem).
+const MAX_MARKS: i64 = 20_000;
+
+/// `{ hidden: [ids], nsfw: [ids] }` das minhas marcas.
+async fn list_marks(State(app): AppState, AuthUser(me, _): AuthUser) -> ApiResult<Json<Value>> {
+    let rows = app
+        .db
+        .query_all("SELECT kind, message_id FROM message_marks WHERE user_id = ?1", [me.id.as_str()], |r| {
+            Ok((r.get::<String>(0)?, r.get::<String>(1)?))
+        })
+        .await?;
+    let mut out = json!({ "hidden": [], "nsfw": [] });
+    for (kind, id) in rows {
+        if let Some(list) = out.get_mut(&kind).and_then(Value::as_array_mut) {
+            list.push(Value::String(id));
+        }
+    }
+    Ok(Json(out))
+}
+
+fn mark_params(kind: &str, id: &str) -> ApiResult<()> {
+    if !MARK_KINDS.contains(&kind) {
+        return Err(bad("Marca desconhecida"));
+    }
+    if id.is_empty() || id.len() > 64 || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err(bad("Mensagem inválida"));
+    }
+    Ok(())
+}
+
+/// Marca uma mensagem só para mim; os meus outros aparelhos ficam sabendo na hora.
+async fn add_mark(State(app): AppState, AuthUser(me, _): AuthUser, Path((kind, id)): Path<(String, String)>) -> ApiResult<StatusCode> {
+    mark_params(&kind, &id)?;
+    app.db
+        .execute(
+            "INSERT OR IGNORE INTO message_marks (user_id, message_id, kind, created_at) VALUES (?1, ?2, ?3, ?4)",
+            libsql::params![me.id.as_str(), id.as_str(), kind.as_str(), crate::now_ms()],
+        )
+        .await?;
+    app.db
+        .execute(
+            "DELETE FROM message_marks WHERE user_id = ?1 AND rowid NOT IN              (SELECT rowid FROM message_marks WHERE user_id = ?1 ORDER BY created_at DESC LIMIT ?2)",
+            libsql::params![me.id.as_str(), MAX_MARKS],
+        )
+        .await?;
+    app.hub.to_users(&[me.id.clone()], "mark:update", json!({ "kind": kind, "id": id, "on": true }));
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn remove_mark(State(app): AppState, AuthUser(me, _): AuthUser, Path((kind, id)): Path<(String, String)>) -> ApiResult<StatusCode> {
+    mark_params(&kind, &id)?;
+    app.db
+        .execute(
+            "DELETE FROM message_marks WHERE user_id = ?1 AND message_id = ?2 AND kind = ?3",
+            [me.id.as_str(), id.as_str(), kind.as_str()],
+        )
+        .await?;
+    app.hub.to_users(&[me.id.clone()], "mark:update", json!({ "kind": kind, "id": id, "on": false }));
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn user_by_id(app: &App, id: &str) -> ApiResult<Option<User>> {
@@ -120,10 +188,11 @@ pub(crate) fn sniff_image(bytes: &[u8]) -> Option<&'static str> {
 }
 
 async fn upload_avatar(State(app): AppState, AuthUser(me, _): AuthUser, body: Bytes) -> ApiResult<Json<User>> {
-    if body.is_empty() || body.len() > MAX_AVATAR {
-        return Err(bad("A imagem deve ter até 1 MB"));
-    }
     let mime = sniff_image(&body).ok_or_else(|| bad("Use uma imagem PNG, JPEG, WebP ou GIF"))?;
+    let animated = matches!(mime, "image/gif" | "image/webp");
+    if body.len() > if animated { MAX_AVATAR_ANIMATED } else { MAX_AVATAR } {
+        return Err(bad(if animated { "A foto animada deve ter até 2 MB" } else { "A imagem deve ter até 1 MB" }));
+    }
     let conn = app.db.conn().await?;
     let tx = conn.transaction().await?;
     tx.execute(
