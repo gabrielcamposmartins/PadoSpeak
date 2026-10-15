@@ -22,7 +22,7 @@ import { useStore } from '../store.js';
 import { TitleBar } from './Aero.jsx';
 import FormatTools, { formatKey } from './FormatTools.jsx';
 import { StickerView } from './Stickers.jsx';
-import { fmtSize } from './Files.jsx';
+import { fmtSize, VoiceNote } from './Files.jsx';
 import { isTouch } from '../lib/layout.js';
 
 const CAPTION_MAX = 3500;
@@ -396,19 +396,23 @@ export function CameraCapture({ onDone, onClose }) {
 const VOICE_MAX_MS = 10 * 60 * 1000;
 
 /**
- * Gravador da mensagem de voz (no lugar da caixa de texto). Começa ao aparecer; `onSend(blob, ms)`
- * manda, `onCancel` descarta.
+ * Gravador da mensagem de voz (no lugar da caixa de texto). Começa ao aparecer; "Parar" mostra a
+ * prévia para ouvir antes de mandar. `onSend(blob, ms)` manda, `onCancel` descarta.
  */
 export function VoiceRecorder({ onSend, onCancel }) {
-  const [state, setState] = useState({ phase: 'starting' }); // starting | recording | error
+  const [state, setState] = useState({ phase: 'starting' }); // starting | recording | review | error
+  const [take, setTake] = useState(0); // gravar de novo recomeça
   const [now, setNow] = useState(Date.now());
   const [level, setLevel] = useState(0);
   const rec = useRef(null);
+  const reviewUrl = useMemo(() => (state.phase === 'review' ? URL.createObjectURL(state.blob) : null), [state]);
+  useEffect(() => () => reviewUrl && URL.revokeObjectURL(reviewUrl), [reviewUrl]);
 
   useEffect(() => {
     let alive = true;
     let ctx = null;
     let raf = 0;
+    setState({ phase: 'starting' });
     const micId = useStore.getState().prefs.devices?.mic;
     navigator.mediaDevices
       ?.getUserMedia({ audio: { ...(micId ? { deviceId: { ideal: micId } } : {}), echoCancellation: true, noiseSuppression: true } })
@@ -443,7 +447,7 @@ export function VoiceRecorder({ onSend, onCancel }) {
       .catch((e) => alive && setState({ phase: 'error', text: mediaError(e, 'microfone') }));
     const t = setInterval(() => {
       setNow(Date.now());
-      if (rec.current && Date.now() - rec.current.started >= VOICE_MAX_MS) finish(true);
+      if (rec.current && Date.now() - rec.current.started >= VOICE_MAX_MS) stop();
     }, 200);
     return () => {
       alive = false;
@@ -451,28 +455,30 @@ export function VoiceRecorder({ onSend, onCancel }) {
       cancelAnimationFrame(raf);
       ctx?.close().catch(() => {});
       const r = rec.current;
+      rec.current = null;
       if (r) {
         r.recorder.ondataavailable = null;
+        r.recorder.onstop = null;
         if (r.recorder.state !== 'inactive') r.recorder.stop();
         r.stream.getTracks().forEach((tr) => tr.stop());
       }
     };
-  }, []);
+  }, [take]);
 
-  function finish(send) {
+  /** Para de gravar e mostra a prévia (o microfone é solto). */
+  function stop() {
     const r = rec.current;
     rec.current = null;
-    if (!r) return onCancel();
+    if (!r) return;
     const ms = Date.now() - r.started;
     r.recorder.onstop = () => {
       r.stream.getTracks().forEach((tr) => tr.stop());
-      if (!send) return onCancel();
       const blob = new Blob(r.chunks, { type: (r.recorder.mimeType || r.mimeType || 'audio/webm').split(';')[0] });
       if (ms < 500 || !blob.size) {
         useStore.getState().notify('Mensagem de voz curta demais.', 'info');
         return onCancel();
       }
-      onSend(blob, ms);
+      setState({ phase: 'review', blob, ms });
     };
     if (r.recorder.state !== 'inactive') r.recorder.stop();
     else r.recorder.onstop();
@@ -487,10 +493,25 @@ export function VoiceRecorder({ onSend, onCancel }) {
         </button>
       </div>
     );
+  if (state.phase === 'review')
+    return (
+      <div className="voice-rec review" role="group" aria-label="Prévia da mensagem de voz">
+        <button type="button" className="gloss mini danger-ico" onClick={onCancel} title="Descartar" aria-label="Descartar gravação">
+          <Trash2 size={15} />
+        </button>
+        <VoiceNote voice={{ id: 'previa', duration: state.ms }} src={reviewUrl} />
+        <button type="button" className="gloss mini" onClick={() => setTake((n) => n + 1)} title="Gravar de novo" aria-label="Gravar de novo">
+          <RotateCcw size={15} />
+        </button>
+        <button type="button" className="go send-btn" onClick={() => onSend(state.blob, state.ms)} title="Enviar mensagem de voz" aria-label="Enviar mensagem de voz">
+          <Send size={16} /> Enviar
+        </button>
+      </div>
+    );
   const elapsed = rec.current ? now - rec.current.started : 0;
   return (
     <div className="voice-rec" role="group" aria-label="Gravando mensagem de voz">
-      <button type="button" className="gloss mini danger-ico" onClick={() => finish(false)} title="Descartar" aria-label="Descartar gravação">
+      <button type="button" className="gloss mini danger-ico" onClick={onCancel} title="Descartar" aria-label="Descartar gravação">
         <Trash2 size={15} />
       </button>
       <span className={`rec-dot${state.phase === 'recording' ? ' on' : ''}`} />
@@ -500,13 +521,13 @@ export function VoiceRecorder({ onSend, onCancel }) {
       </span>
       <button
         type="button"
-        className="go send-btn"
-        onClick={() => finish(true)}
+        className="stop rec-stop"
+        onClick={stop}
         disabled={state.phase !== 'recording'}
-        title="Enviar mensagem de voz"
-        aria-label="Enviar mensagem de voz"
+        title="Parar de gravar (e ouvir antes de mandar)"
+        aria-label="Parar de gravar"
       >
-        <Send size={16} /> Enviar
+        <Square size={13} fill="currentColor" /> Parar
       </button>
     </div>
   );

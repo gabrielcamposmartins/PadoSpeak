@@ -481,7 +481,7 @@ const SETTINGS_TABS = [
   ['formatacao', 'Formatação de texto', Type],
 ];
 
-/** Cores da paleta pessoal (Ctrl+1…6) e a lista de atalhos. */
+/** Cores da paleta pessoal (Ctrl+1…8) e a lista de atalhos. */
 function TextFormatting() {
   const palette = usePalette();
   const set = (i, hex) => {
@@ -494,17 +494,19 @@ function TextFormatting() {
     <>
       <div className="settings-sec">Sua paleta</div>
       <p className="kv">
-        Pinte o texto com {MOD}+1 a {MOD}+6. Sem nada selecionado, a cor pinta a mensagem toda (repetir a mesma cor tira).
+        Pinte o texto com {MOD}+1 a {MOD}+8. Sem nada selecionado, a cor pinta a mensagem toda (repetir a mesma cor tira).
       </p>
       <div className="palette-edit">
         {palette.map((hex, i) => (
           <label key={i} className="palette-slot" title={`Cor ${i + 1}`}>
-            <input type="color" value={hex} aria-label={`Cor ${i + 1} (${MOD}+${i + 1})`} onChange={(e) => set(i, e.target.value)} />
+            <span className="color-well" style={{ '--sw': hex }}>
+              <input type="color" value={hex} aria-label={`Cor ${i + 1} (${MOD}+${i + 1})`} onChange={(e) => set(i, e.target.value)} />
+            </span>
             <span className="palette-key">
               {MOD}+{i + 1}
             </span>
             <span className="tc palette-sample" style={{ '--tc': hex }}>
-              Texto de exemplo
+              Exemplo de texto
             </span>
           </label>
         ))}

@@ -572,7 +572,9 @@ export function ColorPicker({ anchorRef, onPick, onClose }) {
         </>
       )}
       <div className="color-custom">
-        <input type="color" value={custom} onChange={(e) => setCustom(e.target.value)} aria-label="Outra cor" title="Outra cor" />
+        <span className="color-well" style={{ '--sw': custom }} title="Outra cor">
+          <input type="color" value={custom} onChange={(e) => setCustom(e.target.value)} aria-label="Outra cor" />
+        </span>
         <button type="button" className="gloss small-btn" onClick={() => onPick(custom)}>
           Usar esta cor
         </button>

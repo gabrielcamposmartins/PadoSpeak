@@ -477,6 +477,15 @@ async fn upload_big(
     .await;
     if let Err(e) = result {
         let _ = tokio::fs::remove_file(&part).await;
+        // Lê (e descarta) um pouco do resto antes de responder: se a conexão fechar com o envio
+        // ainda chegando, o app vê "conexão caiu" em vez da mensagem do erro.
+        let mut drained = 0usize;
+        while drained < 32 * 1024 * 1024 {
+            match stream.next().await {
+                Some(Ok(piece)) => drained += piece.len(),
+                _ => break,
+            }
+        }
         return Err(e);
     }
     tokio::fs::rename(&part, folder.join(&id)).await.map_err(internal)?;

@@ -67,8 +67,13 @@ function bars(id, n = 32) {
   });
 }
 
+/** Velocidades das mensagens de voz (o botão passa de uma para a outra). */
+const SPEEDS = [1, 1.25, 1.5, 2];
+const fmtRate = (r) => `${r.toLocaleString('pt-BR')}×`;
+
 /** Mensagem de voz: tocar/pausar, a onda (clique para pular) e a velocidade. */
-export function VoiceNote({ voice }) {
+/** `src`: tocar outro endereço (ex.: a prévia da gravação, antes de mandar). */
+export function VoiceNote({ voice, src }) {
   const useC = useConn();
   const fileUrl = useC((s) => s.fileUrl);
   const audio = useRef(null);
@@ -113,18 +118,19 @@ export function VoiceNote({ voice }) {
       <button
         type="button"
         className="voice-rate"
-        title="Velocidade"
+        title="Velocidade (clique para trocar)"
+        aria-label={`Velocidade: ${fmtRate(rate)}`}
         onClick={() => {
-          const next = rate === 1 ? 1.5 : rate === 1.5 ? 2 : 1;
+          const next = SPEEDS[(SPEEDS.indexOf(rate) + 1) % SPEEDS.length];
           setRate(next);
           if (audio.current) audio.current.playbackRate = next;
         }}
       >
-        {rate}×
+        {fmtRate(rate)}
       </button>
       <audio
         ref={audio}
-        src={fileUrl(voice.id)}
+        src={src || fileUrl(voice.id)}
         preload="metadata"
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}

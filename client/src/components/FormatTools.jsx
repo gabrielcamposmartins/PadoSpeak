@@ -2,7 +2,7 @@
 // próprio texto. A mesma barra serve a caixa de mensagem, o nome e a mensagem pessoal.
 //
 // Atalhos (em qualquer caixa com formatação): Ctrl+B negrito, Ctrl+I itálico, Ctrl+U sublinhado,
-// Ctrl+Shift+X riscado e Ctrl+1…6 as cores da paleta pessoal (Configurações → Formatação de texto).
+// Ctrl+Shift+X riscado e Ctrl+1…8 as cores da paleta pessoal (Configurações → Formatação de texto).
 // Sem nada selecionado, a cor pinta a mensagem toda; repetir a mesma cor tira a cor.
 import { useRef, useState } from 'react';
 import { Bold, Italic, Underline, Strikethrough, Smile, Baseline } from 'lucide-react';
@@ -22,7 +22,7 @@ export const SHORTCUTS = [
   [`${MOD}+I`, 'Itálico'],
   [`${MOD}+U`, 'Sublinhado'],
   [`${MOD}+Shift+X`, 'Riscado'],
-  [`${MOD}+1 … ${MOD}+6`, 'Cores da sua paleta'],
+  [`${MOD}+1 … ${MOD}+8`, 'Cores da sua paleta'],
 ];
 
 const WRAPS = { b: ['**', '**', 'negrito'], i: ['*', '*', 'itálico'], u: ['__', '__', 'sublinhado'], x: ['~~', '~~', 'riscado'] };
@@ -73,7 +73,7 @@ export function formatKey(e, el, text, setText, maxRaw) {
     if (maxRaw && next.length > maxRaw) return useStore.getState().notify('Não cabe mais formatação neste texto', 'info');
     setText(next);
   };
-  const digit = /^Digit([1-6])$/.exec(e.code) || /^Numpad([1-6])$/.exec(e.code);
+  const digit = /^Digit([1-8])$/.exec(e.code) || /^Numpad([1-8])$/.exec(e.code);
   if (digit && !e.shiftKey) {
     e.preventDefault();
     applyColor(el, text, guarded, paletteOf(useStore.getState().prefs)[Number(digit[1]) - 1]);
@@ -120,7 +120,7 @@ export default function FormatTools({ inputRef, text, setText, maxRaw, children,
           ref={colorBtn}
           type="button"
           className={`gloss tool-sq${open === 'color' ? ' pressed' : ''}`}
-          title={`Cor do texto (${MOD}+1 … ${MOD}+6)`}
+          title={`Cor do texto (${MOD}+1 … ${MOD}+8)`}
           aria-label="Cor do texto"
           aria-expanded={open === 'color'}
           onClick={() => setOpen(open === 'color' ? null : 'color')}

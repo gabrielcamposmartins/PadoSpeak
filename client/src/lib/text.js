@@ -13,8 +13,8 @@ export function plain(text) {
 export const visibleLength = (text) => [...plain(text)].length;
 
 
-/** As 6 cores principais do texto (Ctrl+1…6), personalizáveis nas configurações. */
-export const DEFAULT_PALETTE = ['#e2331f', '#e8781a', '#c79100', '#2e9e1a', '#1a7fc4', '#7b44c8'];
+/** As 8 cores principais do texto (Ctrl+1…8), personalizáveis nas configurações. */
+export const DEFAULT_PALETTE = ['#e2331f', '#e8781a', '#c79100', '#2e9e1a', '#0f9f9a', '#1a7fc4', '#7b44c8', '#d6418f'];
 
 /** Paleta pessoal (com as cores padrão no lugar das que faltarem). */
 export function paletteOf(prefs) {

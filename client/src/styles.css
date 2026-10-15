@@ -6493,22 +6493,36 @@ html[data-touch] [data-tip]::after {
 }
 .palette-edit {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   margin-bottom: 12px;
 }
+@media (max-width: 640px) {
+  .palette-edit {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
 .palette-slot {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto 1fr;
   align-items: center;
-  gap: 10px;
-  padding: 6px 10px;
+  gap: 4px 8px;
+  padding: 8px 10px;
   border-radius: 8px;
   border: 1px solid var(--row-hover-border);
   background: var(--area);
   cursor: pointer;
 }
+.palette-slot .palette-sample {
+  grid-column: 1 / -1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .palette-slot input[type='color'] {
-  width: 34px;
+  width: 34px !important;
+  min-width: 0;
+  flex: none;
   height: 28px;
   padding: 0;
   border: 1px solid var(--gloss-border);
@@ -6722,6 +6736,25 @@ kbd {
 .voice-rec .send-btn {
   align-self: stretch;
 }
+.voice-rec .rec-stop {
+  align-self: stretch;
+  padding: 0 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  gap: 6px;
+}
+.voice-rec.review {
+  gap: 8px;
+  padding-right: 0;
+}
+.voice-rec.review .voice-note {
+  flex: 1;
+  max-width: none;
+  min-width: 0;
+}
+.voice-rec.review .voice-wave {
+  min-width: 60px;
+}
 
 /* ---------- Mensagem de voz ---------- */
 .voice-note {
@@ -6768,6 +6801,7 @@ kbd {
   min-width: 34px;
 }
 .voice-rate {
+  min-width: 42px;
   font-size: 11px;
   font-weight: 700;
   color: var(--gloss-ink);
@@ -7582,4 +7616,44 @@ button.receipt.read:hover {
 }
 .adm-viewers {
   max-width: 520px;
+}
+
+/* Quadrado de cor com o seletor do sistema invisível por cima (clicar abre o seletor). */
+.color-well {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 34px;
+  height: 28px;
+  border-radius: 6px;
+  background: var(--sw);
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 1px 2px rgba(20, 80, 130, 0.18);
+  cursor: pointer;
+}
+.color-well input[type='color'] {
+  position: absolute;
+  inset: 0;
+  width: 100% !important;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  padding: 0;
+  border: 0;
+}
+/* Cor personalizada no seletor: o quadrado e o botão na mesma linha, alinhados. */
+.color-custom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+.color-custom .color-well {
+  width: 30px;
+  height: 26px;
+}
+.color-custom .small-btn {
+  flex: 1;
+  height: 26px;
+  justify-content: center;
 }

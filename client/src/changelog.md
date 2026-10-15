@@ -1,5 +1,18 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.6.2 — 15/10/2026
+
+### Mensagens de voz
+- Botão **Parar** durante a gravação e **prévia** antes de mandar: ouça, grave de novo, descarte ou envie.
+- Velocidade de **1×, 1,25×, 1,5× e 2×** nas mensagens de voz (e na prévia da gravação).
+
+### Formatação
+- A paleta agora tem **8 cores**: Ctrl+1 a Ctrl+8 (entraram aqua e rosa).
+- Nas configurações, cada cor da paleta é um quadrado colorido; no seletor de cor, a cor personalizada ficou alinhada.
+
+### Correções
+- Ao recusar um arquivo grande (um programa disfarçado), a mensagem do erro agora sempre aparece.
+
 ## 1.6.1 — 15/10/2026
 
 ### Correções

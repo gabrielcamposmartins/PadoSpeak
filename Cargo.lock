@@ -4048,7 +4048,7 @@ dependencies = [
 
 [[package]]
 name = "padospeak-desktop"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "padospeak-server",
  "serde_json",
@@ -4064,7 +4064,7 @@ dependencies = [
 
 [[package]]
 name = "padospeak-server"
-version = "1.6.1"
+version = "1.6.2"
 dependencies = [
  "axum 0.8.9",
  "axum-server",
