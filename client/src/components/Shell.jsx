@@ -27,9 +27,11 @@ import {
   X,
   VolumeX,
   ChartColumn,
+  Download,
 } from 'lucide-react';
 import { useStore, primaryConn, setStatusEverywhere, connRegistry, usePerms } from '../store.js';
-import { isDesktop } from '../lib/env.js';
+import { isDesktop, DOWNLOAD_URL } from '../lib/env.js';
+import { offerWindowsApp } from './AuthPage.jsx';
 import { ConnProvider, useAcross, useVoiceConn } from './conn.jsx';
 import { canHost } from '../lib/host.js';
 import { useEffect, useRef, useState } from 'react';
@@ -787,6 +789,7 @@ function TabletShell() {
   return (
     <div className="aero-app tablet-app" {...useAppBackground()}>
       <ProfileBar onMenu={() => setOpen(true)} />
+      <DownloadBanner />
       <div className="aero-body">
         <Main />
       </div>
@@ -814,6 +817,46 @@ export function useAppBackground() {
   return url ? { 'data-bg': '1', style: { '--app-bg-img': `url("${url}")` } } : {};
 }
 
+/** Faixa "Baixe o app para Windows" (só no navegador de um computador com Windows; o X fecha de vez). */
+const BANNER_KEY = 'padospeak.downloadBannerClosed';
+export function DownloadBanner() {
+  const [closed, setClosed] = useState(() => {
+    try {
+      return localStorage.getItem(BANNER_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  if (!offerWindowsApp || closed) return null;
+  return (
+    <div className="dl-banner" role="region" aria-label="Baixar o app para Windows">
+      <img className="dl-ico" src="/icons/icon-192.png" alt="" />
+      <span className="dl-text">
+        <b>Baixe o app para Windows</b>
+      </span>
+      <a className="btn" href={DOWNLOAD_URL}>
+        <Download size={15} /> Baixar o app
+      </a>
+      <button
+        type="button"
+        className="dl-close"
+        title="Fechar"
+        aria-label="Fechar"
+        onClick={() => {
+          setClosed(true);
+          try {
+            localStorage.setItem(BANNER_KEY, '1');
+          } catch {
+            /* sem armazenamento: só fecha agora */
+          }
+        }}
+      >
+        <X size={16} />
+      </button>
+    </div>
+  );
+}
+
 export default function Shell() {
   const layout = useLayout();
   const bg = useAppBackground();
@@ -822,6 +865,7 @@ export default function Shell() {
   return (
     <div className="aero-app" {...bg}>
       <ProfileBar />
+      <DownloadBanner />
       <div className="aero-body">
         <GuildRail />
         <ChannelSidebar />

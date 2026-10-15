@@ -12,7 +12,8 @@ import IncomingCalls from './components/IncomingCall.jsx';
 import Avatar from './components/Avatar.jsx';
 import { TitleBar } from './components/Aero.jsx';
 import { FormattedText } from './components/Emotes.jsx';
-import { useAcross } from './components/conn.jsx';
+import { useAcross, unreadTotal } from './components/conn.jsx';
+import { setUnreadBadge } from './lib/badge.js';
 
 /** Aviso que sobe no canto, como o "fulano acabou de entrar" do Messenger. */
 function Toast({ toast }) {
@@ -72,6 +73,15 @@ function UpdateOverlay() {
   );
 }
 
+/** Contador de não lidas no ícone do app (barra de tarefas do Windows ou tela inicial do celular). */
+function UnreadBadge() {
+  const unread = useAcross(unreadTotal);
+  useEffect(() => {
+    setUnreadBadge(unread);
+  }, [unread]);
+  return null;
+}
+
 export default function App() {
   const phase = useStore((s) => s.phase);
   const toast = useStore((s) => s.toast);
@@ -97,6 +107,7 @@ export default function App() {
       )}
       <Modals />
       {loggedIn && <IncomingCalls />}
+      {loggedIn && <UnreadBadge />}
       {toast && <Toast key={toast.id} toast={toast} />}
       <UpdateOverlay />
     </>

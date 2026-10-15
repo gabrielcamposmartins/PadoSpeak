@@ -1,5 +1,11 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.6.3 — 15/10/2026
+
+### Novidades
+- **Contador de mensagens não lidas no ícone**: no app do Windows, uma bolinha verde com o número no ícone da barra de tarefas; no app instalado no celular ou no computador, o contador do próprio sistema.
+- No navegador do computador, uma faixa no topo para **baixar o app para Windows** (dá para fechar no X).
+
 ## 1.6.2 — 15/10/2026
 
 ### Mensagens de voz

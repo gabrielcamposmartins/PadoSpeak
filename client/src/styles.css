@@ -7657,3 +7657,61 @@ button.receipt.read:hover {
   height: 26px;
   justify-content: center;
 }
+
+/* =====================================================================
+   Faixa "Baixe o app para Windows" (navegador no computador)
+   ===================================================================== */
+.dl-banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px 8px 18px;
+  background: linear-gradient(180deg, #fff8dc 0%, #ffeaa6 100%);
+  border-bottom: 1px solid #e3c25d;
+  color: #5a4300;
+  font-size: 14px;
+}
+:root[data-theme='dark'] .dl-banner {
+  background: linear-gradient(180deg, #3a3110, #2a230b);
+  border-color: #6b5718;
+  color: #ffe9a6;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .dl-banner {
+    background: linear-gradient(180deg, #3a3110, #2a230b);
+    border-color: #6b5718;
+    color: #ffe9a6;
+  }
+}
+.dl-banner .dl-ico {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  flex: none;
+}
+.dl-banner .dl-text {
+  flex: 1;
+  min-width: 0;
+}
+.dl-banner .btn {
+  height: 30px;
+  font-size: 13px;
+  text-decoration: none;
+}
+.dl-banner .dl-close {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.dl-banner .dl-close:hover {
+  background: rgba(0, 0, 0, 0.07);
+  border-color: rgba(0, 0, 0, 0.12);
+}

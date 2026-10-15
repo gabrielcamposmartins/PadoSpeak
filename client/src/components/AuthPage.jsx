@@ -8,7 +8,7 @@ import { isStandalone, isTouch } from '../lib/layout.js';
 
 /** O app para Windows só é oferecido no navegador de um computador com Windows (nunca no celular, no tablet
  * ou no PadoSpeak instalado como app). */
-const offerWindowsApp =
+export const offerWindowsApp =
   !isDesktop && !isStandalone && !isTouch && typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent);
 import Logo from './Logo.jsx';
 import { SceneArt, TitleBar } from './Aero.jsx';

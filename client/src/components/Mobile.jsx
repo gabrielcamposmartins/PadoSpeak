@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 import { useStore, primaryConn, localLogout } from '../store.js';
 import { isDesktop } from '../lib/env.js';
-import { useAcross } from './conn.jsx';
+import { unreadTotal, useAcross } from './conn.jsx';
 import Avatar from './Avatar.jsx';
 import { FormattedText } from './Emotes.jsx';
 import { useAppBackground, ProfileBar, GuildRail, ChannelSidebar, Main, VoiceStatus, StatusMenu } from './Shell.jsx';
@@ -36,7 +36,6 @@ import {
   pushStatus,
   enablePush,
   disablePush,
-  setBadge,
 } from '../lib/pwa.js';
 
 /** "Voltar" da tela cheia (só aparece no celular). */
@@ -48,7 +47,6 @@ export function MobileBack({ label = 'Voltar' }) {
   );
 }
 
-const unreadTotal = (states) => states.reduce((n, st) => n + Object.values(st.unread).reduce((a, b) => a + b, 0), 0);
 
 function TabBar() {
   const tab = useStore((s) => s.mobileTab);
@@ -255,8 +253,6 @@ export default function MobileShell() {
   const pane = useStore((s) => s.mobilePane);
   const view = useStore((s) => s.view);
   const music = useStore((s) => s.sidebarView === 'music' && s.currentGuildId != null);
-  const unread = useAcross(unreadTotal);
-  useEffect(() => setBadge(unread), [unread]);
 
   const detail = pane === 'detail' && (music || ['dm', 'text', 'voice'].includes(view?.type));
   const bg = useAppBackground();

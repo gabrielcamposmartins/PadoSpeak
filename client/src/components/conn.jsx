@@ -23,6 +23,9 @@ export function useConn() {
  * Valor calculado a partir de todas as conexões (ex.: não lidas somadas), atualizado quando qualquer
  * uma muda. `select` recebe a lista de estados e deve devolver um valor simples (número, texto).
  */
+/** Mensagens não lidas em todas as conexões (conversas privadas). */
+export const unreadTotal = (states) => states.reduce((n, st) => n + Object.values(st.unread).reduce((a, b) => a + b, 0), 0);
+
 export function useAcross(select) {
   const keys = useStore((s) => s.connKeys);
   const [, force] = useReducer((x) => x + 1, 0);
