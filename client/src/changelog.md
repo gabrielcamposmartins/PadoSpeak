@@ -1,5 +1,20 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.6.5 — 15/10/2026
+
+### Novidades
+- **Anexos na caixa de mensagem**: arquivos, fotos, vídeos, prints colados e stickers não abrem mais uma janela de confirmação. Eles ficam logo acima da caixa (cada um com um X), e o texto escrito vai junto ao enviar.
+- **Salvar stickers de outras pessoas**: clique no sticker na conversa e escolha “Salvar em meus stickers”.
+- **Reações rápidas**: a barra da mensagem mostra as 3 reações que você mais usa.
+- **Setinha verde ao baixar**: o botão de baixar mostra uma setinha verde até o download terminar, com a porcentagem no canto da tela.
+- No celular, **menu do clipe com recentes**: o que está copiado, o que chegou pelo “Compartilhar”, fotos da câmera e os últimos arquivos das conversas, além de Galeria, Câmera e Arquivos.
+- No celular, botão **Colar** na barra de formatação.
+- **Senha esquecida**: quando o administrador redefine a senha, a pessoa entra com o código temporário e cria uma senha nova.
+
+### Correções
+- **Câmera em tela cheia**: o botão de tirar foto ou gravar não some mais.
+- No celular, o **Chamar atenção** ocupa o resto da linha dos botões.
+
 ## 1.6.4 — 15/10/2026
 
 ### Novidades

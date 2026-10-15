@@ -1982,6 +1982,8 @@ export async function connectServer({ username, password = localPassword } = {})
       await syncProfileTo(useStore);
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) return useStore.setState({ serverStatus: 'mismatch' });
+      // Senha redefinida no servidor: a pessoa entra pela janela de login e cria a senha nova.
+      if (e instanceof ApiError && e.status === 428) return useStore.setState({ serverStatus: 'login' });
       throw e;
     }
   } catch {

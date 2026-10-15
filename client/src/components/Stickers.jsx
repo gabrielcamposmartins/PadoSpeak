@@ -1,6 +1,7 @@
 // Stickers: janela de escolha (padrão Aero + coleção própria com GIFs) e a exibição na conversa.
 import { useEffect, useRef, useState } from 'react';
-import { ImagePlus, X, LoaderCircle } from 'lucide-react';
+import { ImagePlus, X, LoaderCircle, BookmarkPlus, BookmarkCheck } from 'lucide-react';
+import { PointMenu, Item } from './VoiceMenus.jsx';
 import { useStore, stickerHome, STICKER_RE } from '../store.js';
 import { EMOTES, Emote, Floating } from './Emotes.jsx';
 import { useConn } from './conn.jsx';
@@ -35,6 +36,73 @@ export function StickerView({ sticker }) {
       draggable={false}
       onError={() => setBroken(true)}
     />
+  );
+}
+
+/**
+ * Sticker numa mensagem: clicar (ou botão direito) abre o menu para salvar na minha coleção. A imagem
+ * vem do servidor da conversa e é enviada para a minha coleção (o servidor não duplica o mesmo sticker).
+ */
+export function MessageSticker({ sticker }) {
+  const conn = useConn();
+  const home = stickerHome();
+  const mine = home((s) => s.stickers);
+  const [menu, setMenu] = useState(null); // { x, y }
+  if (sticker.emote) return <StickerView sticker={sticker} />;
+  const sameServer = conn === home;
+  const already = sameServer && Boolean(mine?.some((x) => x.id === sticker.id));
+  const open = (e) => {
+    e.preventDefault();
+    if (mine == null) home.getState().loadStickers().catch(() => {});
+    const r = e.currentTarget.getBoundingClientRect();
+    setMenu(e.type === 'contextmenu' || e.detail > 0 ? { x: e.clientX, y: e.clientY } : { x: r.left, y: r.bottom + 4 });
+  };
+  const save = async () => {
+    setMenu(null);
+    const notify = useStore.getState().notify;
+    try {
+      const st = home.getState();
+      const before = st.stickers ?? (await st.loadStickers().then(() => home.getState().stickers)) ?? [];
+      const blob = await conn.getState().stickerBlob(sticker.id);
+      const saved = await home.getState().uploadSticker(blob, 'Sticker salvo');
+      if (before.some((x) => x.id === saved?.id)) notify('Esse sticker já está nos seus stickers.', 'info');
+      else notify('Sticker salvo em “Meus stickers”.', 'info');
+    } catch (err) {
+      notify(`Sticker: ${err.message}`);
+    }
+  };
+  return (
+    <>
+      <button
+        type="button"
+        className="sticker-btn"
+        onClick={open}
+        onContextMenu={open}
+        aria-haspopup="menu"
+        aria-expanded={Boolean(menu)}
+        aria-label="Sticker (opções)"
+        title="Sticker: clique para salvar nos seus stickers"
+      >
+        <StickerView sticker={sticker} />
+      </button>
+      {menu && (
+        <PointMenu x={menu.x} y={menu.y} label="Sticker" onClose={() => setMenu(null)}>
+          {mine == null ? (
+            <Item icon={LoaderCircle} disabled>
+              Carregando…
+            </Item>
+          ) : already ? (
+            <Item icon={BookmarkCheck} disabled>
+              Já está nos seus stickers
+            </Item>
+          ) : (
+            <Item icon={BookmarkPlus} onClick={save}>
+              Salvar em meus stickers
+            </Item>
+          )}
+        </PointMenu>
+      )}
+    </>
   );
 }
 

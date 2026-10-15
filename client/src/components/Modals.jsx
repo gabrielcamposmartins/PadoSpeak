@@ -68,7 +68,7 @@ import LatencyChart from './LatencyChart.jsx';
 import { TitleBar } from './Aero.jsx';
 import { FormattedText, Floating, TEXT_COLORS } from './Emotes.jsx';
 import FormatTools, { formatKey, usePalette, DEFAULT_PALETTE, SHORTCUTS, MOD } from './FormatTools.jsx';
-import { fmtSize, fmtLeft, useNow } from './Files.jsx';
+import { fmtSize, fmtLeft, useNow, DownloadLink } from './Files.jsx';
 import { plain, visibleLength } from '../lib/text.js';
 import changelogMd from '../changelog.md?raw';
 
@@ -1614,8 +1614,23 @@ function ServerLoginModal({ close }) {
   const url = useStore((s) => s.baseUrl);
   const localName = connRegistry.get('local')?.getState().me?.username || '';
   const [mode, setMode] = useState('login');
-  const [form, setForm] = useState({ username: localName, password: '' });
-  const { busy, error, run } = useAction(() => serverAuthenticate(mode, form), close);
+  const [form, setForm] = useState({ username: localName, password: '', newPassword: '', repeat: '' });
+  const { busy, error, run } = useAction(async () => {
+    if (mode === 'reset') {
+      if (form.newPassword !== form.repeat) throw new Error('As duas senhas não são iguais.');
+      return serverAuthenticate('new-password', { username: form.username, password: form.password, newPassword: form.newPassword });
+    }
+    try {
+      await serverAuthenticate(mode, form);
+    } catch (e) {
+      // Senha redefinida pelo administrador: entrou com o código, agora cria a senha nova.
+      if (e.status === 428) {
+        setMode('reset');
+        throw new Error('Sua senha foi redefinida. Crie uma senha nova para entrar.');
+      }
+      throw e;
+    }
+  }, close);
   const update = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
   return (
     <form onSubmit={run}>
@@ -1637,17 +1652,39 @@ function ServerLoginModal({ close }) {
           <span>Usuário</span>
           <input value={form.username} onChange={update('username')} autoComplete="username" required />
         </label>
-        <label className="field">
-          <span>Senha</span>
-          <input
-            type="password"
-            value={form.password}
-            onChange={update('password')}
-            autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-            required
-            autoFocus
-          />
-        </label>
+        {mode === 'reset' ? (
+          <>
+            <label className="field">
+              <span>Senha nova</span>
+              <input
+                type="password"
+                value={form.newPassword}
+                onChange={update('newPassword')}
+                autoComplete="new-password"
+                minLength={6}
+                placeholder="Pelo menos 6 caracteres"
+                required
+                autoFocus
+              />
+            </label>
+            <label className="field">
+              <span>Repita a senha nova</span>
+              <input type="password" value={form.repeat} onChange={update('repeat')} autoComplete="new-password" minLength={6} required />
+            </label>
+          </>
+        ) : (
+          <label className="field">
+            <span>Senha</span>
+            <input
+              type="password"
+              value={form.password}
+              onChange={update('password')}
+              autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+              required
+              autoFocus
+            />
+          </label>
+        )}
         {error && <p className="error-text">{error}</p>}
       </div>
       <div className="modal-foot">
@@ -1662,7 +1699,7 @@ function ServerLoginModal({ close }) {
           Trocar servidor
         </button>
         <button className="btn" disabled={busy}>
-          {mode === 'login' ? 'Entrar' : 'Criar conta'}
+          {mode === 'login' ? 'Entrar' : mode === 'reset' ? 'Salvar e entrar' : 'Criar conta'}
         </button>
       </div>
     </form>
@@ -1835,15 +1872,15 @@ function GuildFiles({ guildId }) {
                     </div>
                     <div className="gs-card-actions">
                       <FileTtl f={f} onChanged={load} />
-                      <a
+                      <DownloadLink
                         className="ico-btn mini-ico tip-left"
                         href={st.fileUrl(f.id, true)}
-                        download={f.name}
+                        name={f.name}
+                        size={f.size}
+                        iconSize={14}
                         data-tip="Baixar"
                         aria-label={`Baixar ${f.name}`}
-                      >
-                        <Download size={14} />
-                      </a>
+                      />
                       <IconBtn
                         icon={Trash2}
                         size={14}

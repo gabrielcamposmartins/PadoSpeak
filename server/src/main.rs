@@ -18,9 +18,40 @@ fn truthy(v: Option<String>) -> Option<bool> {
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
+    // Administração: `padospeak-server reset-password <usuário>` (no Docker: docker compose exec server …).
+    if args.get(1).map(String::as_str) == Some("reset-password") {
+        let Some(username) = args.get(2) else {
+            eprintln!("uso: padospeak-server reset-password <usuário>");
+            std::process::exit(2);
+        };
+        let data_dir = env("DATA_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("data"));
+        let db = match padospeak_server::db::Db::open(&data_dir).await {
+            Ok(db) => db,
+            Err(e) => {
+                eprintln!("Falha ao abrir o banco: {e}");
+                std::process::exit(1);
+            }
+        };
+        match padospeak_server::auth::reset_password(&db, username).await {
+            Ok(Some((name, code))) => {
+                println!("Senha de @{name} redefinida. Código temporário: {code}");
+                println!("No próximo login com esse código, @{name} cria uma senha nova. As sessões abertas foram encerradas.");
+            }
+            Ok(None) => {
+                eprintln!("Usuário @{} não encontrado", username.trim_start_matches('@'));
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("Erro: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "padospeak-server [--host] [--headless] [--no-panel]\n\n\
+            "padospeak-server [--host] [--headless] [--no-panel]\n\
+             padospeak-server reset-password <usuário>\n\n\
              Variáveis: DATA_DIR, DATABASE_URL, TURSO_AUTH_TOKEN, TURSO_SYNC_URL, PORT, HOST, SERVER_NAME,\n\
              HTTPS (off|self-signed|custom), TLS_CERT, TLS_KEY, ICE_SERVERS (JSON), ALLOW_REGISTRATION,\n\
              AUTO_HOST, PANEL, PANEL_HOST, PANEL_PORT, PANEL_PASSWORD, LOCAL_NODE (nó local do app desktop)"

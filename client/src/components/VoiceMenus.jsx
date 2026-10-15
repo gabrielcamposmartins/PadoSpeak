@@ -12,7 +12,7 @@ import { plain } from '../lib/text.js';
 export const DRAG_PEER = 'application/x-padospeak-peer';
 
 /** Janelinha presa a um ponto da tela (o lugar do clique), sem sair da janela. */
-function PointMenu({ x, y, onClose, label, children }) {
+export function PointMenu({ x, y, onClose, label, children }) {
   const ref = useRef(null);
   const [pos, setPos] = useState({ left: x, top: y });
   useLayoutEffect(() => {
@@ -42,7 +42,7 @@ function PointMenu({ x, y, onClose, label, children }) {
   );
 }
 
-function Item({ icon: Icon, children, onClick, danger, checked, disabled }) {
+export function Item({ icon: Icon, children, onClick, danger, checked, disabled }) {
   return (
     <button
       type="button"

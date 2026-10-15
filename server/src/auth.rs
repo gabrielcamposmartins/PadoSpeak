@@ -18,6 +18,40 @@ pub async fn verify_password(password: String, hash: String) -> bool {
         .unwrap_or(false)
 }
 
+/// Código temporário legível (sem letras que confundem: 0/O, 1/I/L), no formato `ABCD-EFGH`.
+fn temp_code() -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+    // bytes aleatórios do UUID v4 (o gerador seguro do sistema)
+    let bytes = *uuid::Uuid::new_v4().as_bytes();
+    let mut out = String::with_capacity(9);
+    for (i, b) in bytes.iter().take(8).enumerate() {
+        if i == 4 {
+            out.push('-');
+        }
+        out.push(ALPHABET[*b as usize % ALPHABET.len()] as char);
+    }
+    out
+}
+
+/// Redefine a senha de `username`: a senha vira um código temporário (devolvido aqui), as sessões
+/// abertas caem e, no próximo login com o código, a pessoa cria uma senha nova. `None` se o usuário
+/// não existe.
+pub async fn reset_password(db: &Db, username: &str) -> DbResult<Option<(String, String)>> {
+    let Some((id, name)) = db
+        .query_one("SELECT id, username FROM users WHERE username = ?1", [username.trim().trim_start_matches('@')], |r| {
+            Ok((r.get::<String>(0)?, r.get::<String>(1)?))
+        })
+        .await?
+    else {
+        return Ok(None);
+    };
+    let code = temp_code();
+    let hash = hash_password(code.clone()).await;
+    db.execute("UPDATE users SET password_hash = ?1, must_reset = 1 WHERE id = ?2", (hash.as_str(), id.as_str())).await?;
+    db.execute("DELETE FROM sessions WHERE user_id = ?1", [id.as_str()]).await?;
+    Ok(Some((name, code)))
+}
+
 pub async fn create_session(db: &Db, user_id: &str) -> DbResult<String> {
     let token = random_token();
     db.execute(

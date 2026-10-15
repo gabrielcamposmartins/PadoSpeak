@@ -16,15 +16,18 @@ import {
   Check,
   CheckCheck,
   Eye,
+  ClipboardPaste,
 } from 'lucide-react';
 import { useStore, sendSticker, sendFile, sendVoice, usePerms } from '../store.js';
 import { FileView, UploadList, parseFile, parseVoice, isBlockedFile, VoiceNote, ExpiresTag } from './Files.jsx';
-import { StickerPicker, StickerView, parseSticker } from './Stickers.jsx';
+import { StickerPicker, MessageSticker, parseSticker } from './Stickers.jsx';
 import FormatTools, { formatKey } from './FormatTools.jsx';
-import { SendPreview, CameraCapture, VoiceRecorder, requestMic } from './Compose.jsx';
+import { AttachTray, oversized, CAPTION_MAX, CameraCapture, VoiceRecorder, requestMic } from './Compose.jsx';
+import AttachSheet from './AttachSheet.jsx';
+import { addRecent } from '../lib/recent.js';
 import { useConn, useConnKey } from './conn.jsx';
 import Avatar, { UserName, Orb, usePresence, useUser, colorClass, colorStyle } from './Avatar.jsx';
-import { RichText, FormattedText, plain, EmojiText, EmojiPicker, Floating } from './Emotes.jsx';
+import { RichText, FormattedText, plain, EmojiText, EmojiPicker, Floating, insertText, EMOTES } from './Emotes.jsx';
 import { useLayout, isTouch } from '../lib/layout.js';
 
 /** Abre o perfil de alguém desta conexão (servidor ou PC da rede). */
@@ -68,8 +71,79 @@ function Notice({ n, dm, name }) {
   );
 }
 
-/** Barra acima da caixa de texto: formatação, cor, emoticons e chamar atenção. */
-function ComposerTools({ inputRef, text, setText, channelId, onFiles, onSticker }) {
+/** Extensão do arquivo para uma imagem colada. */
+const pastedExt = (type) => ({ 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' })[type] || 'png';
+
+/**
+ * Cola o que estiver copiado (botão do celular, onde não há Ctrl+V): imagens viram anexos e texto entra
+ * na caixa, onde estiver o cursor. O navegador pode pedir permissão (ou mostrar "Colar" para tocar).
+ */
+async function pasteFromClipboard({ inputRef, text, setText, onFiles }) {
+  const notify = useStore.getState().notify;
+  const clip = navigator.clipboard;
+  try {
+    if (clip?.read) {
+      const files = [];
+      let pasted = '';
+      for (const item of await clip.read()) {
+        const image = item.types.find((t) => t.startsWith('image/'));
+        if (image) {
+          const blob = await item.getType(image);
+          const n = files.length + 1;
+          files.push(new File([blob], `colado-${Date.now()}${n > 1 ? `-${n}` : ''}.${pastedExt(image)}`, { type: image }));
+        } else if (item.types.includes('text/plain')) pasted += await (await item.getType('text/plain')).text();
+      }
+      if (files.length) {
+        onFiles(files);
+        addRecent(files, 'colado');
+      }
+      if (pasted) insertText(inputRef.current, text, setText, pasted);
+      if (!files.length && !pasted) notify('Não há nada copiado para colar.', 'info');
+      return;
+    }
+    if (!clip?.readText) throw new Error('sem acesso');
+    const pasted = await clip.readText();
+    if (pasted) insertText(inputRef.current, text, setText, pasted);
+    else notify('Não há nada copiado para colar.', 'info');
+  } catch {
+    notify('O navegador não deixou colar daqui. Toque e segure na caixa de texto e escolha “Colar”.', 'info');
+  }
+}
+
+/** Reações rápidas: as 3 que eu mais uso (contadas neste aparelho); sem histórico, coração, risada e surpresa. */
+const QUICK_DEFAULT = ['(L)', ':D', ':O'];
+function quickReactions(use = {}) {
+  const top = Object.entries(use)
+    .sort((a, b) => b[1] - a[1])
+    .map(([code]) => code);
+  return [...new Set([...top, ...QUICK_DEFAULT])].slice(0, 3);
+}
+const emoteName = (code) => EMOTES.find((e) => e.code === code)?.name || code;
+/** Conta uma reação minha (guarda as 20 mais usadas). */
+function countReaction(code) {
+  const st = useStore.getState();
+  const use = { ...(st.prefs.reactionUse || {}) };
+  use[code] = (use[code] || 0) + 1;
+  st.setAppearance({ reactionUse: Object.fromEntries(Object.entries(use).sort((a, b) => b[1] - a[1]).slice(0, 20)) });
+}
+
+/** Barra acima da caixa de texto: formatação, cor, emoticons, colar (celular) e chamar atenção. */
+function ComposerTools({ inputRef, text, setText, channelId, target, onFiles, onSticker, onCamera }) {
+  const phone = useLayout() === 'phone';
+  const [sheet, setSheet] = useState(false); // celular: menu rápido do clipe (recentes, galeria, câmera, arquivos)
+  // Celular: o "Chamar atenção" ocupa o resto da linha; o nome encolhe conforme o espaço.
+  const nudgeRef = useRef(null);
+  const [nudgeFit, setNudgeFit] = useState('full'); // full | short | icon
+  useLayoutEffect(() => {
+    const el = nudgeRef.current;
+    if (!phone || !el || typeof ResizeObserver === 'undefined') return setNudgeFit('full');
+    const ro = new ResizeObserver(([entry]) => {
+      const w = entry.contentRect.width;
+      setNudgeFit(w >= 116 ? 'full' : w >= 72 ? 'short' : 'icon');
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [phone]);
   const [open, setOpen] = useState(false);
   const useC = useConn();
   const stickerBtn = useRef(null);
@@ -81,10 +155,12 @@ function ComposerTools({ inputRef, text, setText, channelId, onFiles, onSticker 
         className="gloss tool-sq"
         title="Enviar arquivo (imagem, vídeo, texto, .zip…)"
         aria-label="Enviar arquivo"
-        onClick={() => fileInput.current?.click()}
+        aria-haspopup={phone ? 'dialog' : undefined}
+        onClick={() => (phone ? setSheet(true) : fileInput.current?.click())}
       >
         <Paperclip size={15} className="ico-blue" />
       </button>
+      {sheet && <AttachSheet target={target} onFiles={onFiles} onCamera={onCamera} onClose={() => setSheet(false)} />}
       <input
         ref={fileInput}
         type="file"
@@ -118,15 +194,28 @@ function ComposerTools({ inputRef, text, setText, channelId, onFiles, onSticker 
           />
         )}
       </span>
+      {phone && (
+        <button
+          type="button"
+          className="gloss tool-sq"
+          title="Colar o que foi copiado"
+          aria-label="Colar"
+          onClick={() => pasteFromClipboard({ inputRef, text, setText, onFiles })}
+        >
+          <ClipboardPaste size={15} className="ico-blue" />
+        </button>
+      )}
       <button
+        ref={nudgeRef}
         type="button"
         className="gloss tool-nudge"
+        data-fit={nudgeFit}
         title="Chamar atenção: faz a janela de quem está aqui tremer (até 3 vezes por minuto)"
         aria-label="Chamar atenção"
         onClick={() => useC.getState().sendNudge(channelId)}
       >
         <Vibrate size={15} />
-        <span className="tool-label">Chamar atenção</span>
+        {nudgeFit !== 'icon' && <span className="tool-label">{nudgeFit === 'short' ? 'Atenção' : 'Chamar atenção'}</span>}
       </button>
     </FormatTools>
   );
@@ -181,7 +270,10 @@ function Reactions({ m, me, onPick }) {
             className={`reaction${mine ? ' mine' : ''}`}
             aria-pressed={mine}
             title={`${r.users.map(nameOf).join(', ')} reagiu com ${r.emoji}`}
-            onClick={() => useC.getState().reactMessage(m.id, r.emoji, !mine)}
+            onClick={() => {
+              if (!mine) countReaction(r.emoji);
+              useC.getState().reactMessage(m.id, r.emoji, !mine);
+            }}
           >
             <EmojiText text={r.emoji} size={16} />
             <span>{r.users.length}</span>
@@ -275,8 +367,12 @@ function Message({ m, head, canEdit: canEditText, canDelete, onReply, me, receip
   const [toolsOpen, setToolsOpen] = useState(false);
   const [picking, setPicking] = useState(false);
   const reactBtn = useRef(null);
+  const reactionUse = useStore((s) => s.prefs.reactionUse);
+  const quick = quickReactions(reactionUse);
+  const reacted = (code) => Boolean(m.reactions?.find((r) => r.emoji === code)?.users.includes(me.id));
   const react = (code) => {
-    const mine = m.reactions?.find((r) => r.emoji === code)?.users.includes(me.id);
+    const mine = reacted(code);
+    if (!mine) countReaction(code);
     useC.getState().reactMessage(m.id, code, !mine);
   };
   const rowRef = useRef(null);
@@ -351,7 +447,7 @@ function Message({ m, head, canEdit: canEditText, canDelete, onReply, me, receip
         ) : (
           <div className="content" title={head ? undefined : hhmm(m.createdAt)}>
             {sticker ? (
-              <StickerView sticker={sticker} />
+              <MessageSticker sticker={sticker} />
             ) : file ? (
               <FileView file={file} />
             ) : voice ? (
@@ -377,6 +473,23 @@ function Message({ m, head, canEdit: canEditText, canDelete, onReply, me, receip
       </div>
       {!editing && (
         <div className="tools">
+          {quick.map((code) => (
+            <button
+              key={code}
+              type="button"
+              className={`icon-btn quick-react${reacted(code) ? ' on' : ''}`}
+              title={reacted(code) ? `Tirar a reação ${emoteName(code)}` : `Reagir com ${emoteName(code)}`}
+              aria-label={reacted(code) ? `Tirar a reação ${emoteName(code)}` : `Reagir com ${emoteName(code)}`}
+              aria-pressed={reacted(code)}
+              onClick={() => {
+                setToolsOpen(false);
+                react(code);
+              }}
+            >
+              <EmojiText text={code} size={17} />
+            </button>
+          ))}
+          <span className="tools-sep" aria-hidden="true" />
           <button
             ref={reactBtn}
             className="icon-btn"
@@ -517,8 +630,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
   const [reply, setReply] = useState(null); // mensagem sendo respondida
   const [uploads, setUploads] = useState([]); // arquivos sendo enviados
   const [dragging, setDragging] = useState(false);
-  const [pending, setPending] = useState(null); // { items, camera } esperando confirmação
-  const [shareCaption, setShareCaption] = useState(''); // texto que veio junto ao compartilhar
+  const [attach, setAttach] = useState([]); // anexos esperando o envio (arquivos e sticker), acima da caixa
   const [camera, setCamera] = useState(false);
   const [recording, setRecording] = useState(false);
   const connKey = useConnKey();
@@ -532,6 +644,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
   useEffect(() => {
     stickToBottom.current = true;
     setText('');
+    setAttach([]);
     setReply(null);
     inputRef.current?.focus();
   }, [channel.id]);
@@ -556,25 +669,31 @@ export default function ChatView({ channel, variant = 'channel' }) {
     useStore.setState({ sharePending: null });
     if (shared.files.length) {
       sendFiles(shared.files);
-      setShareCaption(shared.text);
-    } else setText(shared.text);
+      addRecent(shared.files, 'compartilhado');
+    }
+    setText(shared.text);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shareTarget, channel.id]);
 
-  /** Arquivos escolhidos (botão, arrastar ou colar): vão para a prévia antes de enviar. */
+  /** Põe anexos acima da caixa de mensagem (um sticker novo troca o anterior). */
+  const addAttach = (items) => {
+    const keyed = items.map((it) => ({ ...it, key: `${Date.now()}-${Math.random()}` }));
+    setAttach((a) => [...(keyed.some((i) => i.kind === 'sticker') ? a.filter((i) => i.kind !== 'sticker') : a), ...keyed]);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
+  /** Arquivos escolhidos (botão, arrastar, colar ou câmera): ficam acima da caixa até enviar. */
   function sendFiles(files) {
     const ok = files.filter((file) => {
       if (!isBlockedFile(file.name)) return true;
       useStore.getState().notify(`"${file.name}" é um programa: coloque dentro de um .zip para enviar.`);
       return false;
     });
-    if (ok.length) setPending({ items: ok.map((file) => ({ kind: 'file', file })) });
+    if (ok.length) addAttach(ok.map((file) => ({ kind: 'file', file })));
   }
 
-  /** Envia o que foi confirmado na prévia (um de cada vez; o texto vai junto com o primeiro). */
-  async function confirmSend(caption) {
-    const { items } = pending;
-    setPending(null);
+  /** Envia os anexos (um de cada vez; o texto vai junto com o primeiro). */
+  async function sendAttachments(items, caption) {
     const replyTo = reply?.id;
     setReply(null);
     stickToBottom.current = true;
@@ -654,6 +773,16 @@ export default function ChatView({ channel, variant = 'channel' }) {
 
   async function send() {
     const content = text.trim();
+    if (attach.length) {
+      const big = oversized(attach, useC.getState().config);
+      if (big.length) return useStore.getState().notify(`${big.map((f) => f.name).join(', ')} é grande demais para enviar.`);
+      if (content.length > CAPTION_MAX)
+        return useStore.getState().notify(`O texto junto com um anexo pode ter até ${CAPTION_MAX} caracteres.`);
+      const items = attach;
+      setAttach([]);
+      setText('');
+      return sendAttachments(items, content);
+    }
     if (!content) return;
     setText('');
     stickToBottom.current = true;
@@ -691,8 +820,10 @@ export default function ChatView({ channel, variant = 'channel' }) {
       text={text}
       setText={setText}
       channelId={channel.id}
+      target={dm ? channel.name : `#${channel.name}`}
       onFiles={sendFiles}
-      onSticker={(sticker) => setPending({ items: [{ kind: 'sticker', sticker }] })}
+      onCamera={() => setCamera(true)}
+      onSticker={(sticker) => addAttach([{ kind: 'sticker', sticker }])}
     />
   );
   const lastReceived = [...messages].reverse().find((m) => !m.notice && m.author.id !== me.id);
@@ -850,7 +981,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
       >
         <Mic size={17} className="ico-green" />
       </button>
-      <button className="go send-btn" onClick={send} disabled={!text.trim()}>
+      <button className="go send-btn" onClick={send} disabled={!text.trim() && !attach.length}>
         <Send size={16} />
         Enviar
       </button>
@@ -868,7 +999,6 @@ export default function ChatView({ channel, variant = 'channel' }) {
       {sendBtn}
     </div>
   );
-  const target = dm ? channel.name : `#${channel.name}`;
   const sheets = (
     <>
       {camera && (
@@ -876,31 +1006,9 @@ export default function ChatView({ channel, variant = 'channel' }) {
           onClose={() => setCamera(false)}
           onDone={(file) => {
             setCamera(false);
-            setPending({ items: [{ kind: 'file', file }], camera: true });
+            addAttach([{ kind: 'file', file }]);
+            addRecent([file], 'câmera');
           }}
-        />
-      )}
-      {pending && (
-        <SendPreview
-          items={pending.items}
-          target={target}
-          initialCaption={shareCaption}
-          onSend={(caption) => {
-            setShareCaption('');
-            return confirmSend(caption);
-          }}
-          onCancel={() => {
-            setShareCaption('');
-            setPending(null);
-          }}
-          onRetake={
-            pending.camera
-              ? () => {
-                  setPending(null);
-                  setCamera(true);
-                }
-              : undefined
-          }
         />
       )}
     </>
@@ -917,6 +1025,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
         <div className="panel composer">
           <UploadList uploads={uploads} />
           {replyBar}
+          <AttachTray items={attach} onRemove={(i) => setAttach((a) => a.filter((_, j) => j !== i))} onClear={() => setAttach([])} />
           {showTools && (
             <div className="panel-head tools-head">
               {tools}
@@ -949,6 +1058,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
         </div>
         <UploadList uploads={uploads} />
         {replyBar}
+        <AttachTray items={attach} onRemove={(i) => setAttach((a) => a.filter((_, j) => j !== i))} onClear={() => setAttach([])} />
         {showTools && tools}
         {composeRow}
         <div className="count">

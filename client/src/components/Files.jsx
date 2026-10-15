@@ -3,7 +3,8 @@
 // baixo, o texto que foi junto). Mensagens de voz: `[voz:<id>:<duração ms>:<tipo>]`.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Download, FileText, FileArchive, File as FileIcon, X, ExternalLink, Play, Pause, Timer, ZoomIn, ZoomOut } from 'lucide-react';
+import { Download, ArrowDown, FileText, FileArchive, File as FileIcon, X, ExternalLink, Play, Pause, Timer, ZoomIn, ZoomOut } from 'lucide-react';
+import { startDownload, useDownload, useDownloads, percent } from '../lib/download.js';
 import { FILE_RE, VOICE_RE } from '../store.js';
 import { useConn } from './conn.jsx';
 
@@ -147,6 +148,58 @@ export function VoiceNote({ voice, src }) {
   );
 }
 
+/**
+ * Botão de baixar com retorno: enquanto baixa, uma setinha verde animada (e a porcentagem, se `label`).
+ * `size`: tamanho do arquivo, para a porcentagem.
+ */
+export function DownloadLink({ href, name, size = 0, iconSize = 15, label, className = '', title, ...rest }) {
+  const d = useDownload(href);
+  const pct = percent(d);
+  const busy = Boolean(d);
+  return (
+    <a
+      {...rest}
+      className={`${className}${busy ? ' downloading' : ''}`}
+      href={href}
+      download={name}
+      title={busy ? `Baixando ${name}${pct != null ? ` · ${pct}%` : '…'}` : title}
+      aria-busy={busy || undefined}
+      onClick={(e) => {
+        e.preventDefault();
+        startDownload(href, name, size);
+      }}
+    >
+      {busy ? <ArrowDown size={iconSize} className="dl-arrow" /> : <Download size={iconSize} />}
+      {label && (busy ? (pct != null ? ` ${pct}%` : ' Baixando…') : ` ${label}`)}
+    </a>
+  );
+}
+
+/** Downloads em andamento, no canto da tela (some quando terminam). */
+export function DownloadsIndicator() {
+  const list = useDownloads();
+  if (!list.length) return null;
+  return (
+    <div className="dl-indicator" role="status" aria-live="polite">
+      {list.map((d) => {
+        const pct = percent(d);
+        return (
+          <div key={d.url} className="dl-item">
+            <ArrowDown size={16} className="dl-arrow" />
+            <span className="dl-name">{d.name}</span>
+            <span className="dl-pct">{pct != null ? `${pct}%` : fmtSize(d.loaded)}</span>
+            {pct != null && (
+              <span className="dl-bar" aria-hidden="true">
+                <i style={{ width: `${pct}%` }} />
+              </span>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /** Programas e scripts não podem ser enviados soltos (o servidor recusa também); dentro de .zip pode. */
 const BLOCKED = /\.(exe|msi|msp|bat|cmd|com|scr|pif|cpl|msc|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|hta|jar|apk|app|dmg|pkg|deb|rpm|sh|bash|run|bin|lnk|reg|dll|sys|drv|ocx|appx|msix|appxbundle|msixbundle|gadget|inf|elf|command|scf|url|iso|img|vhd|vhdx)$/i;
 export const isBlockedFile = (name) => BLOCKED.test(name);
@@ -154,7 +207,7 @@ export const isBlockedFile = (name) => BLOCKED.test(name);
 /** Imagem em tamanho grande, por cima de tudo (clique fora ou Esc fecha). Se ela encolheu para caber
  *  (comprida, larga ou grande demais), clicar amplia no ponto clicado e dá para arrastar (ou rolar,
  *  no toque) para ver as partes; outro clique volta a caber na tela. */
-function Lightbox({ src, name, download, onClose }) {
+function Lightbox({ src, name, download, size, onClose }) {
   const box = useRef(null);
   const img = useRef(null);
   const drag = useRef(null);
@@ -282,9 +335,7 @@ function Lightbox({ src, name, download, onClose }) {
             {zoom ? <ZoomOut size={15} /> : <ZoomIn size={15} />}
           </button>
         )}
-        <a className="gloss" href={download} download={name}>
-          <Download size={15} /> Baixar
-        </a>
+        <DownloadLink className="gloss" href={download} name={name} size={size} label="Baixar" />
         <button className="gloss" onClick={onClose} aria-label="Fechar">
           <X size={15} />
         </button>
@@ -334,9 +385,7 @@ export function FileView({ file }) {
           {extra}
         </span>
       </div>
-      <a className="gloss mini" href={download} download={file.name} title="Baixar" aria-label={`Baixar ${file.name}`}>
-        <Download size={15} />
-      </a>
+      <DownloadLink className="gloss mini" href={download} name={file.name} size={file.size} title="Baixar" aria-label={`Baixar ${file.name}`} />
     </div>
   );
 
@@ -346,7 +395,7 @@ export function FileView({ file }) {
         <button type="button" className="file-image" onClick={() => setBig(true)} title={`${file.name} · ${fmtSize(file.size)}`}>
           <img src={src} alt={file.name} loading="lazy" onError={() => setBroken(true)} />
         </button>
-        {big && <Lightbox src={src} name={file.name} download={download} onClose={() => setBig(false)} />}
+        {big && <Lightbox src={src} name={file.name} download={download} size={file.size} onClose={() => setBig(false)} />}
       </>
     );
   if (kind === 'video')
@@ -355,9 +404,7 @@ export function FileView({ file }) {
         <video src={src} controls preload="metadata" playsInline onError={() => setBroken(true)} />
         <span className="file-sub">
           {file.name} · {fmtSize(file.size)}
-          <a href={download} download={file.name} title="Baixar">
-            <Download size={13} />
-          </a>
+          <DownloadLink href={download} name={file.name} size={file.size} iconSize={13} title="Baixar" aria-label={`Baixar ${file.name}`} />
         </span>
       </div>
     );

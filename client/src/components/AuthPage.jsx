@@ -25,7 +25,7 @@ export default function AuthPage() {
   // Onde o perfil mora: o nó local no app desktop, o servidor no navegador.
   const base = (isDesktop ? connRegistry.get('local')?.getState().baseUrl : serverUrl) || '';
   const [mode, setMode] = useState('login');
-  const [form, setForm] = useState(() => ({ username: lastProfile(base), password: '', displayName: '' }));
+  const [form, setForm] = useState(() => ({ username: lastProfile(base), password: '', displayName: '', newPassword: '', repeat: '' }));
   // Como no Messenger: a foto de quem já entrou neste PC aparece ao digitar o usuário.
   const known = mode === 'login' ? knownProfiles(base)[form.username.trim().toLowerCase()] : null;
   const [error, setError] = useState('');
@@ -38,9 +38,17 @@ export default function AuthPage() {
     setError('');
     setBusy(true);
     try {
-      if (isDesktop) await localAuthenticate(mode, form);
+      if (mode === 'reset') {
+        if (form.newPassword !== form.repeat) throw new Error('As duas senhas não são iguais.');
+        await useStore.getState().authenticate('new-password', { username: form.username, password: form.password, newPassword: form.newPassword });
+      } else if (isDesktop) await localAuthenticate(mode, form);
       else await useStore.getState().authenticate(mode, form);
     } catch (err) {
+      // Senha redefinida pelo administrador: entrou com o código, agora cria a senha nova.
+      if (!isDesktop && err.status === 428) {
+        setMode('reset');
+        return;
+      }
       setError(
         isDesktop && err.status === 401
           ? 'Usuário ou senha incorretos neste PC. Ainda não tem perfil aqui? Use “Criar perfil”.'
@@ -123,18 +131,43 @@ export default function AuthPage() {
                 <input value={form.displayName} onChange={update('displayName')} placeholder="Opcional" />
               </label>
             )}
-            <label className="field">
-              <span>Senha</span>
-              <input
-                type="password"
-                value={form.password}
-                onChange={update('password')}
-                autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-                placeholder="••••••••"
-                required
-                autoFocus={Boolean(form.username)}
-              />
-            </label>
+            {mode === 'reset' ? (
+              <>
+                <p className="auth-reset" role="status">
+                  Sua senha foi redefinida. Crie uma senha nova para a conta <b>@{form.username.trim()}</b>.
+                </p>
+                <label className="field">
+                  <span>Senha nova</span>
+                  <input
+                    type="password"
+                    value={form.newPassword}
+                    onChange={update('newPassword')}
+                    autoComplete="new-password"
+                    minLength={6}
+                    placeholder="Pelo menos 6 caracteres"
+                    required
+                    autoFocus
+                  />
+                </label>
+                <label className="field">
+                  <span>Repita a senha nova</span>
+                  <input type="password" value={form.repeat} onChange={update('repeat')} autoComplete="new-password" minLength={6} required />
+                </label>
+              </>
+            ) : (
+              <label className="field">
+                <span>Senha</span>
+                <input
+                  type="password"
+                  value={form.password}
+                  onChange={update('password')}
+                  autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                  placeholder="••••••••"
+                  required
+                  autoFocus={Boolean(form.username)}
+                />
+              </label>
+            )}
 
             {isDesktop ? (
               <div className="server-box">
@@ -160,7 +193,7 @@ export default function AuthPage() {
 
             {(error || localError) && <p className="error-text">{error || localError}</p>}
             <button className="go big-go" disabled={busy}>
-              {busy ? 'Aguarde…' : mode === 'login' ? 'Entrar' : isDesktop ? 'Criar perfil' : 'Criar conta'}
+              {busy ? 'Aguarde…' : mode === 'login' ? 'Entrar' : mode === 'reset' ? 'Salvar e entrar' : isDesktop ? 'Criar perfil' : 'Criar conta'}
             </button>
           </form>
 

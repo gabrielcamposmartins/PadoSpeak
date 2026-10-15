@@ -12,6 +12,7 @@ import IncomingCalls from './components/IncomingCall.jsx';
 import Avatar from './components/Avatar.jsx';
 import { TitleBar } from './components/Aero.jsx';
 import { FormattedText } from './components/Emotes.jsx';
+import { DownloadsIndicator } from './components/Files.jsx';
 import { useAcross, unreadTotal } from './components/conn.jsx';
 import { setUnreadBadge } from './lib/badge.js';
 import { hasShared, takeShared } from './lib/share.js';
@@ -125,6 +126,7 @@ export default function App() {
       <Modals />
       {loggedIn && <IncomingCalls />}
       {loggedIn && <UnreadBadge />}
+      <DownloadsIndicator />
       {loggedIn && phase === 'app' && <SharedInbox />}
       {toast && <Toast key={toast.id} toast={toast} />}
       <UpdateOverlay />

@@ -265,6 +265,7 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/config", get(get_config))
         .route("/api/auth/register", post(register))
         .route("/api/auth/login", post(login))
+        .route("/api/auth/new-password", post(new_password))
         .route("/api/auth/logout", post(logout))
         .route("/api/me", get(me))
         .route("/api/guilds", get(list_guilds).post(create_guild))
@@ -380,18 +381,81 @@ async fn login(
         limiter.fail(&ip, &body.username, crate::now_ms());
         ApiError::new(StatusCode::UNAUTHORIZED, "Usuário ou senha incorretos")
     };
-    let sql = format!("SELECT {USER_COLS}, u.password_hash FROM users u WHERE u.username = ?1");
+    let sql = format!("SELECT {USER_COLS}, u.password_hash, u.must_reset FROM users u WHERE u.username = ?1");
     let found = app
         .db
-        .query_one(&sql, [body.username.trim()], |r| Ok((user_from_row(r)?, r.get::<String>(USER_COLS_LEN)?)))
+        .query_one(&sql, [body.username.trim()], |r| {
+            Ok((user_from_row(r)?, r.get::<String>(USER_COLS_LEN)?, r.get::<i64>(USER_COLS_LEN + 1)? != 0))
+        })
         .await?;
-    let Some((user, hash)) = found else {
+    let Some((user, hash, must_reset)) = found else {
         return Err(wrong());
     };
     if !auth::verify_password(body.password.clone(), hash).await {
         return Err(wrong());
     }
     limiter.success(&ip, &body.username);
+    // Senha redefinida pelo administrador: entrou com o código, agora precisa criar uma senha nova.
+    if must_reset {
+        return Err(ApiError::new(StatusCode::PRECONDITION_REQUIRED, "Sua senha foi redefinida. Crie uma senha nova para entrar."));
+    }
+    let token = auth::create_session(&app.db, &user.id).await?;
+    Ok(Json(json!({ "token": token, "user": user })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NewPassword {
+    username: String,
+    /// O código temporário que o administrador passou.
+    password: String,
+    new_password: String,
+}
+
+/// Depois de uma redefinição: com o código temporário, a pessoa escolhe a senha nova e já entra.
+async fn new_password(
+    State(app): AppState,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<NewPassword>,
+) -> ApiResult<Json<Value>> {
+    local_only(&app, addr)?;
+    let ip = crate::hub::client_ip(addr, &headers).to_string();
+    let limiter = &crate::ratelimit::LOGIN;
+    if let Err(wait) = limiter.check(&ip, &body.username, crate::now_ms()) {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            format!("Muitas tentativas de login. Tente de novo em {}.", crate::ratelimit::wait_text(wait)),
+        ));
+    }
+    let wrong = || {
+        limiter.fail(&ip, &body.username, crate::now_ms());
+        ApiError::new(StatusCode::UNAUTHORIZED, "Usuário ou código incorretos")
+    };
+    if body.new_password.chars().count() < 6 {
+        return Err(bad("A senha deve ter pelo menos 6 caracteres"));
+    }
+    let sql = format!("SELECT {USER_COLS}, u.password_hash, u.must_reset FROM users u WHERE u.username = ?1");
+    let found = app
+        .db
+        .query_one(&sql, [body.username.trim()], |r| {
+            Ok((user_from_row(r)?, r.get::<String>(USER_COLS_LEN)?, r.get::<i64>(USER_COLS_LEN + 1)? != 0))
+        })
+        .await?;
+    let Some((user, hash, must_reset)) = found else {
+        return Err(wrong());
+    };
+    if !must_reset || !auth::verify_password(body.password.clone(), hash).await {
+        return Err(wrong());
+    }
+    if body.new_password == body.password {
+        return Err(bad("Escolha uma senha diferente do código"));
+    }
+    limiter.success(&ip, &body.username);
+    let new_hash = auth::hash_password(body.new_password).await;
+    app.db
+        .execute("UPDATE users SET password_hash = ?1, must_reset = 0 WHERE id = ?2", (new_hash.as_str(), user.id.as_str()))
+        .await?;
     let token = auth::create_session(&app.db, &user.id).await?;
     Ok(Json(json!({ "token": token, "user": user })))
 }

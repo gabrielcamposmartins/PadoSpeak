@@ -4306,15 +4306,36 @@ fieldset.plain {
   align-items: center;
   gap: 5px;
 }
-/* Celular: só o ícone, na mesma linha dos outros botões */
+/* Celular: na mesma linha dos outros botões, ocupando o resto dela (o nome encolhe: Chamar atenção →
+   Atenção → só o ícone, conforme o espaço) */
+.mobile-app .composer-tools {
+  flex-wrap: nowrap;
+}
+.mobile-app .composer-tools > *:not(.tool-nudge) {
+  flex-shrink: 0;
+}
 .mobile-app .tool-nudge {
-  width: 28px;
-  padding: 0;
+  flex: 1 1 0;
+  min-width: 28px;
+  padding: 0 6px;
   margin-left: 2px;
   justify-content: center;
+  overflow: hidden;
+  white-space: nowrap;
 }
-.mobile-app .tool-nudge .tool-label {
-  display: none;
+.mobile-app .tool-nudge svg {
+  flex: none;
+}
+@media (max-width: 340px) {
+  .mobile-app .composer-tools {
+    gap: 2px;
+  }
+  .mobile-app .composer-tools .tool-sq {
+    width: 25px;
+  }
+  .mobile-app .composer-tools .tool-sep {
+    margin: 0 1px;
+  }
 }
 :root[data-theme='dark'] .tool-nudge {
   color: #ffc46b;
@@ -4775,6 +4796,19 @@ fieldset.plain {
   margin: 4px 0 2px;
   vertical-align: bottom;
 }
+.sticker-btn {
+  display: inline-block;
+  padding: 0;
+  border: 0;
+  background: none;
+  border-radius: 10px;
+  cursor: pointer;
+  vertical-align: bottom;
+}
+.sticker-btn:focus-visible {
+  outline: 2px solid var(--accent, #1a8fd6);
+  outline-offset: 2px;
+}
 .sticker-img {
   max-width: 160px;
   max-height: 160px;
@@ -4896,6 +4930,17 @@ html[data-touch] .msg.tools-open .tools {
 }
 html[data-touch] .msg.tools-open {
   background: var(--hover-tint);
+}
+/* Reações rápidas na barra da mensagem */
+.msg .tools .quick-react.on {
+  background: color-mix(in srgb, var(--accent, #1a8fd6) 16%, transparent);
+}
+.tools-sep {
+  align-self: center;
+  width: 1px;
+  height: 18px;
+  margin: 0 2px;
+  background: var(--line);
 }
 html[data-touch] .msg .tools .icon-btn {
   width: 38px;
@@ -6964,63 +7009,100 @@ kbd {
   white-space: nowrap;
 }
 
-/* ---------- Prévia antes de enviar ---------- */
-.modal.send-preview {
-  max-width: 620px;
+/* ---------- Anexos acima da caixa de mensagem ---------- */
+.attach-tray {
+  padding: 6px 0 4px;
 }
-.send-preview h2 small {
-  font-size: 14px;
-  font-weight: 400;
-  color: var(--muted);
+.attach-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 6px 2px 4px;
 }
-.sp-items {
+.attach-tile {
+  position: relative;
+  flex: none;
+  width: 76px;
+  height: 76px;
   display: grid;
   place-items: center;
-  gap: 8px;
-  margin: 10px 0 12px;
-}
-.sp-items.many {
-  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-  max-height: 300px;
-  overflow-y: auto;
-}
-.sp-media {
-  max-width: 100%;
-  max-height: 46vh;
-  border-radius: 8px;
+  border-radius: 10px;
   border: 1px solid var(--panel-border);
-  background: #000;
+  background: var(--panel);
+  overflow: hidden;
 }
-.sp-items.many .sp-media {
+.attach-tile.big {
+  border-color: #ecc65e;
+}
+.attach-tile img,
+.attach-tile video {
   width: 100%;
-  height: 120px;
+  height: 100%;
   object-fit: cover;
 }
-.sp-file {
+.attach-tile.sticker .sticker {
+  max-width: 68px;
+  max-height: 68px;
+}
+.attach-tile.sticker img {
+  object-fit: contain;
+}
+.attach-play {
+  position: absolute;
+  left: 5px;
+  bottom: 5px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+}
+.attach-file {
   display: grid;
   justify-items: center;
-  gap: 4px;
+  gap: 1px;
   width: 100%;
-  padding: 14px;
-  border-radius: 8px;
-  border: 1px solid var(--row-hover-border);
-  background: var(--row-hover);
+  padding: 4px;
   text-align: center;
+  font-size: 10.5px;
+  line-height: 1.2;
+  color: var(--text);
 }
-.sp-file-name {
-  font-weight: 700;
-  color: var(--ink);
+.attach-file small {
+  color: var(--muted);
+  font-size: 10px;
+}
+.attach-name {
   max-width: 100%;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.sp-file-size {
-  font-size: 12px;
-  color: var(--muted);
+.attach-x {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  background: rgba(20, 30, 45, 0.72);
+  color: #fff;
+  padding: 0;
 }
-.sp-sticker {
-  padding: 8px;
+.attach-x:hover {
+  background: #d23a26;
+}
+.attach-clear {
+  flex: none;
+}
+.attach-tray .sp-warn {
+  margin: 4px 0 0;
 }
 .sp-warn {
   display: flex;
@@ -7042,10 +7124,6 @@ kbd {
 .sp-warn svg {
   flex: none;
   margin-top: 1px;
-}
-.sp-caption textarea {
-  resize: none;
-  width: 100%;
 }
 
 /* ---------- Câmera ---------- */
@@ -7167,6 +7245,7 @@ kbd {
   width: 100%;
   max-width: none;
   height: 100%;
+  height: 100dvh;
   max-height: none;
   margin: 0;
   border-radius: 0;
@@ -7177,10 +7256,18 @@ kbd {
   flex: 1;
   min-height: 0;
 }
+/* o vídeo ocupa só o espaço que sobra (a câmera em pé é mais alta que a tela e empurrava os botões) */
 .camera-sheet.full .cam-video {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   max-height: none;
+  object-fit: contain;
+}
+.camera-sheet.full .cam-bar {
+  flex: none;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
 }
 @media (max-width: 640px) {
   .compose-ico {
@@ -7879,4 +7966,238 @@ button.receipt.read:hover {
 .dl-banner .dl-close:hover {
   background: rgba(0, 0, 0, 0.07);
   border-color: rgba(0, 0, 0, 0.12);
+}
+
+/* ---------- Downloads: setinha verde até terminar ---------- */
+.dl-arrow {
+  color: #2e9e1a;
+  animation: dl-bounce 0.9s ease-in-out infinite;
+}
+:root[data-theme='dark'] .dl-arrow {
+  color: #6fdc4f;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .dl-arrow {
+    color: #6fdc4f;
+  }
+}
+@keyframes dl-bounce {
+  0%,
+  100% {
+    transform: translateY(-2px);
+  }
+  50% {
+    transform: translateY(2px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dl-arrow {
+    animation: none;
+  }
+}
+a.downloading {
+  cursor: progress;
+}
+.dl-indicator {
+  position: fixed;
+  right: 16px;
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  z-index: 130;
+  display: grid;
+  gap: 6px;
+  width: min(300px, calc(100vw - 32px));
+}
+.dl-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--window-border);
+  background: var(--window);
+  color: var(--text);
+  font-size: 12.5px;
+  box-shadow: 0 8px 24px rgba(5, 50, 100, 0.25);
+}
+.dl-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+.dl-pct {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.dl-bar {
+  grid-column: 1 / -1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+.dl-bar i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #53b225, #2e9e1a);
+  transition: width 0.15s;
+}
+:root[data-layout='phone'] .dl-indicator {
+  bottom: calc(76px + env(safe-area-inset-bottom, 0px));
+}
+
+/* ---------- Celular: menu rápido do clipe ---------- */
+.sheet-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 110;
+  display: flex;
+  align-items: flex-end;
+  background: var(--scrim);
+  animation: sheet-fade 0.15s ease-out;
+}
+.attach-sheet {
+  width: 100%;
+  max-height: 80dvh;
+  overflow-y: auto;
+  padding: 8px 14px calc(16px + env(safe-area-inset-bottom, 0px));
+  border-radius: 18px 18px 0 0;
+  border: 1px solid var(--window-border);
+  border-bottom: 0;
+  background: var(--window);
+  color: var(--text);
+  box-shadow: 0 -12px 40px rgba(5, 50, 100, 0.3);
+  animation: sheet-up 0.2s ease-out;
+}
+@keyframes sheet-up {
+  from {
+    transform: translateY(40px);
+    opacity: 0.6;
+  }
+}
+@keyframes sheet-fade {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .attach-sheet,
+  .sheet-scrim {
+    animation: none;
+  }
+}
+.sheet-grab {
+  display: block;
+  width: 40px;
+  height: 4px;
+  margin: 0 auto 10px;
+  border-radius: 2px;
+  background: var(--line);
+}
+.attach-sheet h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  color: var(--ink);
+}
+.as-sec {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--group);
+  margin-bottom: 6px;
+}
+.as-recent {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+  margin: 0 -14px 10px;
+  padding-inline: 14px;
+  scroll-padding-inline: 14px;
+  scroll-snap-type: x proximity;
+  overflow-anchor: none;
+}
+.as-tile {
+  flex: none;
+  width: 84px;
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  scroll-snap-align: start;
+}
+.as-thumb {
+  position: relative;
+  width: 84px;
+  height: 84px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  border: 1px solid var(--panel-border);
+  background: var(--panel);
+  overflow: hidden;
+}
+.as-tile.ask .as-thumb {
+  border-style: dashed;
+}
+.as-thumb img,
+.as-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.as-name {
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.as-tile small {
+  font-size: 10.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.as-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.as-action {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  padding: 12px 6px;
+  border-radius: 12px;
+  border: 1px solid var(--panel-border);
+  background: var(--panel);
+  color: var(--text);
+}
+.as-action span {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--ink);
+}
+.as-action small {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.as-action:active,
+.as-tile:active .as-thumb {
+  background: var(--row-hover);
+}
+
+/* Senha redefinida: aviso acima dos campos de senha nova */
+.auth-reset {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--wait-ink);
+  border: 1px solid var(--wait-border);
+  background: var(--wait);
 }

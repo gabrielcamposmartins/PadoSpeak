@@ -366,6 +366,14 @@ CREATE TABLE IF NOT EXISTS app_admins (
 );
 "#,
     ),
+    (
+        14,
+        r#"
+-- Senha redefinida pelo administrador: a senha guardada é um código temporário, e no próximo login a
+-- pessoa cria uma senha nova.
+ALTER TABLE users ADD COLUMN must_reset INTEGER NOT NULL DEFAULT 0;
+"#,
+    ),
 ];
 
 impl Db {

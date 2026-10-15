@@ -1,5 +1,5 @@
-// Envios com confirmação: arquivos, fotos e vídeos da câmera e stickers aparecem numa prévia antes de
-// ir para a conversa, com um texto opcional junto. Também o gravador de mensagens de voz.
+// Anexos: arquivos, fotos e vídeos da câmera e stickers ficam acima da caixa de mensagem até o envio
+// (o texto da caixa vai junto). Também a câmera e o gravador de mensagens de voz.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
@@ -22,12 +22,12 @@ import {
 } from 'lucide-react';
 import { useStore } from '../store.js';
 import { TitleBar } from './Aero.jsx';
-import FormatTools, { formatKey } from './FormatTools.jsx';
 import { StickerView } from './Stickers.jsx';
 import { fmtSize, VoiceNote } from './Files.jsx';
 import { isTouch } from '../lib/layout.js';
 
-const CAPTION_MAX = 3500;
+/** Texto que vai junto com um anexo (o servidor aceita até isso na legenda). */
+export const CAPTION_MAX = 3500;
 /** Limites dos arquivos grandes (iguais aos do servidor, se ele não informar). */
 const BIG = { ttlMs: 10 * 60 * 1000, maxCount: 3, maxTotal: 3 * 1024 ** 3 };
 
@@ -63,129 +63,97 @@ function Sheet({ title, onClose, className = '', children }) {
   );
 }
 
-/** Prévia de um arquivo escolhido (imagem, vídeo, áudio ou cartão). */
-function FilePreview({ file, big }) {
-  const url = useMemo(() => URL.createObjectURL(file), [file]);
-  useEffect(() => () => URL.revokeObjectURL(url), [url]);
-  const kind = file.type.split('/')[0];
-  if (kind === 'image') return <img className="sp-media" src={url} alt={file.name} />;
-  if (kind === 'video') return <video className="sp-media" src={url} controls playsInline preload="metadata" />;
-  const Icon = /zip|rar|7z|tar|gzip/.test(file.type) || /\.(zip|rar|7z|tar|gz)$/i.test(file.name) ? FileArchive : file.type.startsWith('text/') ? FileText : FileIcon;
+/** Miniatura de um anexo na caixa de mensagem (imagem, vídeo, sticker ou cartão do arquivo). */
+function AttachTile({ item, big, onRemove }) {
+  const file = item.kind === 'file' ? item.file : null;
+  const url = useMemo(() => (file && /^(image|video)\//.test(file.type) ? URL.createObjectURL(file) : null), [file]);
+  useEffect(() => () => url && URL.revokeObjectURL(url), [url]);
+  const kind = file ? file.type.split('/')[0] : 'sticker';
+  const name = file ? file.name : 'Sticker';
+  const Icon = !file
+    ? null
+    : /zip|rar|7z|tar|gzip/.test(file.type) || /\.(zip|rar|7z|tar|gz)$/i.test(file.name)
+      ? FileArchive
+      : file.type.startsWith('text/')
+        ? FileText
+        : FileIcon;
   return (
-    <div className="sp-file">
-      <Icon size={30} className="file-ico" />
-      <span className="sp-file-name" title={file.name}>
-        {file.name}
-      </span>
-      <span className="sp-file-size">
-        {fmtSize(file.size)}
-        {big && ' · grande'}
-      </span>
-      {kind === 'audio' && <audio src={url} controls preload="metadata" />}
+    <div className={`attach-tile ${kind}${big ? ' big' : ''}`} title={file ? `${file.name} · ${fmtSize(file.size)}` : 'Sticker'}>
+      {item.kind === 'sticker' ? (
+        <StickerView sticker={item.sticker} />
+      ) : kind === 'image' ? (
+        <img src={url} alt={name} />
+      ) : kind === 'video' ? (
+        <>
+          <video src={url} muted playsInline preload="metadata" />
+          <span className="attach-play" aria-hidden="true">
+            <Video size={14} />
+          </span>
+        </>
+      ) : (
+        <span className="attach-file">
+          <Icon size={22} className="file-ico" />
+          <span className="attach-name">{name}</span>
+          <small>{fmtSize(file.size)}</small>
+        </span>
+      )}
+      <button type="button" className="attach-x" onClick={onRemove} aria-label={`Tirar ${name}`} title="Tirar">
+        <X size={12} />
+      </button>
     </div>
   );
 }
 
-/**
- * Confirmação do envio. `items`: `{ kind: 'file', file }` ou `{ kind: 'sticker', sticker }`.
- * `onSend(caption)` envia; `onRetake` (câmera) volta para tirar outra.
- */
-export function SendPreview({ items, target, onSend, onCancel, onRetake, initialCaption = '' }) {
-  const [caption, setCaption] = useState(initialCaption);
-  const [busy, setBusy] = useState(false);
-  const ref = useRef(null);
+/** Limites dos arquivos grandes deste servidor. */
+const useFileLimits = () => {
   const limits = useStore((s) => s.config?.files);
-  const maxFile = limits?.maxFile || 25 * 1024 * 1024;
-  const maxTotal = limits?.bigMaxTotal || BIG.maxTotal;
+  return {
+    maxFile: limits?.maxFile || 25 * 1024 * 1024,
+    maxTotal: limits?.bigMaxTotal || BIG.maxTotal,
+    ttlMs: limits?.bigTtlMs || BIG.ttlMs,
+    maxCount: limits?.bigMaxCount || BIG.maxCount,
+  };
+};
+
+/** Arquivos que passam do máximo (não dá para enviar). */
+export function oversized(items, config) {
+  const maxTotal = config?.files?.bigMaxTotal || BIG.maxTotal;
+  return items.filter((i) => i.kind === 'file' && i.file.size > maxTotal).map((i) => i.file);
+}
+
+/**
+ * Anexos esperando o envio, acima da caixa de mensagem: o texto escrito na caixa vai junto ao enviar.
+ * `items`: `{ kind: 'file', file }` ou `{ kind: 'sticker', sticker }`.
+ */
+export function AttachTray({ items, onRemove, onClear }) {
+  const { maxFile, maxTotal, ttlMs, maxCount } = useFileLimits();
+  if (!items.length) return null;
   const files = items.filter((i) => i.kind === 'file').map((i) => i.file);
   const bigs = files.filter((f) => f.size > maxFile);
   const tooBig = files.filter((f) => f.size > maxTotal);
-  const what =
-    items[0]?.kind === 'sticker'
-      ? 'sticker'
-      : files.length > 1
-        ? `${files.length} arquivos`
-        : files[0]?.type.startsWith('image/')
-          ? 'foto'
-          : files[0]?.type.startsWith('video/')
-            ? 'vídeo'
-            : 'arquivo';
-  useEffect(() => {
-    requestAnimationFrame(() => ref.current?.focus());
-  }, []);
-  const send = async () => {
-    if (busy || tooBig.length) return;
-    setBusy(true);
-    try {
-      await onSend(caption.trim());
-    } finally {
-      setBusy(false);
-    }
-  };
   return (
-    <Sheet title={`Enviar ${what}`} onClose={onCancel} className="send-preview">
-      <div className="modal-body">
-        <h2>
-          Enviar {what} {target && <small>para {target}</small>}
-        </h2>
-        <div className={`sp-items${items.length > 1 ? ' many' : ''}`}>
-          {items.map((it, i) =>
-            it.kind === 'sticker' ? (
-              <div className="sp-sticker" key="sticker">
-                <StickerView sticker={it.sticker} />
-              </div>
-            ) : (
-              <FilePreview key={`${it.file.name}-${i}`} file={it.file} big={it.file.size > maxFile} />
-            ),
-          )}
-        </div>
-        {bigs.length > 0 && (
-          <p className={`sp-warn${tooBig.length ? ' bad' : ''}`} role="status">
-            <TriangleAlert size={15} />
-            {tooBig.length
-              ? `${tooBig.map((f) => f.name).join(', ')} passa de ${fmtSize(maxTotal)}, o máximo para arquivos grandes.`
-              : `${bigs.length === 1 ? 'Este arquivo passa' : 'Estes arquivos passam'} de ${fmtSize(maxFile)}: ${
-                  bigs.length === 1 ? 'fica disponível' : 'ficam disponíveis'
-                } só por ${Math.round((limits?.bigTtlMs || BIG.ttlMs) / 60000)} minutos e depois some${bigs.length === 1 ? '' : 'm'} da conversa (o servidor guarda até ${
-                  limits?.bigMaxCount || BIG.maxCount
-                } arquivos grandes de cada vez, somando ${fmtSize(maxTotal)}).`}
-          </p>
-        )}
-        <div className="field sp-caption">
-          <FormatTools inputRef={ref} text={caption} setText={setCaption} maxRaw={CAPTION_MAX} label="Formatação do texto" />
-          <textarea
-            ref={ref}
-            rows={2}
-            value={caption}
-            maxLength={CAPTION_MAX}
-            placeholder="Escreva algo para ir junto (opcional)"
-            aria-label="Texto para enviar junto"
-            onChange={(e) => setCaption(e.target.value)}
-            onKeyDown={(e) => {
-              if (formatKey(e, ref.current, caption, setCaption, CAPTION_MAX)) return;
-              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                send();
-              }
-            }}
-          />
-        </div>
-      </div>
-      <div className="modal-foot">
-        {onRetake ? (
-          <button type="button" className="btn ghost" onClick={onRetake} disabled={busy}>
-            <RotateCcw size={16} /> Tirar outra
-          </button>
-        ) : (
-          <button type="button" className="btn ghost" onClick={onCancel} disabled={busy}>
-            Cancelar
+    <div className="attach-tray" role="group" aria-label="Anexos para enviar">
+      <div className="attach-row">
+        {items.map((it, i) => (
+          <AttachTile key={it.key} item={it} big={it.kind === 'file' && it.file.size > maxFile} onRemove={() => onRemove(i)} />
+        ))}
+        {items.length > 1 && (
+          <button type="button" className="gloss mini attach-clear" onClick={onClear} title="Tirar todos" aria-label="Tirar todos os anexos">
+            <Trash2 size={14} />
           </button>
         )}
-        <button type="button" className="btn" onClick={send} disabled={busy || tooBig.length > 0}>
-          <Send size={16} /> {busy ? 'Enviando…' : 'Enviar'}
-        </button>
       </div>
-    </Sheet>
+      {bigs.length > 0 && (
+        <p className={`sp-warn${tooBig.length ? ' bad' : ''}`} role="status">
+          <TriangleAlert size={15} />
+          {tooBig.length
+            ? `${tooBig.map((f) => f.name).join(', ')} passa de ${fmtSize(maxTotal)}, o máximo para arquivos grandes.`
+            : `${bigs.length === 1 ? 'Este arquivo passa' : 'Estes arquivos passam'} de ${fmtSize(maxFile)}: ${
+                bigs.length === 1 ? 'fica disponível' : 'ficam disponíveis'
+              } só por ${Math.round(ttlMs / 60000)} minutos e depois some${bigs.length === 1 ? '' : 'm'} da conversa (o servidor guarda até ${maxCount} arquivos grandes de cada vez, somando ${fmtSize(maxTotal)}).`}
+        </p>
+      )}
+    </div>
   );
 }
 
