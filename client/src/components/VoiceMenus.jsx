@@ -6,6 +6,8 @@ import { MessageSquare, UserRound, VolumeX, MicOff, ArrowRightLeft, PhoneOff, Vo
 import { useStore, usePerms } from '../store.js';
 import Avatar, { UserName, usePresence, STATUS_INFO } from './Avatar.jsx';
 import { FormattedText, Floating } from './Emotes.jsx';
+import VolumeSlider from './Volume.jsx';
+import { useVoiceConn } from './conn.jsx';
 import { plain } from '../lib/text.js';
 
 /** Tipo usado no arrastar e soltar de pessoas entre canais de voz. */
@@ -77,6 +79,9 @@ export function VoiceMemberMenu({ x, y, p, channelId, guildId, onClose }) {
     fn();
   };
   const others = channels.filter((c) => c.type === 'voice' && c.id !== channelId);
+  // Volume desta pessoa para mim (até 200%): só quando estou na mesma chamada.
+  const voiceConn = useVoiceConn();
+  const volume = voiceConn((s) => (s.voice?.channelId === channelId ? s.voice.peers.find((x) => x.peerId === p.peerId)?.volume : undefined));
   return (
     <PointMenu x={x} y={y} onClose={onClose} label={`Opções de ${name}`}>
       <div className="ctx-head">
@@ -86,6 +91,12 @@ export function VoiceMemberMenu({ x, y, p, channelId, guildId, onClose }) {
       <Item icon={UserRound} onClick={act(() => st.openModal({ type: 'profile', userId: p.user.id }))}>
         Ver perfil
       </Item>
+      {!self && volume !== undefined && (
+        <div className="ctx-vol" title={`Volume de ${name} para você`}>
+          <Volume2 size={15} aria-hidden="true" />
+          <VolumeSlider label={`Volume de ${name}`} value={volume} max={2} onChange={(v) => voiceConn.getState().setPeerVolume(p.peerId, v)} />
+        </div>
+      )}
       {!self && (
         <Item icon={VolumeX} checked={localMuted} onClick={act(() => st.toggleLocalMute(p.user.id))}>
           Silenciar para mim

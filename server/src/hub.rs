@@ -88,7 +88,8 @@ pub fn client_ip(addr: SocketAddr, headers: &HeaderMap) -> IpAddr {
 pub struct Participant {
     peer_id: ConnId,
     user: User,
-    #[serde(skip)]
+    /// Servidor do canal (vazio numa chamada direta): o cliente agrupa quem está na voz por servidor.
+    #[serde(skip_serializing_if = "String::is_empty")]
     guild_id: String,
     /// Chamada 1 a 1: os dois usuários da conversa (em vez de uma guild).
     #[serde(skip)]

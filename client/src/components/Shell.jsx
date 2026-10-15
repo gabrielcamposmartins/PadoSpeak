@@ -35,6 +35,7 @@ import { offerWindowsApp } from './AuthPage.jsx';
 import { ConnProvider, useAcross, useVoiceConn } from './conn.jsx';
 import { canHost } from '../lib/host.js';
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useLayout, useNarrow, isTouch } from '../lib/layout.js';
 import MobileShell, { MobileBack } from './Mobile.jsx';
 import Avatar, { UserName, Orb, useActivity, STATUS_INFO, colorClass, colorStyle } from './Avatar.jsx';
@@ -235,6 +236,47 @@ export function ProfileBar({ onMenu }) {
 
 // ---------- Trilho de servidores ----------
 
+/**
+ * Cartão ao passar o mouse num servidor: o nome e quem está em cada canal de voz dele. Os canais de
+ * outros servidores carregam na hora (para mostrar o nome do canal).
+ */
+function GuildTip({ guild, anchor }) {
+  const voiceStates = useStore((s) => s.voiceStates);
+  const channels = useStore((s) => s.guildData[guild.id]?.channels);
+  const base = useStore((s) => s.baseUrl);
+  useEffect(() => {
+    if (!channels) useStore.getState().loadGuild(guild.id).catch(() => {});
+  }, [channels, guild.id]);
+  const rooms = Object.entries(voiceStates)
+    .filter(([, list]) => list?.length && list[0].guildId === guild.id)
+    .map(([channelId, list]) => ({ channelId, list, name: channels?.find((c) => c.id === channelId)?.name }))
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const r = anchor.getBoundingClientRect();
+  const top = Math.max(8, Math.min(r.top + r.height / 2, window.innerHeight - 8));
+  return createPortal(
+    <div className="guild-tip" role="tooltip" style={{ left: r.right + 12, top }}>
+      <b className="guild-tip-name">{guild.name}</b>
+      {rooms.map(({ channelId, list, name }) => (
+        <div key={channelId} className="guild-tip-room">
+          <span className="guild-tip-ch">
+            <Volume2 size={13} /> {name || 'Canal de voz'}
+          </span>
+          {list.map((p) => (
+            <span key={p.peerId} className="guild-tip-person">
+              <Avatar user={p.user} base={base} size={20} />
+              <span className="guild-tip-who">{plain(p.user.displayName) || p.user.username}</span>
+              {p.screen && <span className="live">AO VIVO</span>}
+              {(p.muted || p.serverMuted) && <MicOff size={12} className="guild-tip-ico" aria-label="microfone desligado" />}
+              {p.deafened && <HeadphoneOff size={12} className="guild-tip-ico" aria-label="som desligado" />}
+            </span>
+          ))}
+        </div>
+      ))}
+    </div>,
+    document.body,
+  );
+}
+
 export function GuildRail() {
   const adminAccess = useStore((s) => Boolean(s.appAdmin?.canView));
   const guilds = useStore((s) => s.guilds);
@@ -246,6 +288,14 @@ export function GuildRail() {
   const pending = useStore((s) => Object.values(s.friends).filter((f) => f.status === 'incoming').length);
   const base = useStore((s) => s.baseUrl);
   const badge = unread + pending;
+  // Quantas pessoas estão na voz em cada servidor (um pontinho verde no ícone) e o cartão ao passar o mouse.
+  const inVoice = useStore((s) => {
+    const n = {};
+    for (const list of Object.values(s.voiceStates)) if (list?.[0]?.guildId) n[list[0].guildId] = (n[list[0].guildId] || 0) + list.length;
+    return JSON.stringify(n);
+  });
+  const voiceCount = JSON.parse(inVoice);
+  const [tip, setTip] = useState(null); // { guild, anchor }
   return (
     <nav className="guild-rail glass" aria-label="Servidores">
       <div className={`gel-slot${current == null ? ' active' : ''}`}>
@@ -265,14 +315,27 @@ export function GuildRail() {
           <button
             className={`gel guild guild-icon${g.iconUrl ? ' has-img' : ''}`}
             style={{ '--c': g.iconColor }}
-            title={g.name}
-            aria-label={g.name}
-            onClick={() => selectGuild(g.id)}
+            aria-label={voiceCount[g.id] ? `${g.name} · ${voiceCount[g.id]} na voz` : g.name}
+            onClick={() => {
+              setTip(null);
+              selectGuild(g.id);
+            }}
+            onMouseEnter={(e) => !isTouch && setTip({ guild: g, anchor: e.currentTarget })}
+            onMouseLeave={() => setTip(null)}
+            onFocus={(e) => !isTouch && setTip({ guild: g, anchor: e.currentTarget })}
+            onBlur={() => setTip(null)}
           >
             {g.iconUrl ? <img src={base + g.iconUrl} alt="" /> : <span>{initials(g.name)}</span>}
           </button>
+          {voiceCount[g.id] > 0 && (
+            <span className="guild-voice-dot" aria-hidden="true">
+              <Volume2 size={10} strokeWidth={2.6} />
+              {voiceCount[g.id]}
+            </span>
+          )}
         </div>
       ))}
+      {tip && <GuildTip guild={guilds.find((g) => g.id === tip.guild.id) || tip.guild} anchor={tip.anchor} />}
       <button
         className="gel add"
         title="Criar ou entrar em um servidor"

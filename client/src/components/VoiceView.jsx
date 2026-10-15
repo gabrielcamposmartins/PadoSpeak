@@ -249,6 +249,7 @@ function Tile({ tile, focused, onFocus }) {
             <VolumeSlider
               label={`Volume de ${plain(tile.user?.displayName) || 'alguém'}`}
               value={tile.volume}
+              max={2}
               onChange={(v) => setPeerVolume(tile.peerId, v)}
             />
           </label>
@@ -264,6 +265,7 @@ function Tile({ tile, focused, onFocus }) {
             <VolumeSlider
               label="Volume da transmissão"
               value={tile.audioMuted ? 0 : tile.streamVolume}
+              max={2}
               onChange={(v) => setStreamAudio(tile.peerId, { volume: v, muted: false })}
             />
           </span>

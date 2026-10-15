@@ -138,6 +138,8 @@ export class VoiceClient {
     this.meters.clear();
     this.audioCtx?.close().catch(() => {});
     this.audioCtx = null;
+    this.boostCtx?.close().catch(() => {});
+    this.boostCtx = null;
     this.state.channelId = null;
     this.state.guildId = null;
     this.state.error = reason;
@@ -177,6 +179,7 @@ export class VoiceClient {
       watching: { camera: false, screen: false },
       volume: 1,
       streamVolume: 1,
+      boosts: new Map(), // streamId -> { source, gain }: volume acima de 100% (Web Audio)
       streamMuted: false,
       connectionState: 'new',
     };
@@ -390,20 +393,73 @@ export class VoiceClient {
     this.applyAudio(peer);
   }
 
-  /** Aplica ensurdecer, volume da voz e volume/mudo da transmissão aos <audio> do par. */
+  /**
+   * Aplica ensurdecer, volume da voz e volume/mudo da transmissão aos <audio> do par. Até 100% o
+   * próprio <audio> resolve; acima disso o som passa por um ganho do Web Audio (o <audio> fica mudo,
+   * mas tocando: sem ele o Chrome não entrega o áudio da chamada ao Web Audio).
+   */
   applyAudio(peer) {
     // A voz some se eu silenciei a pessoa para mim ou se um moderador a silenciou para todos.
     const voiceOff = this.localMutes.has(peer.info.user?.id) || Boolean(peer.info.serverMuted);
     for (const [streamId, el] of peer.audioEls) {
       const isScreen = streamId === peer.info.screenStreamId;
-      el.muted = this.state.deafened || (isScreen ? peer.streamMuted : voiceOff);
-      el.volume = isScreen ? peer.streamVolume : peer.volume;
+      const off = this.state.deafened || (isScreen ? peer.streamMuted : voiceOff);
+      const volume = isScreen ? peer.streamVolume : peer.volume;
+      const boost = volume > 1 ? this.boost(peer, streamId, el) : null;
+      if (boost) {
+        el.muted = true;
+        el.volume = 1;
+        boost.gain.gain.value = off ? 0 : volume;
+      } else {
+        this.unboost(peer, streamId);
+        el.muted = off;
+        el.volume = Math.min(1, volume);
+      }
     }
+  }
+
+  /** Ganho acima de 100% para um áudio do par (criado na primeira vez). */
+  boost(peer, streamId, el) {
+    const have = peer.boosts.get(streamId);
+    if (have) return have;
+    try {
+      if (!this.boostCtx) {
+        this.boostCtx = new AudioContext();
+        if (this.devices.output && this.boostCtx.setSinkId) this.boostCtx.setSinkId(this.devices.output).catch(() => {});
+      }
+      this.boostCtx.resume?.().catch(() => {});
+      const source = this.boostCtx.createMediaStreamSource(el.srcObject);
+      const gain = this.boostCtx.createGain();
+      // Limitador: amplificado, um grito não estoura (distorce) a saída.
+      const limiter = this.boostCtx.createDynamicsCompressor();
+      limiter.threshold.value = -3;
+      limiter.knee.value = 0;
+      limiter.ratio.value = 20;
+      limiter.attack.value = 0.003;
+      limiter.release.value = 0.15;
+      source.connect(gain).connect(limiter).connect(this.boostCtx.destination);
+      const b = { source, gain, limiter };
+      peer.boosts.set(streamId, b);
+      return b;
+    } catch (e) {
+      console.warn('[voz] volume acima de 100%', e);
+      return null;
+    }
+  }
+
+  unboost(peer, streamId) {
+    const b = peer.boosts.get(streamId);
+    if (!b) return;
+    b.source.disconnect();
+    b.gain.disconnect();
+    b.limiter.disconnect();
+    peer.boosts.delete(streamId);
   }
 
   stopAudio(peer, streamId) {
     const el = peer.audioEls.get(streamId);
     if (!el) return;
+    this.unboost(peer, streamId);
     el.pause();
     el.srcObject = null;
     peer.audioEls.delete(streamId);
@@ -694,6 +750,7 @@ export class VoiceClient {
     Object.assign(this.devices, devices);
     if (this.devices.output !== prev.output) {
       this.peers.forEach((p) => p.audioEls.forEach((el) => el.setSinkId?.(this.devices.output).catch(() => {})));
+      this.boostCtx?.setSinkId?.(this.devices.output || '').catch(() => {});
     }
     if (this.mic && this.devices.mic !== prev.mic) await this.replaceMic();
     if (this.camera && this.devices.camera !== prev.camera) {

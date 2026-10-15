@@ -1253,6 +1253,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
         },
       });
       voiceClient = client;
+      globalThis.__padospeakVoice = client; // diagnóstico pelo DevTools
       const isDm = get().dms.some((d) => d.id === channelId);
       if (!isDm && primary) {
         set({ view: { type: 'voice', channelId } });
@@ -1932,6 +1933,39 @@ export async function localAuthenticate(mode, form) {
   ).post(`/api/auth/${mode}`, form);
   localPassword = form.password;
   await enterLocal(local, res.user, form.password, res.token);
+}
+
+/**
+ * App desktop, senha do perfil local esquecida: confere usuário e senha (ou o código de redefinição) no
+ * servidor de comunidade. Devolve `{ needsNew: true }` se for o código (falta escolher a senha nova);
+ * senão entra, com o perfil local já usando a senha do servidor. Sem conta lá, devolve null.
+ */
+export async function localRecover({ username, password, newPassword }) {
+  const local = connRegistry.get('local');
+  const server = useStore.getState().baseUrl;
+  if (!local || !server) return null;
+  const remote = createApi(
+    () => server,
+    () => null,
+  );
+  let res;
+  try {
+    res = newPassword
+      ? await remote.post('/api/auth/new-password', { username, password, newPassword })
+      : await remote.post('/api/auth/login', { username, password });
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 428) return { needsNew: true };
+    if (e instanceof ApiError && e.status === 401 && !newPassword) return null;
+    throw e;
+  }
+  const finalPassword = newPassword || password;
+  const done = await createApi(
+    () => local.getState().baseUrl,
+    () => null,
+  ).post('/api/auth/recover', { username, newPassword: finalPassword, server, token: res.token });
+  localPassword = finalPassword;
+  await enterLocal(local, done.user, finalPassword, done.token);
+  return { ok: true };
 }
 
 /** Sai do perfil local (e de tudo o que veio com ele). */

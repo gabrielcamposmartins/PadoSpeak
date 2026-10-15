@@ -1,5 +1,15 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.6.6 — 15/10/2026
+
+### Novidades
+- **Volume de cada pessoa até 200%** na chamada (e no áudio de uma tela compartilhada). Acima de 100% o número fica laranja.
+- **Volume no menu de clique direito** de quem está no canal de voz.
+- **Quem está na voz** ao passar o mouse no ícone de um servidor.
+
+### Correções
+- **App do Windows e senha redefinida**: entrar com o código temporário agora pede a senha nova, que passa a valer no servidor e no perfil do PC. Quem esqueceu só a senha do perfil do PC entra com a senha da conta do servidor.
+
 ## 1.6.5 — 15/10/2026
 
 ### Novidades

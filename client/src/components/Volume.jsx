@@ -22,7 +22,7 @@ export default function VolumeSlider({ value, onChange, label, max = 1, classNam
   }, [max]);
   const pct = Math.round(value * 100);
   return (
-    <span className={`vol ${className}`}>
+    <span className={`vol${value > 1 ? ' boost' : ''} ${className}`}>
       <input
         ref={range}
         type="range"
@@ -31,7 +31,7 @@ export default function VolumeSlider({ value, onChange, label, max = 1, classNam
         step="0.01"
         value={value}
         aria-label={label}
-        title={`${label}: ${pct}% (rodinha do mouse ajusta 1%, duplo clique volta a 100%)`}
+        title={`${label}: ${pct}%${max > 1 ? ` (até ${Math.round(max * 100)}%)` : ''} · rodinha do mouse ajusta 1%, duplo clique volta a 100%`}
         onChange={(e) => onChange(clamp(Number(e.target.value), max))}
         onDoubleClick={() => onChange(1)}
       />

@@ -266,6 +266,7 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/auth/register", post(register))
         .route("/api/auth/login", post(login))
         .route("/api/auth/new-password", post(new_password))
+        .route("/api/auth/recover", post(recover_local))
         .route("/api/auth/logout", post(logout))
         .route("/api/me", get(me))
         .route("/api/guilds", get(list_guilds).post(create_guild))
@@ -399,6 +400,68 @@ async fn login(
     if must_reset {
         return Err(ApiError::new(StatusCode::PRECONDITION_REQUIRED, "Sua senha foi redefinida. Crie uma senha nova para entrar."));
     }
+    let token = auth::create_session(&app.db, &user.id).await?;
+    Ok(Json(json!({ "token": token, "user": user })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoverLocal {
+    username: String,
+    new_password: String,
+    /// Servidor de comunidade onde a pessoa acabou de entrar, e o token dessa sessão.
+    server: String,
+    token: String,
+}
+
+/// Só no nó local do app desktop (e só deste PC): esqueceu a senha do perfil local. Se o servidor de
+/// comunidade confirma que o token é da mesma conta (mesmo usuário), o perfil local passa a usar a
+/// senha nova — a mesma de lá.
+async fn recover_local(
+    State(app): AppState,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Json(body): Json<RecoverLocal>,
+) -> ApiResult<Json<Value>> {
+    if app.lan.is_none() || !addr.ip().to_canonical().is_loopback() {
+        return Err(forbidden("Disponível só no app do PadoSpeak deste PC"));
+    }
+    if body.new_password.chars().count() < 6 {
+        return Err(bad("A senha deve ter pelo menos 6 caracteres"));
+    }
+    let server = body.server.trim_end_matches('/');
+    let local_test = server.starts_with("http://localhost:") || server.starts_with("http://127.0.0.1:");
+    if !server.starts_with("https://") && !local_test {
+        return Err(bad("Servidor inválido"));
+    }
+    // Quem é o dono desse token lá no servidor de comunidade?
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e.to_string()))?;
+    let them: Value = http
+        .get(format!("{server}/api/me"))
+        .bearer_auth(&body.token)
+        .send()
+        .await
+        .and_then(|r| r.error_for_status())
+        .map_err(|_| ApiError::new(StatusCode::UNAUTHORIZED, "O servidor não confirmou a sua conta"))?
+        .bytes()
+        .await
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_GATEWAY, "Resposta inválida do servidor"))?;
+    let theirs = them["username"].as_str().unwrap_or_default();
+    if !theirs.eq_ignore_ascii_case(body.username.trim()) {
+        return Err(ApiError::new(StatusCode::UNAUTHORIZED, "Essa conta do servidor é de outro usuário"));
+    }
+    let sql = format!("SELECT {USER_COLS} FROM users u WHERE u.username = ?1");
+    let Some(user) = app.db.query_one(&sql, [body.username.trim()], user_from_row).await? else {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "Não há perfil com esse usuário neste PC: use “Criar perfil”"));
+    };
+    let hash = auth::hash_password(body.new_password).await;
+    app.db
+        .execute("UPDATE users SET password_hash = ?1, must_reset = 0 WHERE id = ?2", (hash.as_str(), user.id.as_str()))
+        .await?;
     let token = auth::create_session(&app.db, &user.id).await?;
     Ok(Json(json!({ "token": token, "user": user })))
 }

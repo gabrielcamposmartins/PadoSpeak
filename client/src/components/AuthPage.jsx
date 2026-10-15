@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Server, Wifi, Download } from 'lucide-react';
-import { useStore, localAuthenticate, connRegistry, knownProfiles, lastProfile } from '../store.js';
+import { useStore, localAuthenticate, localRecover, connRegistry, knownProfiles, lastProfile } from '../store.js';
 import Avatar from './Avatar.jsx';
 import { InstallCard } from './Mobile.jsx';
 import { isDesktop, DOWNLOAD_URL } from '../lib/env.js';
@@ -40,9 +40,20 @@ export default function AuthPage() {
     try {
       if (mode === 'reset') {
         if (form.newPassword !== form.repeat) throw new Error('As duas senhas não são iguais.');
-        await useStore.getState().authenticate('new-password', { username: form.username, password: form.password, newPassword: form.newPassword });
-      } else if (isDesktop) await localAuthenticate(mode, form);
-      else await useStore.getState().authenticate(mode, form);
+        const creds = { username: form.username, password: form.password, newPassword: form.newPassword };
+        if (isDesktop) await localRecover(creds);
+        else await useStore.getState().authenticate('new-password', creds);
+      } else if (isDesktop) {
+        try {
+          await localAuthenticate(mode, form);
+        } catch (err) {
+          // Senha do perfil local esquecida: vale a da conta do servidor (ou o código de redefinição).
+          if (mode !== 'login' || err.status !== 401) throw err;
+          const r = await localRecover({ username: form.username, password: form.password }).catch(() => null);
+          if (r?.needsNew) return setMode('reset');
+          if (!r) throw err;
+        }
+      } else await useStore.getState().authenticate(mode, form);
     } catch (err) {
       // Senha redefinida pelo administrador: entrou com o código, agora cria a senha nova.
       if (!isDesktop && err.status === 428) {
@@ -134,7 +145,8 @@ export default function AuthPage() {
             {mode === 'reset' ? (
               <>
                 <p className="auth-reset" role="status">
-                  Sua senha foi redefinida. Crie uma senha nova para a conta <b>@{form.username.trim()}</b>.
+                  Sua senha foi redefinida. Crie uma senha nova para a conta <b>@{form.username.trim()}</b>
+                  {isDesktop ? ': ela vale no servidor e no perfil deste PC.' : '.'}
                 </p>
                 <label className="field">
                   <span>Senha nova</span>
