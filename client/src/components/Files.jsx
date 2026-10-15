@@ -1,19 +1,143 @@
 // Arquivos nas conversas: imagem e vídeo aparecem direto, texto mostra o começo, o resto vira um
-// cartão para baixar. A mensagem guarda `[arquivo:<id>:<tamanho>:<tipo>:<nome>]`.
-import { useEffect, useState } from 'react';
-import { Download, FileText, FileArchive, File as FileIcon, X, ExternalLink } from 'lucide-react';
-import { FILE_RE } from '../store.js';
+// cartão para baixar. A mensagem guarda `[arquivo:<id>:<tamanho>:<tipo>:<nome>]` (e, na linha de
+// baixo, o texto que foi junto). Mensagens de voz: `[voz:<id>:<duração ms>:<tipo>]`.
+import { useEffect, useRef, useState } from 'react';
+import { Download, FileText, FileArchive, File as FileIcon, X, ExternalLink, Play, Pause, Timer } from 'lucide-react';
+import { FILE_RE, VOICE_RE } from '../store.js';
 import { useConn } from './conn.jsx';
 
 export const parseFile = (content) => {
   const m = FILE_RE.exec(content || '');
-  return m ? { id: m[1], size: Number(m[2]), mime: m[3], name: m[4] } : null;
+  return m ? { id: m[1], size: Number(m[2]), mime: m[3], name: m[4], caption: m[5] || '' } : null;
+};
+
+export const parseVoice = (content) => {
+  const m = VOICE_RE.exec(content || '');
+  return m ? { id: m[1], duration: Number(m[2]), mime: m[3] } : null;
 };
 
 export function fmtSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+/** "3 min", "2 h", "5 dias" até `at`. */
+export function fmtLeft(at, now = Date.now()) {
+  const ms = Math.max(0, at - now);
+  const min = Math.ceil(ms / 60000);
+  if (min < 60) return `${min} min`;
+  const h = Math.round(min / 60);
+  if (h < 48) return `${h} h`;
+  return `${Math.round(h / 24)} dias`;
+}
+
+/** Relógio que atualiza a cada `ms` (para contagens regressivas). */
+export function useNow(ms = 30000) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), ms);
+    return () => clearInterval(t);
+  }, [ms]);
+  return now;
+}
+
+/** Aviso "some em X" das mensagens com validade. */
+export function ExpiresTag({ at }) {
+  const now = useNow(at - Date.now() < 3600000 ? 15000 : 60000);
+  return (
+    <span className="expires-tag" title={`Some em ${new Date(at).toLocaleString('pt-BR')}`}>
+      <Timer size={12} /> some em {fmtLeft(at, now)}
+    </span>
+  );
+}
+
+const mmss = (ms) => {
+  const t = Math.max(0, Math.round(ms / 1000));
+  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+};
+
+/** Barrinhas da "onda" (fixas por mensagem, só para dar cara de áudio). */
+function bars(id, n = 32) {
+  let h = parseInt(id.slice(0, 8), 16) || 1;
+  return Array.from({ length: n }, () => {
+    h = (h * 1103515245 + 12345) & 0x7fffffff;
+    return 0.25 + (h % 1000) / 1333;
+  });
+}
+
+/** Mensagem de voz: tocar/pausar, a onda (clique para pular) e a velocidade. */
+export function VoiceNote({ voice }) {
+  const useC = useConn();
+  const fileUrl = useC((s) => s.fileUrl);
+  const audio = useRef(null);
+  const [playing, setPlaying] = useState(false);
+  const [pos, setPos] = useState(0);
+  const [rate, setRate] = useState(1);
+  const [broken, setBroken] = useState(false);
+  const [dur, setDur] = useState(voice.duration);
+  const wave = bars(voice.id);
+  if (broken) return <span className="file-gone">Mensagem de voz indisponível</span>;
+  const frac = dur ? Math.min(1, pos / dur) : 0;
+  const toggle = () => {
+    const a = audio.current;
+    if (!a) return;
+    if (a.paused) a.play().catch(() => setBroken(true));
+    else a.pause();
+  };
+  return (
+    <div className={`voice-note${playing ? ' playing' : ''}`}>
+      <button type="button" className="gloss voice-play" onClick={toggle} aria-label={playing ? 'Pausar' : 'Ouvir mensagem de voz'}>
+        {playing ? <Pause size={16} /> : <Play size={16} />}
+      </button>
+      <div
+        className="voice-wave"
+        role="slider"
+        aria-label="Posição"
+        aria-valuemin={0}
+        aria-valuemax={Math.round(dur / 1000)}
+        aria-valuenow={Math.round(pos / 1000)}
+        tabIndex={0}
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          const a = audio.current;
+          if (a && dur) a.currentTime = (((e.clientX - r.left) / r.width) * dur) / 1000;
+        }}
+      >
+        {wave.map((h, i) => (
+          <i key={i} className={i / wave.length < frac ? 'on' : ''} style={{ height: `${Math.round(h * 100)}%` }} />
+        ))}
+      </div>
+      <span className="voice-time">{mmss(playing || pos ? pos : dur)}</span>
+      <button
+        type="button"
+        className="voice-rate"
+        title="Velocidade"
+        onClick={() => {
+          const next = rate === 1 ? 1.5 : rate === 1.5 ? 2 : 1;
+          setRate(next);
+          if (audio.current) audio.current.playbackRate = next;
+        }}
+      >
+        {rate}×
+      </button>
+      <audio
+        ref={audio}
+        src={fileUrl(voice.id)}
+        preload="metadata"
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => {
+          setPlaying(false);
+          setPos(0);
+        }}
+        onTimeUpdate={(e) => setPos(e.currentTarget.currentTime * 1000)}
+        onLoadedMetadata={(e) => Number.isFinite(e.currentTarget.duration) && setDur(e.currentTarget.duration * 1000)}
+        onError={() => setBroken(true)}
+      />
+    </div>
+  );
 }
 
 /** Programas e scripts não podem ser enviados soltos (o servidor recusa também); dentro de .zip pode. */

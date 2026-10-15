@@ -11,14 +11,20 @@ import {
   Paperclip,
   X,
   SmilePlus,
+  Camera,
+  Mic,
+  Check,
+  CheckCheck,
+  Eye,
 } from 'lucide-react';
-import { useStore, sendSticker, sendFile, usePerms } from '../store.js';
-import { FileView, UploadList, parseFile, isBlockedFile } from './Files.jsx';
+import { useStore, sendSticker, sendFile, sendVoice, usePerms } from '../store.js';
+import { FileView, UploadList, parseFile, parseVoice, isBlockedFile, VoiceNote, ExpiresTag } from './Files.jsx';
 import { StickerPicker, StickerView, parseSticker } from './Stickers.jsx';
-import FormatTools from './FormatTools.jsx';
+import FormatTools, { formatKey } from './FormatTools.jsx';
+import { SendPreview, CameraCapture, VoiceRecorder } from './Compose.jsx';
 import { useConn, useConnKey } from './conn.jsx';
 import Avatar, { UserName, Orb, usePresence, useUser, colorClass, colorStyle } from './Avatar.jsx';
-import { RichText, FormattedText, plain, EmojiText, EmojiPicker } from './Emotes.jsx';
+import { RichText, FormattedText, plain, EmojiText, EmojiPicker, Floating } from './Emotes.jsx';
 import { useLayout, isTouch } from '../lib/layout.js';
 
 /** Abre o perfil de alguém desta conexão (servidor ou PC da rede). */
@@ -63,10 +69,9 @@ function Notice({ n, dm, name }) {
 }
 
 /** Barra acima da caixa de texto: formatação, cor, emoticons e chamar atenção. */
-function ComposerTools({ inputRef, text, setText, channelId, onFiles }) {
+function ComposerTools({ inputRef, text, setText, channelId, onFiles, onSticker }) {
   const [open, setOpen] = useState(false);
   const useC = useConn();
-  const connKey = useConnKey();
   const stickerBtn = useRef(null);
   const fileInput = useRef(null);
   return (
@@ -108,7 +113,7 @@ function ComposerTools({ inputRef, text, setText, channelId, onFiles }) {
             onClose={() => setOpen(false)}
             onPick={(st) => {
               setOpen(false);
-              sendSticker(connKey, channelId, st);
+              onSticker(st);
             }}
           />
         )}
@@ -199,10 +204,67 @@ function Reactions({ m, me, onPick }) {
   );
 }
 
-function Message({ m, head, canEdit: canEditText, canDelete, onReply, me }) {
+/**
+ * Vistos das minhas mensagens: ✓ enviada, ✓✓ recebida, olho quando alguém viu. Num canal de
+ * servidor, clicar no olho mostra quem viu.
+ */
+function Receipt({ state, viewers, guild }) {
+  const ref = useRef(null);
+  const [open, setOpen] = useState(false);
+  if (state === 'read')
+    return (
+      <span className="tool-wrap receipt-wrap">
+        <button
+          ref={ref}
+          type="button"
+          className="receipt read"
+          title={guild ? 'Ver quem visualizou' : 'Visualizada'}
+          aria-label={guild ? `Visualizada por ${viewers.length}` : 'Visualizada'}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (guild) setOpen(!open);
+          }}
+        >
+          <Eye size={13} />
+          {guild && viewers.length > 1 && <small>{viewers.length}</small>}
+        </button>
+        {open && (
+          <Floating anchorRef={ref} onClose={() => setOpen(false)} align="right" className="seen-pop" role="dialog" aria-label="Quem visualizou">
+            <div className="popover-title">Visualizada por</div>
+            {viewers.map((v) => (
+              <div className="seen-row" key={v.user.id}>
+                <Avatar user={v.user} size={22} frame={false} />
+                <UserName user={v.user} />
+                <small>{hhmm(v.at)}</small>
+              </div>
+            ))}
+          </Floating>
+        )}
+      </span>
+    );
+  return (
+    <span className={`receipt ${state}`} title={state === 'delivered' ? 'Recebida' : 'Enviada'} aria-label={state === 'delivered' ? 'Recebida' : 'Enviada'}>
+      {state === 'delivered' ? <CheckCheck size={13} /> : <Check size={13} />}
+    </span>
+  );
+}
+
+/** Cor padrão das mensagens: a da pessoa e/ou a do servidor, conforme o servidor escolheu. */
+function messageColor(author, guild) {
+  const mine = /^#[0-9a-f]{6}$/i.test(author?.messageColor || '') ? author.messageColor : null;
+  if (!guild) return mine;
+  const server = /^#[0-9a-f]{6}$/i.test(guild.msgColor || '') ? guild.msgColor : null;
+  if (guild.msgColorMode === 'server') return server || mine;
+  if (guild.msgColorMode === 'user_first') return mine || server;
+  return mine;
+}
+
+function Message({ m, head, canEdit: canEditText, canDelete, onReply, me, receipt, color }) {
   const sticker = parseSticker(m.content);
   const file = !sticker && parseFile(m.content);
-  const canEdit = canEditText && !sticker && !file;
+  const voice = !sticker && !file && parseVoice(m.content);
+  const caption = sticker?.caption || file?.caption || '';
+  const canEdit = canEditText && !sticker && !file && !voice;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(m.content);
   const useC = useConn();
@@ -276,6 +338,7 @@ function Message({ m, head, canEdit: canEditText, canDelete, onReply, me }) {
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
+                if (formatKey(e, e.currentTarget, draft, setDraft, MAX)) return;
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
                   save();
@@ -285,10 +348,29 @@ function Message({ m, head, canEdit: canEditText, canDelete, onReply, me }) {
             <small>Esc para cancelar · Enter para salvar</small>
           </div>
         ) : (
-          <p className="content" title={head ? undefined : hhmm(m.createdAt)}>
-            {sticker ? <StickerView sticker={sticker} /> : file ? <FileView file={file} /> : <RichText text={m.content} />}
+          <div className="content" title={head ? undefined : hhmm(m.createdAt)}>
+            {sticker ? (
+              <StickerView sticker={sticker} />
+            ) : file ? (
+              <FileView file={file} />
+            ) : voice ? (
+              <VoiceNote voice={voice} />
+            ) : color ? (
+              <span className="tc msg-color" style={{ '--tc': color }}>
+                <RichText text={m.content} />
+              </span>
+            ) : (
+              <RichText text={m.content} />
+            )}
+            {caption && (
+              <div className={`caption${color ? ' tc msg-color' : ''}`} style={color ? { '--tc': color } : undefined}>
+                <RichText text={caption} />
+              </div>
+            )}
             {m.editedAt && <span className="edited">(editado)</span>}
-          </p>
+            {m.expiresAt && <ExpiresTag at={m.expiresAt} />}
+            {receipt && <Receipt {...receipt} />}
+          </div>
         )}
         <Reactions m={m} me={me} onPick={react} />
       </div>
@@ -407,10 +489,36 @@ export default function ChatView({ channel, variant = 'channel' }) {
   const me = useC((s) => s.me) || NOBODY;
   const isAdmin = usePerms(useC, channel.guildId).admin;
   const users = useC((s) => s.users);
+  const reads = useC((s) => s.reads[channel.id]);
+  const guild = useC((s) => (channel.guildId ? s.guilds.find((g) => g.id === channel.guildId) : null));
+  const members = useC((s) => (channel.guildId ? s.guildData[channel.guildId]?.members : null));
+  const receiptPrefs = useStore((s) => s.prefs.receipts) || {};
+  const showReceipts = receiptPrefs.show !== false;
+  // Quem não manda confirmação de leitura também não vê a dos outros (como no WhatsApp).
+  const seeReads = receiptPrefs.sendRead !== false;
+  /** Estado de uma mensagem minha: sent | delivered | read (com quem viu). */
+  const receiptOf = (m) => {
+    if (!showReceipts || m.author.id !== me.id) return null;
+    const others = Object.entries(reads || {}).filter(([id]) => id !== me.id);
+    const viewers = seeReads
+      ? others
+          .filter(([, r]) => r.readAt >= m.createdAt)
+          .map(([id, r]) => ({
+            at: r.readAt,
+            user: users[id] || members?.find((x) => x.id === id) || (channel.recipient?.id === id ? channel.recipient : { id, displayName: 'alguém', username: '' }),
+          }))
+      : [];
+    if (viewers.length) return { state: 'read', viewers, guild: Boolean(channel.guildId) };
+    if (others.some(([, r]) => r.deliveredAt >= m.createdAt)) return { state: 'delivered' };
+    return { state: 'sent' };
+  };
   const [text, setText] = useState('');
   const [reply, setReply] = useState(null); // mensagem sendo respondida
   const [uploads, setUploads] = useState([]); // arquivos sendo enviados
   const [dragging, setDragging] = useState(false);
+  const [pending, setPending] = useState(null); // { items, camera } esperando confirmação
+  const [camera, setCamera] = useState(false);
+  const [recording, setRecording] = useState(false);
   const connKey = useConnKey();
   const listRef = useRef(null);
   const stickToBottom = useRef(true);
@@ -426,27 +534,77 @@ export default function ChatView({ channel, variant = 'channel' }) {
     inputRef.current?.focus();
   }, [channel.id]);
 
-  /** Envia arquivos (botão, arrastar ou colar), um de cada vez, com o progresso acima da caixa. */
-  async function sendFiles(files) {
-    for (const file of files) {
-      if (isBlockedFile(file.name)) {
-        useStore.getState().notify(`"${file.name}" é um programa: coloque dentro de um .zip para enviar.`);
+  // Li o que está na tela (só com a janela em foco e visível).
+  useEffect(() => {
+    const read = () => document.visibilityState === 'visible' && document.hasFocus() && useC.getState().markRead(channel.id);
+    read();
+    window.addEventListener('focus', read);
+    document.addEventListener('visibilitychange', read);
+    return () => {
+      window.removeEventListener('focus', read);
+      document.removeEventListener('visibilitychange', read);
+    };
+  }, [channel.id, messages]);
+
+  /** Arquivos escolhidos (botão, arrastar ou colar): vão para a prévia antes de enviar. */
+  function sendFiles(files) {
+    const ok = files.filter((file) => {
+      if (!isBlockedFile(file.name)) return true;
+      useStore.getState().notify(`"${file.name}" é um programa: coloque dentro de um .zip para enviar.`);
+      return false;
+    });
+    if (ok.length) setPending({ items: ok.map((file) => ({ kind: 'file', file })) });
+  }
+
+  /** Envia o que foi confirmado na prévia (um de cada vez; o texto vai junto com o primeiro). */
+  async function confirmSend(caption) {
+    const { items } = pending;
+    setPending(null);
+    const replyTo = reply?.id;
+    setReply(null);
+    stickToBottom.current = true;
+    let text = caption;
+    for (const it of items) {
+      if (it.kind === 'sticker') {
+        await sendSticker(connKey, channel.id, it.sticker, { caption: text, replyTo });
+        text = '';
         continue;
       }
+      const { file } = it;
       const key = `${Date.now()}-${Math.random()}`;
       setUploads((u) => [...u, { key, name: file.name, progress: 0 }]);
-      stickToBottom.current = true;
       try {
         await sendFile(connKey, channel.id, file, {
-          replyTo: reply?.id,
+          replyTo,
+          caption: text,
           onProgress: (p) => setUploads((u) => u.map((x) => (x.key === key ? { ...x, progress: p } : x))),
         });
-        setReply(null);
+        text = '';
       } catch (e) {
         useStore.getState().notify(`${file.name}: ${e.message}`);
       } finally {
         setUploads((u) => u.filter((x) => x.key !== key));
       }
+    }
+  }
+
+  /** Mensagem de voz gravada: sobe e manda. */
+  async function sendRecording(blob, ms) {
+    setRecording(false);
+    const key = `${Date.now()}-${Math.random()}`;
+    const replyTo = reply?.id;
+    setReply(null);
+    stickToBottom.current = true;
+    setUploads((u) => [...u, { key, name: 'Mensagem de voz', progress: 0 }]);
+    try {
+      await sendVoice(connKey, channel.id, blob, ms, {
+        replyTo,
+        onProgress: (p) => setUploads((u) => u.map((x) => (x.key === key ? { ...x, progress: p } : x))),
+      });
+    } catch (e) {
+      useStore.getState().notify(`Mensagem de voz: ${e.message}`);
+    } finally {
+      setUploads((u) => u.filter((x) => x.key !== key));
     }
   }
 
@@ -512,7 +670,16 @@ export default function ChatView({ channel, variant = 'channel' }) {
       </span>
     </>
   );
-  const tools = <ComposerTools inputRef={inputRef} text={text} setText={setText} channelId={channel.id} onFiles={sendFiles} />;
+  const tools = (
+    <ComposerTools
+      inputRef={inputRef}
+      text={text}
+      setText={setText}
+      channelId={channel.id}
+      onFiles={sendFiles}
+      onSticker={(sticker) => setPending({ items: [{ kind: 'sticker', sticker }] })}
+    />
+  );
   const lastReceived = [...messages].reverse().find((m) => !m.notice && m.author.id !== me.id);
   const placeholder = dm ? `Conversar com ${channel.name}` : `Conversar em #${channel.name}`;
 
@@ -573,6 +740,8 @@ export default function ChatView({ channel, variant = 'channel' }) {
               canDelete={m.author.id === me.id || isAdmin}
               onReply={startReply}
               me={me}
+              receipt={receiptOf(m)}
+              color={messageColor(users[m.author.id] || m.author, guild)}
             />
           </Fragment>
         );
@@ -590,6 +759,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
       maxLength={MAX}
       onChange={onChange}
       onKeyDown={(e) => {
+        if (formatKey(e, inputRef.current, text, setText, MAX)) return;
         if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
           e.preventDefault();
           send();
@@ -612,7 +782,12 @@ export default function ChatView({ channel, variant = 'channel' }) {
       <span>
         Respondendo a <b>{plain(reply.author.displayName) || reply.author.username}</b>
       </span>
-      <span className="reply-bar-text">{parseFile(reply.content)?.name || plain(reply.content).slice(0, 120)}</span>
+      <span className="reply-bar-text">
+        {parseFile(reply.content)?.name ||
+          (parseVoice(reply.content) && 'Mensagem de voz') ||
+          (parseSticker(reply.content) && 'Sticker') ||
+          plain(reply.content).slice(0, 120)}
+      </span>
       <button className="gloss mini" onClick={() => setReply(null)} title="Cancelar resposta" aria-label="Cancelar resposta">
         <X size={13} />
       </button>
@@ -638,10 +813,72 @@ export default function ChatView({ channel, variant = 'channel' }) {
   };
   const dropHint = dragging && <div className="drop-overlay">Solte para enviar à conversa</div>;
   const sendBtn = (
-    <button className="go send-btn" onClick={send} disabled={!text.trim()}>
-      <Send size={16} />
-      Enviar
-    </button>
+    <>
+      <button
+        type="button"
+        className="gloss compose-ico"
+        title="Câmera: tirar foto ou gravar vídeo"
+        aria-label="Câmera"
+        onClick={() => setCamera(true)}
+      >
+        <Camera size={17} className="ico-blue" />
+      </button>
+      <button
+        type="button"
+        className="gloss compose-ico"
+        title="Gravar mensagem de voz"
+        aria-label="Gravar mensagem de voz"
+        onClick={() => setRecording(true)}
+      >
+        <Mic size={17} className="ico-green" />
+      </button>
+      <button className="go send-btn" onClick={send} disabled={!text.trim()}>
+        <Send size={16} />
+        Enviar
+      </button>
+    </>
+  );
+  // Gravando áudio: o gravador fica no lugar da caixa de texto.
+  const composeRow = recording ? (
+    <div className="compose-row">
+      <VoiceRecorder onSend={sendRecording} onCancel={() => setRecording(false)} />
+    </div>
+  ) : (
+    <div className="compose-row">
+      {aaBtn}
+      {textarea}
+      {sendBtn}
+    </div>
+  );
+  const target = dm ? channel.name : `#${channel.name}`;
+  const sheets = (
+    <>
+      {camera && (
+        <CameraCapture
+          onClose={() => setCamera(false)}
+          onDone={(file) => {
+            setCamera(false);
+            setPending({ items: [{ kind: 'file', file }], camera: true });
+          }}
+        />
+      )}
+      {pending && (
+        <SendPreview
+          items={pending.items}
+          target={target}
+          onSend={confirmSend}
+          onCancel={() => setPending(null)}
+          onRetake={
+            pending.camera
+              ? () => {
+                  setPending(null);
+                  setCamera(true);
+                }
+              : undefined
+          }
+        />
+      )}
+    </>
   );
 
   if (dm) {
@@ -663,11 +900,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
               </span>
             </div>
           )}
-          <div className="compose-row">
-            {aaBtn}
-            {textarea}
-            {sendBtn}
-          </div>
+          {composeRow}
           <div className={`panel-foot${typers.length ? ' typing-foot' : ''}`} aria-live="polite">
             {typers.length
               ? typingLine
@@ -676,6 +909,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
                 : 'Nenhuma mensagem recebida ainda.'}
           </div>
         </div>
+        {sheets}
       </section>
     );
   }
@@ -691,15 +925,12 @@ export default function ChatView({ channel, variant = 'channel' }) {
         <UploadList uploads={uploads} />
         {replyBar}
         {showTools && tools}
-        <div className="compose-row">
-          {aaBtn}
-          {textarea}
-          {sendBtn}
-        </div>
+        {composeRow}
         <div className="count">
           {text.length} / {MAX}
         </div>
       </div>
+      {sheets}
     </section>
   );
 }

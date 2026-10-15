@@ -7,7 +7,7 @@ use axum::http::{request::Parts, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -119,11 +119,19 @@ pub mod perm {
     pub const ADMIN: i64 = 1;
     pub const INVITE: i64 = 2;
     pub const CHANNELS: i64 = 4;
-    pub const ALL: i64 = ADMIN | INVITE | CHANNELS;
+    /// Voz: silenciar alguém para todos, desconectar e mover de canal.
+    pub const MUTE: i64 = 8;
+    pub const DISCONNECT: i64 = 16;
+    pub const MOVE: i64 = 32;
+    pub const ALL: i64 = ADMIN | INVITE | CHANNELS | MUTE | DISCONNECT | MOVE;
     /// Admin vale por todas.
     pub fn has(perms: i64, flag: i64) -> bool {
         perms & ADMIN != 0 || perms & flag != 0
     }
+    /// Permissões de um membro (`m`, de `guild_members`) no servidor `g`: o dono tem todas; quem está
+    /// na lista personalizada tem as dela; o resto, o padrão do servidor.
+    pub const EFFECTIVE_SQL: &str =
+        "CASE WHEN g.owner_id = m.user_id THEN 63 WHEN m.custom = 1 THEN m.perms ELSE g.default_perms END";
 }
 
 /// Permissões de um membro (o dono tem todas); `None` se não for membro.
@@ -131,9 +139,11 @@ pub async fn member_perms(app: &App, guild_id: &str, user_id: &str) -> ApiResult
     Ok(app
         .db
         .query_one(
-            "SELECT CASE WHEN g.owner_id = m.user_id THEN ?3 ELSE m.perms END FROM guild_members m \
-             JOIN guilds g ON g.id = m.guild_id WHERE m.guild_id = ?1 AND m.user_id = ?2",
-            libsql::params![guild_id, user_id, perm::ALL],
+            &format!(
+                "SELECT {} FROM guild_members m JOIN guilds g ON g.id = m.guild_id WHERE m.guild_id = ?1 AND m.user_id = ?2",
+                perm::EFFECTIVE_SQL
+            ),
+            libsql::params![guild_id, user_id],
             |r| r.get::<i64>(0),
         )
         .await?)
@@ -212,10 +222,11 @@ async fn guild_full(app: &App, guild_id: &str, viewer: &str) -> ApiResult<Option
             user_from_row,
         )
         .await?;
+    // Só quem está na lista personalizada (o resto usa `default_perms` do servidor).
     let perms = app
         .db
         .query_all(
-            "SELECT user_id, perms FROM guild_members WHERE guild_id = ?1 AND perms != 0",
+            "SELECT user_id, perms FROM guild_members WHERE guild_id = ?1 AND custom = 1",
             [guild_id],
             |r| Ok((r.get::<String>(0)?, r.get::<i64>(1)?)),
         )
@@ -269,10 +280,13 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/guilds/{id}/leave", post(leave_guild))
         .route("/api/guilds/{id}/invite", get(get_invite))
         .route("/api/guilds/{id}/members/{user_id}", patch(set_member_perms))
+        .route("/api/guilds/{id}/notify", get(get_notify).put(put_notify))
+        .route("/api/me/notify", get(all_notify))
         .route("/api/guilds/{id}/channels", post(create_channel))
         .route("/api/channels/{id}", delete(delete_channel).patch(update_channel))
         .route("/api/channels/{id}/access", axum::routing::put(set_channel_access))
         .route("/api/channels/{id}/messages", get(list_messages))
+        .route("/api/channels/{id}/reads", get(list_reads))
 }
 
 async fn get_config(State(app): AppState) -> Json<Value> {
@@ -285,6 +299,8 @@ async fn get_config(State(app): AppState) -> Json<Value> {
         "nodeId": app.lan.as_ref().map(|l| l.node_id.clone()),
         // Endereços na rede (sem localhost), usados para montar links de convite.
         "addresses": app.urls.iter().filter(|u| !u.contains("://localhost")).collect::<Vec<_>>(),
+        // Limites dos arquivos (o app avisa antes de mandar um arquivo grande).
+        "files": crate::files::limits(),
     }))
 }
 
@@ -332,7 +348,7 @@ async fn register(
         .and_then(|d| crate::models::fit_formatted(&d, crate::models::NAME_MAX, crate::models::NAME_RAW_MAX))
         .filter(|d| crate::models::visible_len(d) > 0)
         .unwrap_or_else(|| username.clone());
-    let user = User { id: new_id(), username, display_name, avatar_color: random_color(), avatar_url: None, bio: String::new(), name_color: None, bio_color: None, banner_color: None, lan: false };
+    let user = User { id: new_id(), username, display_name, avatar_color: random_color(), avatar_url: None, bio: String::new(), name_color: None, bio_color: None, banner_color: None, lan: false, message_color: None };
     let hash = auth::hash_password(body.password).await;
     app.db
         .execute(
@@ -376,15 +392,15 @@ async fn me(AuthUser(user, _): AuthUser) -> Json<User> {
 
 async fn list_guilds(State(app): AppState, AuthUser(user, _): AuthUser) -> ApiResult<Json<Vec<Guild>>> {
     let sql = format!(
-        "SELECT {GUILD_COLS}, CASE WHEN g.owner_id = m.user_id THEN {all} ELSE m.perms END FROM guilds g \
+        "SELECT {GUILD_COLS}, {eff} FROM guilds g \
          JOIN guild_members m ON m.guild_id = g.id WHERE m.user_id = ?1 ORDER BY m.joined_at",
-        all = perm::ALL
+        eff = perm::EFFECTIVE_SQL
     );
     let list = app
         .db
         .query_all(&sql, [user.id.as_str()], |r| {
             let mut g = guild_from_row(r)?;
-            if !perm::has(r.get::<i64>(6)?, perm::INVITE) {
+            if !perm::has(r.get::<i64>(GUILD_COLS_LEN)?, perm::INVITE) {
                 g.invite_code = String::new();
             }
             Ok(g)
@@ -467,6 +483,14 @@ async fn join_guild(
             .await?;
         app.hub.join_guild(&user.id, &guild_id);
         app.hub.to_guild(&guild_id, "member:joined", json!({ "guildId": guild_id, "user": user }));
+        app.audit(crate::audit::Entry::new(&guild_id, "member.join", &user.id));
+        if app.push.is_some() {
+            let (app, user, guild_id) = (app.clone(), user.clone(), guild_id.clone());
+            tokio::spawn(async move {
+                let body = format!("{} entrou no servidor", crate::models::plain_text(&user.display_name));
+                crate::hub::notify_guild(&app, &guild_id, &user.id, None, &body, &format!("member:{guild_id}"), "/", |_, n| n.members).await;
+            });
+        }
     }
     let perms = member_perms(&app, &guild_id, &user.id).await?.unwrap_or(0);
     let full = guild_full(&app, &guild_id, &user.id).await?.ok_or_else(|| not_found("Servidor não encontrado"))?;
@@ -508,7 +532,7 @@ async fn owned_guild(app: &App, id: &str, user_id: &str) -> ApiResult<()> {
 }
 
 /// Avisa todos do servidor que nome/ícone mudaram (sem o código de convite, que nem todos podem ver).
-async fn announce_guild(app: &App, id: &str) -> ApiResult<Guild> {
+pub async fn announce_guild(app: &App, id: &str) -> ApiResult<Guild> {
     let sql = format!("SELECT {GUILD_COLS} FROM guilds g WHERE g.id = ?1");
     let mut guild = app.db.query_one(&sql, [id], guild_from_row).await?.ok_or_else(|| not_found("Servidor não encontrado"))?;
     guild.invite_code = String::new();
@@ -529,10 +553,18 @@ async fn get_invite(State(app): AppState, AuthUser(user, _): AuthUser, Path(id):
 
 #[derive(Deserialize)]
 struct PermsBody {
+    #[serde(default)]
     perms: i64,
+    /// `false`: tira da lista personalizada (volta ao padrão do servidor).
+    #[serde(default = "yes")]
+    custom: bool,
+}
+fn yes() -> bool {
+    true
 }
 
-/// Dá ou tira permissões de um membro. Admins mexem em convite/canais; só o dono dá ou tira admin.
+/// Põe um membro na lista personalizada (com as permissões dadas) ou tira dela (volta ao padrão).
+/// Admins mexem em convite/canais; só o dono dá ou tira admin.
 async fn set_member_perms(
     State(app): AppState,
     AuthUser(user, _): AuthUser,
@@ -555,7 +587,7 @@ async fn set_member_perms(
         })
         .await?
         .ok_or_else(|| not_found("Membro não encontrado"))?;
-    let next = body.perms & perm::ALL;
+    let next = if body.custom { body.perms & perm::ALL } else { 0 };
     if (next ^ current) & perm::ADMIN != 0 && user.id != owner {
         return Err(forbidden("Só o dono pode dar ou tirar a permissão de administrador"));
     }
@@ -564,39 +596,203 @@ async fn set_member_perms(
     }
     app.db
         .execute(
-            "UPDATE guild_members SET perms = ?1 WHERE guild_id = ?2 AND user_id = ?3",
-            libsql::params![next, id.as_str(), target.as_str()],
+            "UPDATE guild_members SET perms = ?1, custom = ?2 WHERE guild_id = ?3 AND user_id = ?4",
+            libsql::params![next, body.custom as i64, id.as_str(), target.as_str()],
         )
         .await?;
-    app.hub.to_guild(&id, "member:perms", json!({ "guildId": id, "userId": target, "perms": next }));
+    app.hub.to_guild(&id, "member:perms", json!({ "guildId": id, "userId": target, "perms": next, "custom": body.custom }));
+    app.audit(crate::audit::Entry::new(&id, "settings.perms", &user.id).target(&target).detail(json!({ "perms": next, "custom": body.custom })));
     if (next ^ current) & perm::ADMIN != 0 {
         refresh_audiences(&app, Some(&id)).await?;
         app.hub.kick_unallowed_voice();
         app.hub.to_user(&target, "guild:refresh", json!({ "guildId": id }));
     }
-    Ok(Json(json!({ "perms": next })))
+    Ok(Json(json!({ "perms": next, "custom": body.custom })))
 }
 
-#[derive(Deserialize)]
-struct GuildPatch {
-    name: Option<String>,
+/// Validade mais longa que dá para escolher (1 ano).
+const MAX_TTL_MS: i64 = 365 * 24 * 3600 * 1000;
+
+/// Validade vinda do app: número de ms (1 min a 1 ano) ou `null` (não expira).
+pub fn parse_ttl(v: &Value) -> ApiResult<Option<i64>> {
+    match v {
+        Value::Null => Ok(None),
+        v => match v.as_i64() {
+            Some(ms) if (60_000..=MAX_TTL_MS).contains(&ms) => Ok(Some(ms)),
+            _ => Err(bad("Validade inválida")),
+        },
+    }
 }
 
+/// Muda o servidor (administradores): `name`, `defaultPerms` (permissões de quem não está na lista
+/// personalizada), `fileTtlMs` e `voiceTtlMs` (validade dos arquivos e áudios novos; `null` = nunca).
 async fn update_guild(
     State(app): AppState,
     AuthUser(user, _): AuthUser,
     Path(id): Path<String>,
-    Json(body): Json<GuildPatch>,
+    Json(body): Json<Value>,
 ) -> ApiResult<Json<Guild>> {
     owned_guild(&app, &id, &user.id).await?;
-    if let Some(name) = body.name {
+    let mut changes = serde_json::Map::new();
+    if let Some(name) = body.get("name").and_then(Value::as_str) {
+        changes.insert("name".into(), json!(name.trim()));
         let name: String = name.trim().chars().take(48).collect();
         if name.is_empty() {
             return Err(bad("O nome do servidor não pode ficar vazio"));
         }
         app.db.execute("UPDATE guilds SET name = ?1 WHERE id = ?2", [name.as_str(), id.as_str()]).await?;
     }
+    if let Some(v) = body.get("defaultPerms") {
+        // Administrador nunca é padrão: só quem está na lista.
+        let bits = v.as_i64().ok_or_else(|| bad("Permissões inválidas"))? & (perm::ALL & !perm::ADMIN);
+        app.db.execute("UPDATE guilds SET default_perms = ?1 WHERE id = ?2", libsql::params![bits, id.as_str()]).await?;
+        changes.insert("defaultPerms".into(), json!(bits));
+    }
+    for (key, col) in [("fileTtlMs", "file_ttl_ms"), ("voiceTtlMs", "voice_ttl_ms")] {
+        if let Some(v) = body.get(key) {
+            let ttl = parse_ttl(v)?;
+            app.db.execute(&format!("UPDATE guilds SET {col} = ?1 WHERE id = ?2"), libsql::params![ttl, id.as_str()]).await?;
+            changes.insert(key.into(), json!(ttl));
+        }
+    }
+    // Cor das mensagens no servidor: `msgColor` (#rrggbb ou null) e `msgColorMode`.
+    if let Some(v) = body.get("msgColor") {
+        let color = match v {
+            Value::Null => None,
+            v => Some(v.as_str().filter(|c| crate::models::valid_color(c)).ok_or_else(|| bad("Cor inválida (use #rrggbb)"))?.to_string()),
+        };
+        app.db.execute("UPDATE guilds SET msg_color = ?1 WHERE id = ?2", libsql::params![color.clone(), id.as_str()]).await?;
+        changes.insert("msgColor".into(), json!(color));
+    }
+    if let Some(mode) = body.get("msgColorMode").and_then(Value::as_str) {
+        if !["server", "user", "user_first"].contains(&mode) {
+            return Err(bad("Opção de cor inválida"));
+        }
+        app.db.execute("UPDATE guilds SET msg_color_mode = ?1 WHERE id = ?2", [mode, id.as_str()]).await?;
+        changes.insert("msgColorMode".into(), json!(mode));
+    }
+    if let Some(on) = body.get("moveSound").and_then(Value::as_bool) {
+        app.db.execute("UPDATE guilds SET move_sound = ?1 WHERE id = ?2", libsql::params![on as i64, id.as_str()]).await?;
+        changes.insert("moveSound".into(), json!(on));
+    }
+    if !changes.is_empty() {
+        app.audit(crate::audit::Entry::new(&id, "settings.guild", &user.id).detail(Value::Object(changes)));
+    }
     Ok(Json(announce_guild(&app, &id).await?))
+}
+
+// ---------- Notificações de cada pessoa em cada servidor ----------
+
+/// O que avisar num servidor. Vale para o app aberto e para as notificações push.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct NotifySettings {
+    /// Mensagens nos canais de texto: `all`, `mentions` (só quando escrevem @meu_usuario) ou `none`.
+    pub messages: String,
+    /// Canais de texto silenciados (quando `messages` é `all`).
+    pub muted_channels: Vec<String>,
+    /// Alguém entrou num canal de voz.
+    pub voice_join: bool,
+    /// Alguém começou a transmitir a tela.
+    pub streams: bool,
+    /// Alguém novo entrou no servidor.
+    pub members: bool,
+}
+
+impl Default for NotifySettings {
+    fn default() -> Self {
+        Self { messages: "mentions".into(), muted_channels: Vec::new(), voice_join: false, streams: false, members: false }
+    }
+}
+
+impl NotifySettings {
+    pub fn parse(raw: Option<&str>) -> Self {
+        raw.and_then(|r| serde_json::from_str(r).ok()).unwrap_or_default()
+    }
+    /// Avisa de uma mensagem neste canal? `mentioned`: escreveram @meu_usuario.
+    pub fn wants_message(&self, channel_id: &str, mentioned: bool) -> bool {
+        match self.messages.as_str() {
+            "all" => mentioned || !self.muted_channels.iter().any(|c| c == channel_id),
+            "mentions" => mentioned,
+            _ => false,
+        }
+    }
+}
+
+async fn get_notify(State(app): AppState, AuthUser(user, _): AuthUser, Path(id): Path<String>) -> ApiResult<Json<NotifySettings>> {
+    if !is_member(&app, &id, &user.id).await? {
+        return Err(not_found("Servidor não encontrado"));
+    }
+    let raw = app
+        .db
+        .query_one("SELECT settings FROM guild_notify WHERE user_id = ?1 AND guild_id = ?2", [user.id.as_str(), id.as_str()], |r| {
+            r.get::<String>(0)
+        })
+        .await?;
+    Ok(Json(NotifySettings::parse(raw.as_deref())))
+}
+
+async fn put_notify(
+    State(app): AppState,
+    AuthUser(user, _): AuthUser,
+    Path(id): Path<String>,
+    Json(mut body): Json<NotifySettings>,
+) -> ApiResult<Json<NotifySettings>> {
+    if !is_member(&app, &id, &user.id).await? {
+        return Err(not_found("Servidor não encontrado"));
+    }
+    if !["all", "mentions", "none"].contains(&body.messages.as_str()) {
+        return Err(bad("Opção de mensagens inválida"));
+    }
+    body.muted_channels.truncate(500);
+    let raw = serde_json::to_string(&body).unwrap_or_default();
+    app.db
+        .execute(
+            "INSERT INTO guild_notify (user_id, guild_id, settings) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(user_id, guild_id) DO UPDATE SET settings = excluded.settings",
+            [user.id.as_str(), id.as_str(), raw.as_str()],
+        )
+        .await?;
+    Ok(Json(body))
+}
+
+/// As minhas notificações em todos os servidores (id do servidor → configuração).
+async fn all_notify(State(app): AppState, AuthUser(user, _): AuthUser) -> ApiResult<Json<Value>> {
+    let rows = app
+        .db
+        .query_all(
+            "SELECT m.guild_id, n.settings FROM guild_members m \
+             LEFT JOIN guild_notify n ON n.guild_id = m.guild_id AND n.user_id = m.user_id WHERE m.user_id = ?1",
+            [user.id.as_str()],
+            |r| Ok((r.get::<String>(0)?, r.get::<Option<String>>(1)?)),
+        )
+        .await?;
+    let map: serde_json::Map<String, Value> =
+        rows.into_iter().map(|(g, raw)| (g, json!(NotifySettings::parse(raw.as_deref())))).collect();
+    Ok(Json(Value::Object(map)))
+}
+
+/// Membros que querem saber de algo num servidor (com o usuário e a configuração de cada um).
+pub async fn notify_audience(app: &App, guild_id: &str, except: &str) -> Vec<(String, String, NotifySettings)> {
+    app.db
+        .query_all(
+            "SELECT m.user_id, u.username, n.settings FROM guild_members m JOIN users u ON u.id = m.user_id \
+             LEFT JOIN guild_notify n ON n.guild_id = m.guild_id AND n.user_id = m.user_id \
+             WHERE m.guild_id = ?1 AND m.user_id != ?2",
+            [guild_id, except],
+            |r| Ok((r.get::<String>(0)?, r.get::<String>(1)?, NotifySettings::parse(r.get::<Option<String>>(2)?.as_deref()))),
+        )
+        .await
+        .unwrap_or_default()
+}
+
+/// `@usuario` citados no texto (em minúsculas).
+pub fn mentions(text: &str) -> std::collections::HashSet<String> {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '@'))
+        .filter_map(|w| w.strip_prefix('@'))
+        .map(|w| w.trim_end_matches('.').to_ascii_lowercase())
+        .filter(|w| !w.is_empty())
+        .collect()
 }
 
 async fn upload_guild_icon(
@@ -618,6 +814,7 @@ async fn upload_guild_icon(
         )
         .await?;
     app.db.execute("UPDATE guilds SET icon_at = ?1 WHERE id = ?2", libsql::params![crate::now_ms(), id.as_str()]).await?;
+    app.audit(crate::audit::Entry::new(&id, "settings.icon", &user.id).detail(json!({ "on": true })));
     Ok(Json(announce_guild(&app, &id).await?))
 }
 
@@ -625,6 +822,7 @@ async fn remove_guild_icon(State(app): AppState, AuthUser(user, _): AuthUser, Pa
     owned_guild(&app, &id, &user.id).await?;
     app.db.execute("DELETE FROM guild_icons WHERE guild_id = ?1", [id.as_str()]).await?;
     app.db.execute("UPDATE guilds SET icon_at = NULL WHERE id = ?1", [id.as_str()]).await?;
+    app.audit(crate::audit::Entry::new(&id, "settings.icon", &user.id).detail(json!({ "on": false })));
     Ok(Json(announce_guild(&app, &id).await?))
 }
 
@@ -663,6 +861,7 @@ async fn leave_guild(State(app): AppState, AuthUser(user, _): AuthUser, Path(id)
         .await?;
     app.hub.leave_guild(&user.id, &id);
     app.hub.to_guild(&id, "member:left", json!({ "guildId": id, "userId": user.id }));
+    app.audit(crate::audit::Entry::new(&id, "member.leave", &user.id));
     refresh_audiences(&app, Some(&id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -698,6 +897,7 @@ async fn create_channel(
         )
         .await?;
     app.hub.to_guild(&id, "channel:created", &channel);
+    app.audit(crate::audit::Entry::new(&id, "settings.channel_create", &user.id).channel(&channel.id).detail(json!({ "name": channel.name, "type": channel.kind })));
     Ok((StatusCode::CREATED, Json(channel)))
 }
 
@@ -713,6 +913,7 @@ async fn delete_channel(State(app): AppState, AuthUser(user, _): AuthUser, Path(
     tx.execute("DELETE FROM channel_access WHERE channel_id = ?1", [id.as_str()]).await?;
     tx.commit().await?;
     app.hub.to_guild(&ch.guild_id, "channel:deleted", json!({ "guildId": ch.guild_id, "channelId": ch.id }));
+    app.audit(crate::audit::Entry::new(&ch.guild_id, "settings.channel_delete", &user.id).channel(&ch.id).detail(json!({ "name": ch.name, "type": ch.kind })));
     refresh_audiences(&app, Some(&ch.guild_id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -739,6 +940,7 @@ async fn update_channel(
         return Err(bad("Nome obrigatório"));
     }
     app.db.execute("UPDATE channels SET name = ?1 WHERE id = ?2", [name.as_str(), id.as_str()]).await?;
+    app.audit(crate::audit::Entry::new(&ch.guild_id, "settings.channel_rename", &user.id).channel(&ch.id).detail(json!({ "from": ch.name, "to": name })));
     ch.name = name;
     app.hub.to_channel(&ch.guild_id, &ch.id, "channel:updated", &ch);
     Ok(Json(ch))
@@ -776,6 +978,11 @@ async fn set_channel_access(
         }
     }
     tx.commit().await?;
+    app.audit(
+        crate::audit::Entry::new(&ch.guild_id, "settings.channel_access", &user.id)
+            .channel(&ch.id)
+            .detail(json!({ "name": ch.name, "private": body.private, "people": body.users.len() })),
+    );
     refresh_audiences(&app, Some(&ch.guild_id)).await?;
     app.hub.kick_unallowed_voice();
     // Quem ganhou ou perdeu o canal recarrega a lista de canais.
@@ -811,4 +1018,21 @@ async fn list_messages(
     attach_reactions(&app.db, &mut list).await?;
     list.reverse();
     Ok(Json(list))
+}
+
+/// Até onde cada pessoa recebeu e leu a conversa/canal (para os "vistos").
+async fn list_reads(State(app): AppState, AuthUser(user, _): AuthUser, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    let place = match channel_with_access(&app, &id, &user.id).await {
+        Some(ch) => ch.id,
+        None => crate::social::dm_with_access(&app, &id, &user.id).await.ok_or_else(|| not_found("Canal não encontrado"))?.id,
+    };
+    let rows = app
+        .db
+        .query_all(
+            "SELECT user_id, delivered_at, read_at FROM read_marks WHERE channel_id = ?1",
+            [place.as_str()],
+            |r| Ok(json!({ "userId": r.get::<String>(0)?, "deliveredAt": r.get::<i64>(1)?, "readAt": r.get::<i64>(2)? })),
+        )
+        .await?;
+    Ok(Json(Value::Array(rows)))
 }

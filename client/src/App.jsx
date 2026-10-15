@@ -4,6 +4,7 @@ import { useStore, primaryConn, openFromUrl } from './store.js';
 import { isPanel } from './lib/env.js';
 import { useUpdate, runAutoUpdate } from './lib/update.js';
 import AuthPage from './components/AuthPage.jsx';
+import AdminPage from './components/Admin.jsx';
 import HostPage from './components/HostPage.jsx';
 import Shell from './components/Shell.jsx';
 import Modals from './components/Modals.jsx';
@@ -87,6 +88,7 @@ export default function App() {
       {phase === 'boot' && <div className="boot">Conectando…</div>}
       {phase === 'auth' && <AuthPage />}
       {phase === 'host' && (isPanel || loggedIn) && <HostPage />}
+      {phase === 'admin' && loggedIn && <AdminPage />}
       {/* O app continua montado na página Hostear para não derrubar uma chamada de voz em andamento. */}
       {loggedIn && !isPanel && (
         <div style={{ display: phase === 'app' ? 'contents' : 'none' }}>

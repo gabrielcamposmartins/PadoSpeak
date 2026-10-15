@@ -28,12 +28,13 @@ import { useServerPing } from './hooks.js';
 import { useLayout, isTouch } from '../lib/layout.js';
 import { MobileBack } from './Mobile.jsx';
 import VolumeSlider from './Volume.jsx';
+import { VoiceMemberMenu } from './VoiceMenus.jsx';
 
 /**
- * Celular e tablet não compartilham tela (o navegador não oferece). No computador o botão fica sempre:
- * sem HTTPS, ele explica por que não dá.
+ * O botão de compartilhar tela fica em todo lugar (inclusive no app instalado no celular). Onde o
+ * navegador não oferece captura de tela (ou sem HTTPS), ele explica por que não dá.
  */
-const canShareScreen = !isTouch;
+const canShareScreen = true;
 
 /** Celular: a faixa com a sua câmera fica num canto e dá para arrastar com o dedo. */
 function useDraggable(enabled) {
@@ -127,6 +128,8 @@ function useShortSide(ref) {
 
 function Tile({ tile, focused, onFocus }) {
   const [rendered, setRendered] = useState(null);
+  const [menu, setMenu] = useState(null);
+  const voice = useConn()((s) => s.voice);
   const ref = useRef(null);
   // Card grande (coluna da grade ou foco): foto 2,5× maior, sem passar de 55% do lado menor.
   const side = useShortSide(ref);
@@ -147,8 +150,23 @@ function Tile({ tile, focused, onFocus }) {
       ref={ref}
       className={`tile${tile.speaking ? ' speaking' : ''}${tile.live ? ' streaming' : ''}${isScreen ? ' screen' : ''}`}
       onClick={onFocus}
+      onContextMenu={(e) => {
+        if (!tile.user || !voice) return;
+        e.preventDefault();
+        setMenu({ x: e.clientX, y: e.clientY });
+      }}
       title={focused ? 'Clique para voltar à grade' : 'Clique para destacar'}
     >
+      {menu && (
+        <VoiceMemberMenu
+          x={menu.x}
+          y={menu.y}
+          p={{ peerId: tile.self ? voice.selfId : tile.peerId, user: tile.user, serverMuted: tile.serverMuted }}
+          channelId={voice.channelId}
+          guildId={voice.dm ? null : voice.guildId}
+          onClose={() => setMenu(null)}
+        />
+      )}
       {tile.stream ? (
         <StreamVideo
           stream={tile.stream}
@@ -210,7 +228,9 @@ function Tile({ tile, focused, onFocus }) {
         </div>
       )}
       <span className="tag">
-        {tile.muted && <MicOff size={13} />}
+        {tile.serverMuted && <MicOff size={13} className="server-muted" aria-label="silenciado para todos" />}
+        {tile.localMuted && <VolumeX size={13} aria-label="silenciado para você" />}
+        {tile.muted && !tile.serverMuted && <MicOff size={13} />}
         {isScreen && tile.hasAudio && tile.audioMuted && <VolumeX size={13} />}
         <span>
           {isScreen
@@ -366,6 +386,7 @@ export default function VoiceView({ channel }) {
       facing: voice.cameraFacing,
       speaking: voice.speaking.me,
       muted: muted || deafened,
+      serverMuted: voice.serverMuted,
       live: Boolean(voice.localScreen),
     });
     if (voice.localScreen)
@@ -393,6 +414,8 @@ export default function VoiceView({ channel }) {
         watching: p.watchingCamera,
         speaking: voice.speaking[p.peerId],
         muted: p.muted || p.deafened,
+        serverMuted: p.serverMuted,
+        localMuted: p.localMuted,
         volume: p.volume,
         live: Boolean(p.screenAnnounced),
       });

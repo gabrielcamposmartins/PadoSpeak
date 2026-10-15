@@ -8,13 +8,14 @@ use crate::api::{channel_with_access, guild_ids_of};
 use crate::host::App;
 use crate::models::{group_reactions, plain_text, reply_preview, user_from_row, Message, Reaction, ReplyRef, User, USER_COLS};
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
-use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::extract::{ConnectInfo, Query, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio_util::sync::CancellationToken;
@@ -29,6 +30,57 @@ struct Conn {
     friends: HashSet<String>,
     /// O app está na tela (aba visível / app em primeiro plano). Sem nenhuma assim, vai push.
     visible: bool,
+    /// Rede de onde a conexão vem (IP público, ou o prefixo /64 no IPv6): quem divide a mesma
+    /// rede pode se encontrar ("Na sua rede").
+    net: Net,
+    /// Aceitou aparecer para quem está na mesma rede (`lan:hello`), e como o aparelho se descreve.
+    nearby: bool,
+    device: String,
+    /// Sessão do app (painel do administrador): conta quanto tempo ficou aberto.
+    session: Option<i64>,
+}
+
+/// De onde a conexão vem, para achar aparelhos na mesma rede.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Net {
+    pub key: String,
+    /// A mesma chave já garante a mesma rede local (IPv6 /64 ou endereço privado). No IPv4 público,
+    /// várias casas podem dividir o IP (CGNAT): o app confirma com uma conexão direta.
+    pub direct: bool,
+}
+
+impl Net {
+    pub fn from_ip(ip: IpAddr) -> Self {
+        match ip.to_canonical() {
+            IpAddr::V4(v4) if v4.is_private() || v4.is_loopback() || v4.is_link_local() => {
+                let [a, b, c, _] = v4.octets();
+                Net { key: format!("4l:{a}.{b}.{c}"), direct: true }
+            }
+            IpAddr::V4(v4) => Net { key: format!("4:{v4}"), direct: false },
+            IpAddr::V6(v6) => {
+                let seg = v6.segments();
+                Net { key: format!("6:{:x}:{:x}:{:x}:{:x}", seg[0], seg[1], seg[2], seg[3]), direct: true }
+            }
+        }
+    }
+}
+
+/// Endereço de quem conectou: atrás de um proxy na própria máquina/rede (nginx), vale o que ele
+/// informa em `X-Real-IP`/`X-Forwarded-For`.
+pub fn client_ip(addr: SocketAddr, headers: &HeaderMap) -> IpAddr {
+    let direct = addr.ip().to_canonical();
+    let proxied = match direct {
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private(),
+        IpAddr::V6(v6) => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00,
+    };
+    if !proxied {
+        return direct;
+    }
+    let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
+    header("x-real-ip")
+        .or_else(|| header("x-forwarded-for").and_then(|v| v.split(',').next().map(|s| s.trim().to_string())))
+        .and_then(|v| v.parse::<IpAddr>().ok())
+        .unwrap_or(direct)
 }
 
 #[derive(Clone, Serialize)]
@@ -47,6 +99,11 @@ pub struct Participant {
     screen: bool,
     camera_stream_id: Option<String>,
     screen_stream_id: Option<String>,
+    /// Silenciado para todos por um moderador (os outros não ouvem a voz dele).
+    server_muted: bool,
+    /// Quando entrou no canal (para o registro saber quanto tempo ficou).
+    #[serde(skip)]
+    joined_at: i64,
 }
 
 #[derive(Default)]
@@ -66,11 +123,17 @@ struct HubState {
     lan_mode: bool,
     /// Canais privados → (servidor, quem pode ver). Canal fora daqui é público.
     restricted: HashMap<String, (String, HashSet<String>)>,
+    /// Perfil de quem está conectado (para a lista de aparelhos na mesma rede).
+    users: HashMap<String, User>,
+    /// Registro dos servidores (entradas e saídas da voz).
+    audit_tx: Option<crate::audit::Sender>,
 }
 
 pub const STATUSES: [&str; 4] = ["online", "away", "busy", "invisible"];
 /// Máximo de "chamar atenção" por usuário a cada minuto.
 const NUDGES_PER_MINUTE: usize = 3;
+/// Aparelhos mostrados por rede (uma rede com muito mais que isso é um IP dividido por muita gente).
+const NEARBY_MAX: usize = 30;
 
 pub struct Hub {
     state: Mutex<HubState>,
@@ -96,6 +159,11 @@ impl Hub {
         let (tx, rx) = unbounded_channel();
         let state = HubState { voice_empty_tx: Some(tx), ..Default::default() };
         (Arc::new(Self { state: Mutex::new(state), shutdown: CancellationToken::new() }), rx)
+    }
+
+    /// Liga o registro dos servidores (entradas e saídas da voz, com o tempo).
+    pub fn set_audit(&self, tx: crate::audit::Sender) {
+        self.state.lock().unwrap().audit_tx = Some(tx);
     }
 
     /// Alguém está no canal de voz agora?
@@ -379,6 +447,28 @@ impl Hub {
         }
     }
 
+    // ---------- Aparelhos na mesma rede ----------
+
+    /// Conta a cada aparelho visível da rede `net` quem mais está nela (menos ele mesmo).
+    fn send_nearby(s: &HubState, net: &str) {
+        if net.is_empty() {
+            return;
+        }
+        let group: Vec<(&ConnId, &Conn)> =
+            s.conns.iter().filter(|(_, c)| c.nearby && c.net.key == net).take(NEARBY_MAX).collect();
+        for (id, c) in &group {
+            let list: Vec<Value> = group
+                .iter()
+                .filter(|(other, oc)| other != id && oc.user_id != c.user_id)
+                .filter_map(|(other, oc)| {
+                    let user = s.users.get(&oc.user_id)?;
+                    Some(json!({ "peerId": other, "user": user, "device": oc.device, "direct": oc.net.direct && c.net.direct }))
+                })
+                .collect();
+            let _ = c.tx.send(event("lan:nearby", json!({ "peers": list })));
+        }
+    }
+
     // ---------- Voz ----------
 
     fn leave_voice_locked(s: &mut HubState, conn_id: &str) {
@@ -387,6 +477,14 @@ impl Hub {
         let Some(pos) = list.iter().position(|p| p.peer_id == conn_id) else { return };
         let me = list.remove(pos);
         let remaining: Vec<ConnId> = list.iter().map(|p| p.peer_id.clone()).collect();
+        if me.dm_users.is_none() {
+            if let Some(tx) = &s.audit_tx {
+                let entry = crate::audit::Entry::new(&me.guild_id, "voice.leave", &me.user.id)
+                    .channel(&channel_id)
+                    .detail(json!({ "durationMs": crate::now_ms() - me.joined_at }));
+                let _ = tx.send(entry);
+            }
+        }
         if list.is_empty() {
             s.voice.remove(&channel_id);
             if let Some(tx) = &s.voice_empty_tx {
@@ -471,7 +569,7 @@ impl Hub {
 
     // ---------- Ciclo de vida da conexão ----------
 
-    async fn run(self: Arc<Self>, app: Arc<App>, socket: WebSocket, user: User) {
+    async fn run(self: Arc<Self>, app: Arc<App>, socket: WebSocket, user: User, net: Net) {
         let (mut sink, mut stream) = socket.split();
         let (tx, mut rx) = unbounded_channel::<String>();
         let conn_id: ConnId = uuid::Uuid::new_v4().simple().to_string();
@@ -523,9 +621,20 @@ impl Hub {
                     "voice": voice, "music": music, "serverTime": crate::now_ms()
                 }),
             ));
+            s.users.insert(user.id.clone(), user.clone());
             s.conns.insert(
                 conn_id.clone(),
-                Conn { tx: tx.clone(), user_id: user.id.clone(), guilds: guilds.clone(), friends: friends.clone(), visible: true },
+                Conn {
+                    tx: tx.clone(),
+                    user_id: user.id.clone(),
+                    guilds: guilds.clone(),
+                    friends: friends.clone(),
+                    visible: true,
+                    net,
+                    nearby: false,
+                    device: String::new(),
+                    session: None,
+                },
             );
             if first && Self::visible(&s, &user.id) {
                 Self::presence(&s, &user.id, true, guilds.iter().cloned(), &friends);
@@ -548,8 +657,17 @@ impl Hub {
             }
         });
 
+        // A cada minuto, a sessão do app (painel do administrador) continua contando.
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+        tick.tick().await;
         loop {
             tokio::select! {
+                _ = tick.tick() => {
+                    let session = self.state.lock().unwrap().conns.get(&conn_id).and_then(|c| c.session);
+                    if let Some(id) = session {
+                        crate::admin::touch_session(&app, id).await;
+                    }
+                }
                 msg = stream.next() => match msg {
                     Some(Ok(WsMessage::Text(text))) => {
                         if let Ok(req) = serde_json::from_str::<Request>(&text) {
@@ -570,6 +688,10 @@ impl Hub {
             }
         }
 
+        let session = self.state.lock().unwrap().conns.get(&conn_id).and_then(|c| c.session);
+        if let Some(id) = session {
+            crate::admin::touch_session(&app, id).await;
+        }
         {
             let mut s = self.state.lock().unwrap();
             Self::leave_voice_locked(&mut s, &conn_id);
@@ -586,8 +708,12 @@ impl Hub {
                     s.user_conns.remove(&user.id);
                     s.statuses.remove(&user.id);
                     if was_visible {
-                        Self::presence(&s, &user.id, false, c.guilds, &c.friends);
+                        Self::presence(&s, &user.id, false, c.guilds.clone(), &c.friends);
                     }
+                    s.users.remove(&user.id);
+                }
+                if c.nearby {
+                    Self::send_nearby(&s, &c.net.key);
                 }
             }
         }
@@ -685,6 +811,7 @@ impl Hub {
                     reply_to: None,
                     reply: None,
                     reactions: Vec::new(),
+                    expires_at: None,
                 };
                 let reply_to = str_field("replyTo");
                 let ch = channel_with_access(app, &channel_id, &user.id).await;
@@ -719,6 +846,7 @@ impl Hub {
                         app.logs.error(format!("message:send (DM): {e}"));
                         return err("Erro ao salvar mensagem");
                     }
+                    msg.expires_at = crate::files::link_message(app, &msg.content, &dm.id, &user.id, &msg.id).await;
                     let _ = app
                         .db
                         .execute("UPDATE dm_channels SET last_message_at = ?1 WHERE id = ?2", libsql::params![msg.created_at, dm.id.as_str()])
@@ -741,7 +869,25 @@ impl Hub {
                     app.logs.error(format!("message:send: {e}"));
                     return err("Erro ao salvar mensagem");
                 }
+                msg.expires_at = crate::files::link_message(app, &msg.content, &ch.id, &user.id, &msg.id).await;
                 self.to_channel(&ch.guild_id, &ch.id, "message:new", &msg);
+                app.audit(
+                    crate::audit::Entry::new(&ch.guild_id, "message.send", &user.id)
+                        .channel(&ch.id)
+                        .detail(json!({ "id": msg.id, "text": reply_preview(&msg.content) })),
+                );
+                // Push para quem pediu aviso das mensagens deste canal (ou foi citado com @).
+                if app.push.is_some() {
+                    let (app, ch, author, content) = (app.clone(), ch.clone(), user.clone(), msg.content.clone());
+                    tokio::spawn(async move {
+                        let said = crate::api::mentions(&plain_text(&content));
+                        let body = format!("{}: {}", plain_text(&author.display_name), reply_preview(&content));
+                        notify_guild(&app, &ch.guild_id, &author.id, Some(&ch.id), &body, &format!("ch:{}", ch.id), &format!("/?channel={}", ch.id), |name, n| {
+                            n.wants_message(&ch.id, said.contains(&name.to_ascii_lowercase()))
+                        })
+                        .await;
+                    });
+                }
                 Some(json!({ "message": msg }))
             }
 
@@ -781,6 +927,11 @@ impl Hub {
                         return err("Erro ao editar");
                     }
                     self.to_channel(&guild_id, &channel_id, "message:updated", json!({ "id": message_id, "channelId": channel_id, "content": content, "editedAt": edited_at }));
+                    app.audit(
+                        crate::audit::Entry::new(&guild_id, "message.edit", &user.id)
+                            .channel(&channel_id)
+                            .detail(json!({ "id": message_id, "before": reply_preview(&app.db.cipher.reveal(&sealed)), "text": reply_preview(&content) })),
+                    );
                 } else {
                     let admin = owner == user.id
                         || crate::api::member_perms(app, &guild_id, &user.id)
@@ -797,6 +948,13 @@ impl Hub {
                     let _ = app.db.execute("DELETE FROM message_reactions WHERE message_id = ?1", [message_id.as_str()]).await;
                     crate::files::delete_message_file(app, &sealed, &channel_id).await;
                     self.to_channel(&guild_id, &channel_id, "message:deleted", json!({ "id": message_id, "channelId": channel_id }));
+                    let mut entry = crate::audit::Entry::new(&guild_id, "message.delete", &user.id)
+                        .channel(&channel_id)
+                        .detail(json!({ "id": message_id, "text": reply_preview(&app.db.cipher.reveal(&sealed)) }));
+                    if !is_author {
+                        entry = entry.target(&author);
+                    }
+                    app.audit(entry);
                 }
                 Some(json!({ "ok": true }))
             }
@@ -977,7 +1135,12 @@ impl Hub {
                     screen: false,
                     camera_stream_id: None,
                     screen_stream_id: None,
+                    server_muted: false,
+                    joined_at: crate::now_ms(),
                 };
+                if dm_users.is_none() {
+                    app.audit(crate::audit::Entry::new(&guild_id, "voice.join", &user.id).channel(&ch_id));
+                }
                 let list = s.voice.entry(ch_id.clone()).or_default();
                 let peers = list.clone();
                 list.push(me.clone());
@@ -997,6 +1160,14 @@ impl Hub {
                     }
                 }
                 drop(s);
+                if dm_users.is_none() && app.push.is_some() {
+                    let (app, user, ch_id, guild_id) = (app.clone(), user.clone(), ch_id.clone(), guild_id.clone());
+                    tokio::spawn(async move {
+                        let name = channel_name(&app, &ch_id).await;
+                        let body = format!("{} entrou em 🔊 {name}", plain_text(&user.display_name));
+                        notify_guild(&app, &guild_id, &user.id, Some(&ch_id), &body, &format!("voice:{ch_id}"), "/", |_, n| n.voice_join).await;
+                    });
+                }
                 if let Some(other) = ringing {
                     app.push_to(
                         &other,
@@ -1024,6 +1195,7 @@ impl Hub {
                     return None;
                 };
                 let flag = |k: &str, cur: bool| d.get(k).and_then(Value::as_bool).unwrap_or(cur);
+                let started_stream = !me.screen && flag("screen", me.screen) && me.dm_users.is_none();
                 me.muted = flag("muted", me.muted);
                 me.deafened = flag("deafened", me.deafened);
                 me.video = flag("video", me.video);
@@ -1039,6 +1211,15 @@ impl Hub {
                     Self::send_to(&s, &p.peer_id, msg.clone());
                 }
                 Self::broadcast_voice_channel(&s, &me, &channel_id);
+                drop(s);
+                if started_stream && app.push.is_some() {
+                    let (app, me) = (app.clone(), me.clone());
+                    tokio::spawn(async move {
+                        let name = channel_name(&app, &channel_id).await;
+                        let body = format!("{} começou a transmitir em 🔊 {name}", plain_text(&me.user.display_name));
+                        notify_guild(&app, &me.guild_id, &me.user.id, Some(&channel_id), &body, &format!("stream:{channel_id}"), "/", |_, n| n.streams).await;
+                    });
+                }
                 None
             }
 
@@ -1085,6 +1266,210 @@ impl Hub {
                 None
             }
 
+            // Até onde recebi (`delivered`) e li (`read`) uma conversa/canal: os "vistos".
+            "read:mark" => {
+                let channel_id = str_field("channelId");
+                let now = crate::now_ms();
+                let read = d.get("read").and_then(Value::as_i64).unwrap_or(0).clamp(0, now);
+                let delivered = d.get("delivered").and_then(Value::as_i64).unwrap_or(0).clamp(0, now).max(read);
+                if delivered == 0 {
+                    return None;
+                }
+                let audience = match channel_with_access(app, &channel_id, &user.id).await {
+                    Some(ch) if ch.kind == "text" => Err((ch.guild_id, ch.id)),
+                    _ => match crate::social::dm_with_access(app, &channel_id, &user.id).await {
+                        Some(dm) => Ok((dm.id.clone(), dm.users())),
+                        None => return None,
+                    },
+                };
+                let place = match &audience {
+                    Err((_, ch)) => ch.clone(),
+                    Ok((dm, _)) => dm.clone(),
+                };
+                let _ = app
+                    .db
+                    .execute(
+                        "INSERT INTO read_marks (channel_id, user_id, delivered_at, read_at) VALUES (?1, ?2, ?3, ?4) \
+                         ON CONFLICT(channel_id, user_id) DO UPDATE SET delivered_at = MAX(delivered_at, excluded.delivered_at), \
+                         read_at = MAX(read_at, excluded.read_at)",
+                        libsql::params![place.as_str(), user.id.as_str(), delivered, read],
+                    )
+                    .await;
+                let Some((d_at, r_at)) = app
+                    .db
+                    .query_one("SELECT delivered_at, read_at FROM read_marks WHERE channel_id = ?1 AND user_id = ?2", [place.as_str(), user.id.as_str()], |r| {
+                        Ok((r.get::<i64>(0)?, r.get::<i64>(1)?))
+                    })
+                    .await
+                    .ok()
+                    .flatten()
+                else {
+                    return None;
+                };
+                let payload = json!({ "channelId": place, "userId": user.id, "deliveredAt": d_at, "readAt": r_at });
+                match audience {
+                    Err((guild, ch)) => self.to_channel(&guild, &ch, "read:mark", payload),
+                    Ok((_, users)) => self.to_users(&users, "read:mark", payload),
+                }
+                None
+            }
+
+            // Moderação de voz: silenciar para todos, desconectar ou mover alguém de canal.
+            "voice:moderate" => {
+                let target_peer = str_field("peerId");
+                let action = str_field("action");
+                let found = {
+                    let s = self.state.lock().unwrap();
+                    s.conn_voice.get(&target_peer).cloned().and_then(|ch| {
+                        let p = s.voice.get(&ch)?.iter().find(|p| p.peer_id == target_peer)?.clone();
+                        Some((ch, p))
+                    })
+                };
+                let Some((channel_id, target)) = found else { return err("A pessoa não está mais no canal de voz") };
+                if target.dm_users.is_some() {
+                    return err("Isso só vale nos canais de voz dos servidores");
+                }
+                let guild_id = target.guild_id.clone();
+                use crate::api::perm;
+                let flag = match action.as_str() {
+                    "mute" | "unmute" => perm::MUTE,
+                    "disconnect" => perm::DISCONNECT,
+                    "move" => perm::MOVE,
+                    _ => return err("Ação inválida"),
+                };
+                let mine = crate::api::member_perms(app, &guild_id, &user.id).await.ok().flatten().unwrap_or(0);
+                if !perm::has(mine, flag) {
+                    return err("Você não tem permissão para isso");
+                }
+                let (owner, move_sound) = app
+                    .db
+                    .query_one("SELECT owner_id, move_sound FROM guilds WHERE id = ?1", [guild_id.as_str()], |r| {
+                        Ok((r.get::<String>(0)?, r.get::<i64>(1)? != 0))
+                    })
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                if target.user.id == owner && user.id != owner {
+                    return err("Ninguém pode fazer isso com o dono do servidor");
+                }
+                let by = json!({ "id": user.id, "displayName": user.display_name, "username": user.username });
+                match action.as_str() {
+                    "mute" | "unmute" => {
+                        let on = action == "mute";
+                        let mut s = self.state.lock().unwrap();
+                        let Some(p) = s.voice.get_mut(&channel_id).and_then(|l| l.iter_mut().find(|p| p.peer_id == target_peer)) else {
+                            return err("A pessoa não está mais no canal de voz");
+                        };
+                        p.server_muted = on;
+                        let p = p.clone();
+                        let msg = event("voice:peer-state", &p);
+                        for other in s.voice.get(&channel_id).into_iter().flatten().filter(|o| o.peer_id != target_peer) {
+                            Self::send_to(&s, &other.peer_id, msg.clone());
+                        }
+                        Self::send_to(&s, &target_peer, event("voice:server-mute", json!({ "muted": on, "by": by })));
+                        Self::broadcast_voice_channel(&s, &p, &channel_id);
+                        drop(s);
+                        app.audit(
+                            crate::audit::Entry::new(&guild_id, if on { "voice.mute" } else { "voice.unmute" }, &user.id)
+                                .target(&target.user.id)
+                                .channel(&channel_id),
+                        );
+                    }
+                    "disconnect" => {
+                        let mut s = self.state.lock().unwrap();
+                        Self::send_to(&s, &target_peer, event("voice:moderated", json!({ "action": "disconnect", "by": by })));
+                        Self::kick_from_voice(&mut s, &target_peer);
+                        drop(s);
+                        app.audit(crate::audit::Entry::new(&guild_id, "voice.disconnect", &user.id).target(&target.user.id).channel(&channel_id));
+                    }
+                    _ => {
+                        let to = str_field("channelId");
+                        let dest = channel_with_access(app, &to, &target.user.id).await.filter(|c| c.kind == "voice" && c.guild_id == guild_id);
+                        let Some(dest) = dest else { return err("Essa pessoa não pode entrar nesse canal de voz") };
+                        if dest.id == channel_id {
+                            return Some(json!({ "ok": true }));
+                        }
+                        let mut s = self.state.lock().unwrap();
+                        Self::leave_voice_locked(&mut s, &target_peer);
+                        Self::send_to(&s, &target_peer, event("voice:move", json!({ "channelId": dest.id, "by": by })));
+                        let moved = event(
+                            "voice:moved",
+                            json!({ "guildId": guild_id, "user": target.user, "from": channel_id, "to": dest.id, "by": by, "sound": move_sound }),
+                        );
+                        Self::send_to_guild(&s, &guild_id, &moved, None);
+                        drop(s);
+                        app.audit(
+                            crate::audit::Entry::new(&guild_id, "voice.move", &user.id)
+                                .target(&target.user.id)
+                                .channel(&dest.id)
+                                .detail(json!({ "from": channel_id })),
+                        );
+                    }
+                }
+                Some(json!({ "ok": true }))
+            }
+
+            // Aparecer (ou não) para quem está na mesma rede; `device`: celular, computador…
+            "lan:hello" => {
+                let visible = d.get("visible").and_then(Value::as_bool).unwrap_or(false);
+                let device: String = str_field("device").chars().take(24).collect();
+                let mut s = self.state.lock().unwrap();
+                let net = match s.conns.get_mut(conn_id) {
+                    Some(c) => {
+                        let changed = c.nearby != visible || c.device != device;
+                        c.nearby = visible;
+                        c.device = device;
+                        changed.then(|| c.net.key.clone())
+                    }
+                    None => None,
+                };
+                match net {
+                    Some(net) => Self::send_nearby(&s, &net),
+                    // Nada mudou: só reenvia a lista para quem pediu.
+                    None => {
+                        if let Some(net) = s.conns.get(conn_id).filter(|c| c.nearby).map(|c| c.net.key.clone()) {
+                            Self::send_nearby(&s, &net);
+                        }
+                    }
+                }
+                Some(json!({ "ok": true }))
+            }
+
+            // Sinalização da conexão de teste entre dois aparelhos da mesma rede (confirma que estão
+            // mesmo na mesma rede local, e não só atrás do mesmo IP público).
+            "lan:signal" => {
+                let to = str_field("to");
+                let s = self.state.lock().unwrap();
+                let same = match (s.conns.get(conn_id), s.conns.get(&to)) {
+                    (Some(a), Some(b)) => a.nearby && b.nearby && !a.net.key.is_empty() && a.net.key == b.net.key,
+                    _ => false,
+                };
+                if same {
+                    let data = d.get("data").cloned().unwrap_or(Value::Null);
+                    Self::send_to(&s, &to, event("lan:signal", json!({ "from": conn_id, "data": data })));
+                }
+                None
+            }
+
+            // O app abriu: plataforma (app, pwa, navegador), aparelho e sistema, para o painel do administrador.
+            "app:hello" => {
+                let clean = |k: &str| -> String { str_field(k).chars().filter(|c| c.is_alphanumeric() || " .-".contains(*c)).take(24).collect() };
+                let platform = match str_field("platform").as_str() {
+                    p @ ("app" | "pwa" | "navegador") => p.to_string(),
+                    _ => "navegador".into(),
+                };
+                let started = self.state.lock().unwrap().conns.get(conn_id).is_some_and(|c| c.session.is_some());
+                if !started {
+                    if let Some(id) = crate::admin::start_session(app, &user.id, &platform, &clean("device"), &clean("os")).await {
+                        if let Some(c) = self.state.lock().unwrap().conns.get_mut(conn_id) {
+                            c.session = Some(id);
+                        }
+                    }
+                }
+                None
+            }
+
             // O app foi para segundo plano (ou voltou): decide se as notificações vão por push.
             "app:visibility" => {
                 let visible = d.get("visible").and_then(Value::as_bool).unwrap_or(true);
@@ -1112,12 +1497,57 @@ pub struct WsQuery {
     token: String,
 }
 
-pub async fn ws_handler(ws: WebSocketUpgrade, Query(q): Query<WsQuery>, State(app): State<Arc<App>>) -> Response {
+pub async fn ws_handler(
+    ws: WebSocketUpgrade,
+    Query(q): Query<WsQuery>,
+    State(app): State<Arc<App>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
     let Some(user) = crate::auth::user_from_token(&app.db, &q.token).await else {
         return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
     };
     let hub = app.hub.clone();
-    ws.max_message_size(256 * 1024).on_upgrade(move |socket| hub.run(app, socket, user))
+    let net = Net::from_ip(client_ip(addr, &headers));
+    ws.max_message_size(256 * 1024).on_upgrade(move |socket| hub.run(app, socket, user, net))
+}
+
+/// Nome de um canal (para os avisos).
+async fn channel_name(app: &App, channel_id: &str) -> String {
+    app.db
+        .query_one("SELECT name FROM channels WHERE id = ?1", [channel_id], |r| r.get::<String>(0))
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+}
+
+/// Push para os membros do servidor que querem saber disto (`wants(usuário, configuração)`), que
+/// veem o canal (se houver) e não estão com o app aberto na tela.
+#[allow(clippy::too_many_arguments)]
+pub async fn notify_guild(
+    app: &Arc<App>,
+    guild_id: &str,
+    except: &str,
+    channel_id: Option<&str>,
+    body: &str,
+    tag: &str,
+    url: &str,
+    wants: impl Fn(&str, &crate::api::NotifySettings) -> bool,
+) {
+    let title = app
+        .db
+        .query_one("SELECT name FROM guilds WHERE id = ?1", [guild_id], |r| r.get::<String>(0))
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "PadoSpeak".into());
+    for (user_id, username, settings) in crate::api::notify_audience(app, guild_id, except).await {
+        if channel_id.is_some_and(|c| !app.hub.user_can_see(c, &user_id)) || !wants(&username, &settings) {
+            continue;
+        }
+        app.push_to(&user_id, crate::push::Note { title: title.clone(), body: body.to_string(), tag: tag.to_string(), url: url.to_string() });
+    }
 }
 
 #[cfg(test)]
@@ -1134,6 +1564,25 @@ mod tests {
         assert!((1..=60).contains(&espera), "espera de {espera} s");
         // O limite é por pessoa.
         assert!(hub.take_nudge("bia").is_ok());
+    }
+
+    #[test]
+    fn rede_de_quem_conecta() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        // Atrás do nginx (127.0.0.1 / rede do Docker): vale o X-Real-IP.
+        let mut h = HeaderMap::new();
+        h.insert("x-real-ip", "200.10.20.30".parse().unwrap());
+        assert_eq!(client_ip("172.18.0.5:5000".parse().unwrap(), &h), ip("200.10.20.30"));
+        // Conexão direta da internet: o cabeçalho não vale (qualquer um poderia mandar).
+        assert_eq!(client_ip("8.8.8.8:5000".parse().unwrap(), &h), ip("8.8.8.8"));
+        let casa = Net::from_ip(ip("200.10.20.30"));
+        assert!(!casa.direct, "IPv4 público precisa de confirmação");
+        let a = Net::from_ip(ip("2804:14d:1:2:aaaa::1"));
+        let b = Net::from_ip(ip("2804:14d:1:2:bbbb::9"));
+        assert_eq!(a, b);
+        assert!(a.direct);
+        assert_ne!(a, Net::from_ip(ip("2804:14d:1:3::1")));
+        assert_eq!(Net::from_ip(ip("192.168.0.10")), Net::from_ip(ip("192.168.0.77")));
     }
 
     #[test]

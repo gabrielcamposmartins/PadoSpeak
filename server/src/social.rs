@@ -67,6 +67,8 @@ struct ProfileBody {
     name_color: Option<String>,
     bio_color: Option<String>,
     banner_color: Option<String>,
+    /// Cor padrão das mensagens.
+    message_color: Option<String>,
 }
 
 async fn update_profile(State(app): AppState, AuthUser(me, _): AuthUser, Json(body): Json<ProfileBody>) -> ApiResult<Json<Value>> {
@@ -83,7 +85,12 @@ async fn update_profile(State(app): AppState, AuthUser(me, _): AuthUser, Json(bo
             .ok_or_else(|| bad("O \"Sobre mim\" pode ter até 190 caracteres (e formatação de até 600)"))?;
         app.db.execute("UPDATE users SET bio = ?1 WHERE id = ?2", [bio.as_str(), me.id.as_str()]).await?;
     }
-    for (col, value) in [("name_color", body.name_color), ("bio_color", body.bio_color), ("banner_color", body.banner_color)] {
+    for (col, value) in [
+        ("name_color", body.name_color),
+        ("bio_color", body.bio_color),
+        ("banner_color", body.banner_color),
+        ("message_color", body.message_color),
+    ] {
         let Some(value) = value else { continue };
         let value = value.trim().to_string();
         if !value.is_empty() && !valid_color(&value) {
@@ -370,6 +377,17 @@ pub async fn dm_with_access(app: &App, dm_id: &str, user_id: &str) -> Option<DmC
         .flatten()
 }
 
+/// Conversa direta pelo id, sem conferir quem pede (avisos do próprio servidor).
+pub async fn dm_by_id(app: &App, dm_id: &str) -> Option<DmChannel> {
+    app.db
+        .query_one("SELECT id, user_a, user_b FROM dm_channels WHERE id = ?1", [dm_id], |r| {
+            Ok(DmChannel { id: r.get(0)?, user_a: r.get(1)?, user_b: r.get(2)? })
+        })
+        .await
+        .ok()
+        .flatten()
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DmEntry {
@@ -521,6 +539,8 @@ pub async fn accepts_nudge(app: &App, to: &str, from: &str) -> bool {
 struct Settings {
     allow_nudges: bool,
     nudge_blocks: Vec<User>,
+    /// Imagem de fundo da tela de início.
+    background_url: Option<String>,
 }
 
 async fn load_settings(app: &App, user_id: &str) -> ApiResult<Settings> {
@@ -534,7 +554,7 @@ async fn load_settings(app: &App, user_id: &str) -> ApiResult<Settings> {
          WHERE b.user_id = ?1 ORDER BY u.display_name COLLATE NOCASE"
     );
     let blocks = app.db.query_all(&sql, [user_id], user_from_row).await?;
-    Ok(Settings { allow_nudges: allow != 0, nudge_blocks: blocks })
+    Ok(Settings { allow_nudges: allow != 0, nudge_blocks: blocks, background_url: crate::backgrounds::my_background_url(app, user_id).await })
 }
 
 async fn get_settings(State(app): AppState, AuthUser(me, _): AuthUser) -> ApiResult<Json<Settings>> {

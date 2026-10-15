@@ -22,6 +22,9 @@ pub struct User {
     /// Perfil de outro PC da rede local, conectado como convidado (só nos nós locais).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub lan: bool,
+    /// Cor padrão das mensagens da pessoa (`#rrggbb`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_color: Option<String>,
 }
 
 pub fn avatar_url(user_id: &str, avatar_at: Option<i64>) -> Option<String> {
@@ -29,10 +32,10 @@ pub fn avatar_url(user_id: &str, avatar_at: Option<i64>) -> Option<String> {
 }
 
 /// Espera as colunas: id, username, display_name, avatar_color, avatar_at, bio, name_color, bio_color,
-/// origin, banner_color (a partir de `start`).
-pub const USER_COLS: &str =
-    "u.id, u.username, u.display_name, u.avatar_color, u.avatar_at, u.bio, u.name_color, u.bio_color, u.origin, u.banner_color";
-pub const USER_COLS_LEN: i32 = 10;
+/// origin, banner_color, message_color (a partir de `start`).
+pub const USER_COLS: &str = "u.id, u.username, u.display_name, u.avatar_color, u.avatar_at, u.bio, u.name_color, u.bio_color, \
+     u.origin, u.banner_color, u.message_color";
+pub const USER_COLS_LEN: i32 = 11;
 pub fn user_at(r: &Row, start: i32) -> DbResult<User> {
     let id: String = r.get(start)?;
     let avatar_at: Option<i64> = r.get(start + 4)?;
@@ -47,6 +50,7 @@ pub fn user_at(r: &Row, start: i32) -> DbResult<User> {
         bio_color: r.get(start + 7)?,
         lan: r.get::<Option<String>>(start + 8)?.as_deref() == Some("lan"),
         banner_color: r.get(start + 9)?,
+        message_color: r.get(start + 10)?,
     })
 }
 /// `#rrggbb` válido (cores do nome e da mensagem pessoal).
@@ -125,9 +129,24 @@ pub struct Guild {
     pub invite_code: String,
     /// Imagem do ícone (com versão para o cache), ou `None` para as iniciais coloridas.
     pub icon_url: Option<String>,
+    /// Permissões de quem não está na lista personalizada (bits de `crate::api::perm`, sem admin).
+    pub default_perms: i64,
+    /// Validade dos arquivos e das mensagens de voz novas (ms); `None` = não expiram.
+    pub file_ttl_ms: Option<i64>,
+    pub voice_ttl_ms: Option<i64>,
+    /// Imagem de fundo do servidor (com versão para o cache).
+    pub background_url: Option<String>,
+    /// Cor das mensagens no servidor e como ela se combina com a de cada pessoa (`server`, `user`, `user_first`).
+    pub msg_color: Option<String>,
+    pub msg_color_mode: String,
+    /// Som para todos quando alguém é movido de canal de voz.
+    pub move_sound: bool,
 }
 
-pub const GUILD_COLS: &str = "g.id, g.name, g.icon_color, g.owner_id, g.invite_code, g.icon_at";
+pub const GUILD_COLS: &str = "g.id, g.name, g.icon_color, g.owner_id, g.invite_code, g.icon_at, g.default_perms, g.file_ttl_ms, \
+     g.voice_ttl_ms, g.background_at, g.msg_color, g.msg_color_mode, g.move_sound";
+/// Quantas colunas `GUILD_COLS` ocupa (as seguintes começam neste índice).
+pub const GUILD_COLS_LEN: i32 = 13;
 pub fn guild_from_row(r: &Row) -> DbResult<Guild> {
     let id: String = r.get(0)?;
     let icon_at: Option<i64> = r.get(5)?;
@@ -138,6 +157,13 @@ pub fn guild_from_row(r: &Row) -> DbResult<Guild> {
         icon_color: r.get(2)?,
         owner_id: r.get(3)?,
         invite_code: r.get(4)?,
+        default_perms: r.get(6)?,
+        file_ttl_ms: r.get(7)?,
+        voice_ttl_ms: r.get(8)?,
+        background_url: r.get::<Option<i64>>(9)?.map(|v| format!("/api/backgrounds/{}?v={v}", r.get::<String>(0).unwrap_or_default())),
+        msg_color: r.get(10)?,
+        msg_color_mode: r.get(11)?,
+        move_sound: r.get::<i64>(12)? != 0,
     })
 }
 
@@ -184,6 +210,9 @@ pub struct Message {
     /// Reações (emoticon e quem reagiu), na ordem em que apareceram.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub reactions: Vec<Reaction>,
+    /// Mensagem com arquivo/áudio que expira: some (com o arquivo) neste horário.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -206,7 +235,7 @@ pub fn group_reactions(rows: Vec<(String, String, String)>) -> std::collections:
     out
 }
 
-/// Preenche as reações de uma lista de mensagens (uma consulta só).
+/// Preenche as reações (e a validade dos arquivos) de uma lista de mensagens.
 pub async fn attach_reactions(db: &crate::db::Db, list: &mut [Message]) -> crate::db::DbResult<()> {
     if list.is_empty() {
         return Ok(());
@@ -225,7 +254,34 @@ pub async fn attach_reactions(db: &crate::db::Db, list: &mut [Message]) -> crate
     for m in list.iter_mut() {
         m.reactions = grouped.remove(&m.id).unwrap_or_default();
     }
+    // Arquivos e áudios com validade.
+    let ids: Vec<String> = list.iter().filter(|m| is_file_message(&m.content)).map(|m| m.id.clone()).collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let marks = (1..=ids.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(", ");
+    let sql = format!("SELECT message_id, expires_at FROM files WHERE expires_at IS NOT NULL AND message_id IN ({marks})");
+    let expiring: std::collections::HashMap<String, i64> = db
+        .query_all(&sql, libsql::params_from_iter(ids), |r| Ok((r.get::<String>(0)?, r.get::<i64>(1)?)))
+        .await?
+        .into_iter()
+        .collect();
+    for m in list.iter_mut() {
+        m.expires_at = expiring.get(&m.id).copied();
+    }
     Ok(())
+}
+
+/// Mensagem que é um arquivo (`[arquivo:…]`) ou uma mensagem de voz (`[voz:…]`).
+pub fn is_file_message(content: &str) -> bool {
+    content.starts_with("[arquivo:") || content.starts_with("[voz:")
+}
+
+/// Id do arquivo de uma mensagem `[arquivo:<id>:…]` ou `[voz:<id>:…]`.
+pub fn message_file_id(content: &str) -> Option<&str> {
+    let rest = content.strip_prefix("[arquivo:").or_else(|| content.strip_prefix("[voz:"))?;
+    let id = rest.split([':', ']']).next()?;
+    (id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit())).then_some(id)
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -240,16 +296,29 @@ pub struct ReplyRef {
 
 /// Como a mensagem aparece citada numa resposta.
 pub fn reply_preview(content: &str) -> String {
-    if content.starts_with("[sticker:") {
-        return "Sticker".into();
+    // Sticker, arquivo e foto/vídeo podem vir com um texto junto (na linha de baixo).
+    let (tag, caption) = match content.split_once("]
+") {
+        Some((tag, caption)) if content.starts_with('[') => (tag, plain_text(caption)),
+        _ => (content.trim_end_matches(']'), String::new()),
+    };
+    let with = |label: String| if caption.trim().is_empty() { label } else { format!("{label} — {}", short(&caption, 80)) };
+    if tag.starts_with("[sticker:") {
+        return with("Sticker".into());
     }
-    if let Some(rest) = content.strip_prefix("[arquivo:") {
-        let name = rest.trim_end_matches(']').splitn(4, ':').nth(3).unwrap_or("arquivo");
-        return format!("📎 {name}");
+    if let Some(rest) = tag.strip_prefix("[arquivo:") {
+        let name = rest.splitn(4, ':').nth(3).unwrap_or("arquivo");
+        return with(format!("📎 {name}"));
     }
-    let text = plain_text(content);
-    let mut out: String = text.chars().take(120).collect();
-    if text.chars().count() > 120 {
+    if tag.starts_with("[voz:") {
+        return "🎤 Mensagem de voz".into();
+    }
+    short(&plain_text(content), 120)
+}
+
+fn short(text: &str, max: usize) -> String {
+    let mut out: String = text.chars().take(max).collect();
+    if text.chars().count() > max {
         out.push('…');
     }
     out
@@ -257,13 +326,13 @@ pub fn reply_preview(content: &str) -> String {
 
 pub const MESSAGE_SELECT: &str = "SELECT m.id, m.channel_id, m.content, m.created_at, m.edited_at, \
      u.id, u.username, u.display_name, u.avatar_color, u.avatar_at, u.bio, u.name_color, u.bio_color, u.origin, u.banner_color, \
-     m.reply_to, r.id, r.content, ru.id, ru.display_name \
+     u.message_color, m.reply_to, r.id, r.content, ru.id, ru.display_name \
      FROM messages m JOIN users u ON u.id = m.author_id \
      LEFT JOIN messages r ON r.id = m.reply_to LEFT JOIN users ru ON ru.id = r.author_id";
 /// Mesmo formato para mensagens diretas (`channel_id` = id da conversa).
 pub const DM_MESSAGE_SELECT: &str = "SELECT m.id, m.dm_id, m.content, m.created_at, m.edited_at, \
      u.id, u.username, u.display_name, u.avatar_color, u.avatar_at, u.bio, u.name_color, u.bio_color, u.origin, u.banner_color, \
-     m.reply_to, r.id, r.content, ru.id, ru.display_name \
+     u.message_color, m.reply_to, r.id, r.content, ru.id, ru.display_name \
      FROM dm_messages m JOIN users u ON u.id = m.author_id \
      LEFT JOIN dm_messages r ON r.id = m.reply_to LEFT JOIN users ru ON ru.id = r.author_id";
 pub fn message_from_row(r: &Row) -> DbResult<Message> {
@@ -286,6 +355,7 @@ pub fn message_from_row(r: &Row) -> DbResult<Message> {
             None => None,
         },
         reactions: Vec::new(),
+        expires_at: None,
     })
 }
 
@@ -315,6 +385,21 @@ pub struct GuildFull {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn citacao_de_arquivo_com_texto() {
+        let id = "0123456789abcdef0123456789abcdef";
+        assert_eq!(reply_preview(&format!("[arquivo:{id}:10:image/png:foto.png]")), "📎 foto.png");
+        assert_eq!(reply_preview(&format!("[arquivo:{id}:10:image/png:foto.png]
+olha **isso**")), "📎 foto.png — olha isso");
+        assert_eq!(reply_preview("[sticker:emote::)]
+oi"), "Sticker — oi");
+        assert_eq!(reply_preview(&format!("[voz:{id}:3000:audio/webm]")), "🎤 Mensagem de voz");
+        assert_eq!(message_file_id(&format!("[voz:{id}:3000:audio/webm]")), Some(id));
+        assert_eq!(message_file_id(&format!("[arquivo:{id}:1:a:b]
+texto")), Some(id));
+        assert_eq!(message_file_id("[arquivo:nada]"), None);
+    }
 
     #[test]
     fn visible_len_ignores_format_tags() {

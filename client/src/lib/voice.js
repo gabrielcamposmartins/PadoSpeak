@@ -50,6 +50,8 @@ export class VoiceClient {
       error: null,
     };
     this.speaking = {};
+    // Pessoas que eu silenciei só para mim (ids de usuário).
+    this.localMutes = new Set();
     this.latency = [];
     this.peerNames = new Map();
     this.peerSlots = new Map();
@@ -88,6 +90,13 @@ export class VoiceClient {
     });
     on('voice:signal', ({ from, data }) => this.handleSignal(from, data));
     on('voice:kicked', () => this.cleanup('Você foi removido do canal de voz'));
+    // Um moderador me silenciou (ou tirou o silêncio) para todos.
+    on('voice:server-mute', ({ muted, by }) => {
+      this.state.serverMuted = muted;
+      this.applyMicEnabled();
+      this.onNotice?.(muted ? `${by.displayName} silenciou você para todos neste canal.` : `${by.displayName} tirou o seu silêncio.`);
+      this.changed();
+    });
     on('disconnected', () => this.cleanup('Conexão com o servidor perdida'));
 
     const res = await this.rt.request('voice:join', { channelId, muted, deafened });
@@ -383,9 +392,11 @@ export class VoiceClient {
 
   /** Aplica ensurdecer, volume da voz e volume/mudo da transmissão aos <audio> do par. */
   applyAudio(peer) {
+    // A voz some se eu silenciei a pessoa para mim ou se um moderador a silenciou para todos.
+    const voiceOff = this.localMutes.has(peer.info.user?.id) || Boolean(peer.info.serverMuted);
     for (const [streamId, el] of peer.audioEls) {
       const isScreen = streamId === peer.info.screenStreamId;
-      el.muted = this.state.deafened || (isScreen && peer.streamMuted);
+      el.muted = this.state.deafened || (isScreen ? peer.streamMuted : voiceOff);
       el.volume = isScreen ? peer.streamVolume : peer.volume;
     }
   }
@@ -396,6 +407,14 @@ export class VoiceClient {
     el.pause();
     el.srcObject = null;
     peer.audioEls.delete(streamId);
+  }
+
+  /** Quem eu silenciei só para mim (ids de usuário). */
+  setLocalMutes(ids) {
+    this.localMutes = new Set(ids);
+    this.peers.forEach((p) => this.applyAudio(p));
+    // Antes de entrar no canal não há o que avisar (um aviso sem canal encerraria a chamada).
+    if (this.state.channelId) this.changed();
   }
 
   setPeerVolume(peerId, volume) {
@@ -466,7 +485,7 @@ export class VoiceClient {
   // ---------- Controles locais ----------
 
   applyMicEnabled() {
-    const enabled = !this.state.muted && !this.state.deafened;
+    const enabled = !this.state.muted && !this.state.deafened && !this.state.serverMuted;
     for (const s of [this.rawMic, this.mic]) s?.getAudioTracks().forEach((t) => (t.enabled = enabled));
   }
 
@@ -606,17 +625,30 @@ export class VoiceClient {
   async setScreen(on, presetKey = this.state.screenPreset) {
     if (on && !this.screen) {
       const preset = SCREEN_PRESETS[presetKey];
-      this.screen = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          width: { ideal: preset.width, max: preset.width },
-          height: { ideal: preset.height, max: preset.height },
-          frameRate: { ideal: preset.fps, max: preset.fps },
-        },
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-        systemAudio: 'include',
-        selfBrowserSurface: 'exclude',
-        surfaceSwitching: 'include',
-      });
+      const videoOpts = {
+        width: { ideal: preset.width, max: preset.width },
+        height: { ideal: preset.height, max: preset.height },
+        frameRate: { ideal: preset.fps, max: preset.fps },
+      };
+      const touch = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+      try {
+        this.screen = await navigator.mediaDevices.getDisplayMedia(
+          touch
+            ? // Celular/tablet (app instalado ou navegador): só o essencial, que todos aceitam.
+              { video: videoOpts, audio: true }
+            : {
+                video: videoOpts,
+                audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+                systemAudio: 'include',
+                selfBrowserSurface: 'exclude',
+                surfaceSwitching: 'include',
+              },
+        );
+      } catch (e) {
+        // Alguns aparelhos não capturam o áudio junto: tenta só a imagem.
+        if (!['TypeError', 'NotSupportedError', 'OverconstrainedError'].includes(e.name)) throw e;
+        this.screen = await navigator.mediaDevices.getDisplayMedia({ video: videoOpts });
+      }
       this.state.screenAudioMuted = false;
       const [video] = this.screen.getVideoTracks();
       video.contentHint = preset.hint;
@@ -817,6 +849,7 @@ export class VoiceClient {
       selfId: this.selfId,
       muted: s.muted,
       deafened: s.deafened,
+      serverMuted: Boolean(s.serverMuted),
       micAvailable: s.micAvailable,
       noiseSuppression: Boolean(this.nsPipe),
       error: s.error,
@@ -839,6 +872,8 @@ export class VoiceClient {
         user: p.info.user,
         muted: Boolean(p.info.muted),
         deafened: Boolean(p.info.deafened),
+        serverMuted: Boolean(p.info.serverMuted),
+        localMuted: this.localMutes.has(p.info.user?.id),
         volume: p.volume,
         streamVolume: p.streamVolume,
         streamMuted: p.streamMuted,

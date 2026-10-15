@@ -2,7 +2,10 @@
 //!
 //! Usado pelo binário `padospeak-server` (VM/headless/Docker) e embutido no app desktop
 //! (Tauri), onde o botão "Hostear" chama [`HostManager::start`].
+pub mod admin;
 pub mod api;
+pub mod audit;
+pub mod backgrounds;
 pub mod assets;
 pub mod auth;
 pub mod config;

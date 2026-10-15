@@ -13,6 +13,10 @@ import {
   Wifi,
   Server,
   LogIn,
+  CircleAlert,
+  Smartphone,
+  Monitor,
+  Globe,
 } from 'lucide-react';
 import { useStore, connRegistry, openLanDm, changeServer } from '../store.js';
 import { isDesktop } from '../lib/env.js';
@@ -24,6 +28,7 @@ import { useLayout } from '../lib/layout.js';
 import { MobileBack } from './Mobile.jsx';
 import { plain } from '../lib/text.js';
 import { ConnProvider, useConn, useConnKey } from './conn.jsx';
+import { LATEST_NOTES } from './Modals.jsx';
 
 /** Referência estável: seletores do zustand não podem devolver um array novo a cada leitura. */
 const NOBODY = [];
@@ -217,6 +222,83 @@ function useLanPeers() {
   return hasLocal ? peers : null;
 }
 
+/**
+ * Aparelhos na mesma rede vistos pelo servidor de comunidade (navegador e app no celular, que não
+ * enxergam a rede local): só os confirmados por conexão direta, sem quem já aparece na LAN do PC
+ * nem os amigos.
+ */
+function useNearby() {
+  const nearby = useStore((s) => s.nearby);
+  const ok = useStore((s) => s.nearbyOk);
+  const friends = useStore((s) => s.friends);
+  const lanPeers = useLanPeers();
+  const seen = new Set();
+  return nearby.filter((p) => {
+    if (!(p.direct || ok[p.peerId]) || seen.has(p.user.id)) return false;
+    // Amigos (e pedidos de amizade) já aparecem nas listas deles.
+    if (friends[p.user.id]) return false;
+    if (lanPeers?.some((l) => l.username === p.user.username)) return false;
+    seen.add(p.user.id);
+    return true;
+  });
+}
+
+const DEVICE_ICON = { Celular: Smartphone, Tablet: Smartphone, 'PadoSpeak no PC': Monitor };
+
+function NearbyRow({ peer }) {
+  const user = useUser(peer.user);
+  const Icon = DEVICE_ICON[peer.device] || Globe;
+  return (
+    <button className="row lan-open nearby-row" onClick={() => useStore.getState().openDm(user.id)} title={`Conversar com ${plain(user.displayName)}`}>
+      <Avatar user={user} size={30} />
+      <span className="member-text">
+        <span className="member-name">
+          <UserName user={user} className="nm" />
+        </span>
+        <span className="pm nearby-device">
+          <Icon size={12} /> {peer.device || 'Aparelho'}
+        </span>
+      </span>
+    </button>
+  );
+}
+
+/** Quem está na mesma rede (pelo servidor de comunidade). */
+function NearbySection() {
+  const peers = useNearby();
+  const online = useStore((s) => Boolean(s.me));
+  const visible = useStore((s) => s.prefs.nearbyVisible !== false);
+  if (!online || !visible || peers.length === 0) return null;
+  return (
+    <>
+      <div className="grp">
+        <Wifi size={12} />
+        <span className="grp-title">Na sua rede ({peers.length})</span>
+      </div>
+      {peers.map((p) => (
+        <NearbyRow key={p.peerId} peer={p} />
+      ))}
+    </>
+  );
+}
+
+/** Botão "!" das notas de atualização (com um ponto enquanto a versão nova não foi vista). */
+export function NotesButton({ className = '' }) {
+  const seen = useStore((s) => s.prefs.notesSeen);
+  const fresh = LATEST_NOTES && seen !== LATEST_NOTES;
+  return (
+    <button
+      type="button"
+      className={`gloss notes-btn ${className}${fresh ? ' fresh' : ''}`}
+      title="Notas de atualização"
+      aria-label={fresh ? 'Notas de atualização (novidades)' : 'Notas de atualização'}
+      onClick={() => useStore.getState().openModal({ type: 'changelog' })}
+    >
+      <CircleAlert size={18} />
+    </button>
+  );
+}
+
 /** Perfis encontrados na rede local (só no app desktop). */
 function LanSection() {
   const peers = useLanPeers();
@@ -280,6 +362,7 @@ export function HomeSidebar() {
           </ConnProvider>
         ))}
         <LanSection />
+        <NearbySection />
         <div className="grp">
           <ChevronDown size={12} />
           <span className="grp-title">
@@ -376,6 +459,35 @@ function FriendRow({ entry }) {
             <X size={16} />
           </button>
         )}
+      </div>
+    </div>
+  );
+}
+
+/** Cartão de quem está na mesma rede (pelo servidor de comunidade). */
+function NearbyCard({ peer }) {
+  const user = useUser(peer.user);
+  const { openDm, callUser } = useStore.getState();
+  const Icon = DEVICE_ICON[peer.device] || Globe;
+  return (
+    <div className="friend-row" onClick={() => openProfile(user.id)}>
+      <Avatar user={user} size={36} />
+      <div className="friend-text">
+        <b>
+          <UserName user={user} />
+        </b>
+        <span>
+          @{user.username} · <Icon size={12} /> {peer.device || 'Aparelho'} na sua rede
+        </span>
+        {user.bio && <Bio user={user} />}
+      </div>
+      <div className="friend-actions" onClick={(e) => e.stopPropagation()}>
+        <button className="gloss mini" title="Mensagem" aria-label={`Mensagem para ${plain(user.displayName)}`} onClick={() => openDm(user.id)}>
+          <MessageSquare size={16} />
+        </button>
+        <button className="gloss mini" title="Ligar" aria-label={`Ligar para ${plain(user.displayName)}`} onClick={() => callUser(user.id)}>
+          <Phone size={16} />
+        </button>
       </div>
     </div>
   );
@@ -521,6 +633,8 @@ export function FriendsPage() {
     tab
   ];
   const showLan = lanPeers && (tab === 'online' || tab === 'all');
+  const nearby = useNearby();
+  const showNearby = useStore((s) => s.prefs.nearbyVisible !== false) && nearby.length > 0 && (tab === 'online' || tab === 'all');
 
   return (
     <main className="main glass">
@@ -530,6 +644,7 @@ export function FriendsPage() {
           <b>{title}</b>
           <span>Amigos, conversas e chamadas 1 a 1</span>
         </div>
+        <NotesButton />
       </header>
       <div className="friends-body">
         <ServerNotice />
@@ -551,6 +666,17 @@ export function FriendsPage() {
             </div>
             {lanPeers.map((p) => (
               <LanCard key={p.id} peer={p} />
+            ))}
+            {!showNearby && <div className="section-title">Amigos</div>}
+          </>
+        )}
+        {showNearby && (
+          <>
+            <div className="section-title">
+              <Wifi size={14} /> Na sua rede
+            </div>
+            {nearby.map((p) => (
+              <NearbyCard key={p.peerId} peer={p} />
             ))}
             <div className="section-title">Amigos</div>
           </>

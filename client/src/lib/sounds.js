@@ -238,6 +238,19 @@ export const SOUND_DEFS = {
       ],
       { type: 'triangle', volume: 0.14 },
     ),
+  // Alguém foi movido de canal de voz: um "vush" de três notas descendo e subindo.
+  moved: (ac, out, t) =>
+    notes(
+      ac,
+      out,
+      t,
+      [
+        [880, 0.06],
+        [659.25, 0.06],
+        [1174.66, 0.16],
+      ],
+      { type: 'triangle', volume: 0.13 },
+    ),
   // Mensagem nova: duas notas curtas subindo, de marimba, com um eco leve (no estilo do Messenger).
   message: (ac, out, t) => {
     mallet(ac, out, t, 1046.5, 0.22, { volume: 0.11 });

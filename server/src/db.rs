@@ -275,6 +275,97 @@ ALTER TABLE files ADD COLUMN encoding TEXT;
 ALTER TABLE files ADD COLUMN stored INTEGER;
 "#,
     ),
+    (
+        11,
+        r#"
+-- Permissões: quem não está na lista personalizada (custom = 0) tem as do padrão do servidor
+-- (bits como em `perms`; 2 = convidar). Quem já tinha alguma permissão entra na lista.
+ALTER TABLE guilds ADD COLUMN default_perms INTEGER NOT NULL DEFAULT 2;
+ALTER TABLE guild_members ADD COLUMN custom INTEGER NOT NULL DEFAULT 0;
+UPDATE guild_members SET custom = 1 WHERE perms != 0;
+-- Validade (ms) dos arquivos e das mensagens de voz novas de cada servidor (NULL = não expiram).
+ALTER TABLE guilds ADD COLUMN file_ttl_ms INTEGER;
+ALTER TABLE guilds ADD COLUMN voice_ttl_ms INTEGER;
+-- Arquivos: quando expiram, se passaram do tamanho normal (big), se são mensagem de voz e a
+-- mensagem que os mostra (some junto quando o arquivo expira).
+ALTER TABLE files ADD COLUMN expires_at INTEGER;
+ALTER TABLE files ADD COLUMN big INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE files ADD COLUMN kind TEXT;
+ALTER TABLE files ADD COLUMN message_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_files_expires ON files(expires_at);
+CREATE INDEX IF NOT EXISTS idx_files_message ON files(message_id);
+-- Notificações de cada pessoa em cada servidor (JSON).
+CREATE TABLE IF NOT EXISTS guild_notify (
+  user_id TEXT NOT NULL,
+  guild_id TEXT NOT NULL,
+  settings TEXT NOT NULL,
+  PRIMARY KEY (user_id, guild_id)
+);
+"#,
+    ),
+    (
+        12,
+        r#"
+-- Cor padrão das mensagens de cada pessoa e, no servidor, a cor do servidor e como ela se combina
+-- com a das pessoas (server = a do servidor vale; user = a de cada um; user_first = a de cada um,
+-- ou a do servidor para quem não escolheu).
+ALTER TABLE users ADD COLUMN message_color TEXT;
+ALTER TABLE guilds ADD COLUMN msg_color TEXT;
+ALTER TABLE guilds ADD COLUMN msg_color_mode TEXT NOT NULL DEFAULT 'user';
+-- Som para todos quando alguém é movido de canal de voz.
+ALTER TABLE guilds ADD COLUMN move_sound INTEGER NOT NULL DEFAULT 1;
+-- Imagens de fundo (da tela de início de cada pessoa e de cada servidor).
+ALTER TABLE users ADD COLUMN background_at INTEGER;
+ALTER TABLE guilds ADD COLUMN background_at INTEGER;
+CREATE TABLE IF NOT EXISTS backgrounds (
+  owner_id TEXT PRIMARY KEY,
+  mime TEXT NOT NULL,
+  data BLOB NOT NULL
+);
+-- Até onde cada pessoa recebeu e leu cada conversa/canal (os "vistos").
+CREATE TABLE IF NOT EXISTS read_marks (
+  channel_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  delivered_at INTEGER NOT NULL DEFAULT 0,
+  read_at INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (channel_id, user_id)
+);
+-- Registro do servidor: entradas e saídas, voz (com o tempo), mensagens e mudanças (detalhe cifrado).
+CREATE TABLE IF NOT EXISTS guild_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  guild_id TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  actor_id TEXT,
+  target_id TEXT,
+  channel_id TEXT,
+  detail TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_guild_log ON guild_log(guild_id, at);
+"#,
+    ),
+    (
+        13,
+        r#"
+-- Painel do administrador: cada vez que o app fica aberto (plataforma, aparelho, de quando a quando).
+CREATE TABLE IF NOT EXISTS app_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  platform TEXT NOT NULL,
+  device TEXT,
+  os TEXT,
+  started_at INTEGER NOT NULL,
+  ended_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_app_sessions_user ON app_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_app_sessions_end ON app_sessions(ended_at);
+-- Quem o dono do app liberou para ver o painel.
+CREATE TABLE IF NOT EXISTS app_admins (
+  user_id TEXT PRIMARY KEY,
+  granted_at INTEGER NOT NULL
+);
+"#,
+    ),
 ];
 
 impl Db {

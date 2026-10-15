@@ -1867,6 +1867,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs4"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8640e34b88f7652208ce9e88b1a37a2ae95227d84abec377ccd3c5cfeb141ed4"
+dependencies = [
+ "rustix 1.1.5",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "futures"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4038,7 +4048,7 @@ dependencies = [
 
 [[package]]
 name = "padospeak-desktop"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "padospeak-server",
  "serde_json",
@@ -4054,13 +4064,14 @@ dependencies = [
 
 [[package]]
 name = "padospeak-server"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "axum 0.8.9",
  "axum-server",
  "base64 0.22.1",
  "bcrypt",
  "flate2",
+ "fs4",
  "futures-util",
  "libsql",
  "local-ip-address",

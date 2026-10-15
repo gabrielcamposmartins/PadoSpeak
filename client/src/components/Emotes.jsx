@@ -1,7 +1,8 @@
 // Emoticons no estilo Aero (desenhos próprios em SVG, com brilho de vidro) e o texto formatado das mensagens.
 import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { plain, visibleLength } from '../lib/text.js';
+import { plain, visibleLength, paletteOf } from '../lib/text.js';
+import { useStore } from '../store.js';
 
 export { plain, visibleLength };
 
@@ -463,6 +464,13 @@ export function Floating({ anchorRef, onClose, align = 'left', place = 'auto', c
     const a = anchorRef.current?.getBoundingClientRect();
     const box = ref.current?.getBoundingClientRect();
     if (!a || !box) return;
+    if (place === 'right') {
+      // Ao lado do que foi clicado (como o perfil rápido de quem está na voz).
+      const fits = a.right + 10 + box.width < window.innerWidth - 8;
+      const left = fits ? a.right + 10 : Math.max(8, a.left - box.width - 10);
+      setPos({ left, top: Math.max(8, Math.min(a.top - 10, window.innerHeight - box.height - 8)) });
+      return;
+    }
     const above = place === 'above' || (place === 'auto' && a.top > box.height + 12);
     const left =
       align === 'right' ? Math.max(8, a.right - box.width) : Math.min(a.left, window.innerWidth - box.width - 8);
@@ -518,25 +526,51 @@ export function EmojiPicker({ anchorRef, onPick, onClose, align }) {
   );
 }
 
+/** Nome de uma cor da paleta padrão (ou nada, se for outra). */
+const colorName = (hex) => TEXT_COLORS.find(([h]) => h.toLowerCase() === hex.toLowerCase())?.[1];
+
 /** Paleta de cores do texto. */
 export function ColorPicker({ anchorRef, onPick, onClose }) {
   const [custom, setCustom] = useState('#3a8ee0');
+  const palette = paletteOf(useStore((s) => s.prefs));
+  const mod = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? '⌘' : 'Ctrl';
+  const others = TEXT_COLORS.filter(([hex]) => !palette.some((p) => p.toLowerCase() === hex.toLowerCase()));
   return (
     <Floating anchorRef={anchorRef} onClose={onClose} className="color-picker" role="dialog" aria-label="Cor do texto">
-      <div className="popover-title">Cor do texto</div>
-      <div className="color-grid">
-        {TEXT_COLORS.map(([hex, name]) => (
+      <div className="popover-title">Sua paleta</div>
+      <div className="color-grid palette-grid">
+        {palette.map((hex, i) => (
           <button
-            key={hex}
+            key={i}
             type="button"
-            className="color-swatch"
+            className="color-swatch numbered"
             style={{ background: hex }}
-            title={name}
-            aria-label={name}
+            title={`${colorName(hex) || `Cor ${i + 1}`} (${mod}+${i + 1})`}
+            aria-label={`${colorName(hex) || `Cor ${i + 1} da paleta`} (${mod}+${i + 1})`}
             onClick={() => onPick(hex)}
-          />
+          >
+            <span>{i + 1}</span>
+          </button>
         ))}
       </div>
+      {others.length > 0 && (
+        <>
+          <div className="popover-title">Outras</div>
+          <div className="color-grid">
+            {others.map(([hex, name]) => (
+              <button
+                key={hex}
+                type="button"
+                className="color-swatch"
+                style={{ background: hex }}
+                title={name}
+                aria-label={name}
+                onClick={() => onPick(hex)}
+              />
+            ))}
+          </div>
+        </>
+      )}
       <div className="color-custom">
         <input type="color" value={custom} onChange={(e) => setCustom(e.target.value)} aria-label="Outra cor" title="Outra cor" />
         <button type="button" className="gloss small-btn" onClick={() => onPick(custom)}>

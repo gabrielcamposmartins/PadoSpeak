@@ -3,12 +3,14 @@ import { createApi, loadToken, saveToken, savedServerUrl, saveServerUrl, normali
 import { Realtime } from './lib/realtime.js';
 import { VoiceClient } from './lib/voice.js';
 import { MusicPlayer } from './lib/music.js';
-import { isPanel, isDesktop, localNodeUrl } from './lib/env.js';
+import { isPanel, isDesktop, isTauri, localNodeUrl } from './lib/env.js';
 import { playSound, loopSound, setSoundsEnabled } from './lib/sounds.js';
 import { shakeWindow, flashTaskbar } from './lib/attention.js';
 import { systemNotify, showAppWindow, appHasFocus } from './lib/background.js';
-import { currentLayout } from './lib/layout.js';
+import { currentLayout, isStandalone, isTouch } from './lib/layout.js';
+import { plain } from './lib/text.js';
 import { syncPush, disablePush } from './lib/pwa.js';
+import { NearbyProbe, deviceLabel } from './lib/nearby.js';
 
 /*
  * Conexões
@@ -76,8 +78,37 @@ function voiceSounds(prev, next, notify) {
   if (stopped) playSound('streamStop');
 }
 
-/** Mensagem que é só um sticker: `[sticker:<id>]` (da coleção) ou `[sticker:emote:<código>]` (padrão). */
-export const STICKER_RE = /^\[sticker:(emote:)?([^\]\s]+)\]$/;
+/**
+ * Mensagem com sticker: `[sticker:<id>]` (da coleção) ou `[sticker:emote:<código>]` (padrão), com um
+ * texto opcional na linha de baixo.
+ */
+export const STICKER_RE = /^\[sticker:(emote:)?([^\]\s]+)\](?:\n([\s\S]*))?$/;
+/** Mensagem de voz: `[voz:<id>:<duração ms>:<tipo>]`. */
+export const VOICE_RE = /^\[voz:([0-9a-f]{32}):(\d+):([^:\]]*)\]$/;
+
+/** Como uma mensagem aparece num aviso ("diz: …", "enviou uma foto"…). */
+export function messageSummary(content) {
+  const file = FILE_RE.exec(content);
+  if (file) {
+    const what = file[3].startsWith('image/') ? 'uma foto' : file[3].startsWith('video/') ? 'um vídeo' : `o arquivo ${file[4]}`;
+    return { verb: `enviou ${what}`, text: file[5] || '' };
+  }
+  if (VOICE_RE.test(content)) return { verb: 'enviou uma mensagem de voz', text: '' };
+  const sticker = STICKER_RE.exec(content);
+  if (sticker) return { verb: 'enviou um sticker', text: sticker[3] || '' };
+  return { verb: 'diz', text: content };
+}
+
+/** Texto do aviso de uma mensagem: "Ana diz: oi" / "Ana enviou uma foto: legenda". */
+export function messageNotice(author, content) {
+  const { verb, text } = messageSummary(content);
+  const t = plain(text).trim();
+  const cut = t.length > 80 ? `${t.slice(0, 80)}…` : t;
+  return cut ? `${author.displayName} ${verb}: ${cut}` : `${author.displayName} ${verb}.`;
+}
+
+/** Notificações de cada servidor (iguais às do servidor quando ainda não foram mudadas). */
+export const DEFAULT_NOTIFY = { messages: 'mentions', mutedChannels: [], voiceJoin: false, streams: false, members: false };
 
 /** Todas as conexões abertas (chave → store). A lista de chaves vive em `useStore.connKeys`. */
 export const connRegistry = new Map();
@@ -94,6 +125,35 @@ const tokenScope = (kind) => (isDesktop && kind === 'server' ? profileScope : nu
 export function createConnStore({ key, kind, base, primary = false }) {
   let rt = null;
   let voiceClient = null;
+  let myPeerId = null;
+  // Vistos: o que já recebi/li em cada conversa, mandado ao servidor com um pequeno atraso.
+  const marks = new Map(); // channelId -> { delivered, read }
+  const sentMarks = new Map();
+  const markTimers = new Map();
+  const flushMarks = (channelId) => {
+    clearTimeout(markTimers.get(channelId));
+    markTimers.set(
+      channelId,
+      setTimeout(() => {
+        const m = marks.get(channelId);
+        const sent = sentMarks.get(channelId) || { delivered: 0, read: 0 };
+        if (!m || (m.delivered <= sent.delivered && m.read <= sent.read)) return;
+        rt?.send('read:mark', { channelId, delivered: m.delivered, read: m.read || undefined });
+        sentMarks.set(channelId, { ...m });
+      }, 700),
+    );
+  };
+  // Confirma (com uma conexão direta, sem servidor no meio) quem está mesmo na mesma rede local.
+  const probe = new NearbyProbe({
+    send: (to, data) => rt?.send('lan:signal', { to, data }),
+    onResult: (peerId, ok) =>
+      store.setState((s) => {
+        const nearbyOk = { ...s.nearbyOk };
+        if (ok) nearbyOk[peerId] = true;
+        else delete nearbyOk[peerId];
+        return { nearbyOk };
+      }),
+  });
   const typingTimers = new Map();
   let baseUrl = base;
   // No desktop, o servidor só tem token depois que um perfil local entra (veja `reloadToken`).
@@ -176,6 +236,12 @@ export function createConnStore({ key, kind, base, primary = false }) {
     serverOffset: 0, // relógio do servidor − relógio local (ms)
     musicLibrary: { guildId: null, favorites: [], top: [] }, // favoritas e mais tocadas
     musicAdding: 0,
+    guildNotify: {}, // guildId -> o que avisar nesse servidor (veja DEFAULT_NOTIFY)
+    nearby: [], // aparelhos na mesma rede: { peerId, user, device, direct }
+    nearbyOk: {}, // peerId -> true quando a conexão direta confirmou a mesma rede local
+    reads: {}, // channelId -> { userId: { deliveredAt, readAt } } (os "vistos")
+    myBackground: null, // imagem de fundo da tela de início (caminho no servidor)
+    appAdmin: null, // { canView, owner }: painel do administrador do app
     friendsTab: 'online', // online | all | pending | add
     modal: null,
     toast: null,
@@ -205,6 +271,13 @@ export function createConnStore({ key, kind, base, primary = false }) {
     },
     goHost: () => ui().setState({ phase: 'host' }),
     leaveHost: () => ui().setState({ phase: 'app' }),
+    /** Painel do administrador do app (só para quem tem acesso). */
+    goAdmin: () => ui().setState({ phase: 'admin' }),
+    leaveAdmin: () => ui().setState({ phase: 'app' }),
+    adminOverview: (days) => api.get(`/api/admin/overview?days=${days}`),
+    adminViewers: () => api.get('/api/admin/viewers'),
+    grantAdmin: (username) => api.put('/api/admin/viewers', { username }),
+    revokeAdmin: (userId) => api.del(`/api/admin/viewers/${userId}`),
 
     // ---------- Sessão ----------
     /** Abertura do app (só no principal): no navegador entra no servidor; no desktop, no perfil local. */
@@ -307,8 +380,18 @@ export function createConnStore({ key, kind, base, primary = false }) {
       });
       api
         .get('/api/me/settings')
-        .then((nudgeSettings) => set({ nudgeSettings }))
+        .then((nudgeSettings) => set({ nudgeSettings, myBackground: nudgeSettings.backgroundUrl || null }))
         .catch(() => {});
+      if (kind === 'server') {
+        api
+          .get('/api/me/notify')
+          .then((guildNotify) => set({ guildNotify }))
+          .catch(() => {});
+        api
+          .get('/api/admin/access')
+          .then((appAdmin) => set({ appAdmin }))
+          .catch(() => set({ appAdmin: null }));
+      }
       if (kind === 'local') {
         api
           .get('/api/lan/peers')
@@ -343,8 +426,47 @@ export function createConnStore({ key, kind, base, primary = false }) {
       rt = new Realtime(() => `${baseUrl.replace(/^http/i, 'ws')}/ws?token=${encodeURIComponent(token || '')}`);
       let firstReady = true;
       rt.on('status', (rtStatus) => set({ rtStatus }));
-      rt.on('ready', () => {
+      rt.on('ready', (d) => {
         if (document.visibilityState !== 'visible') rt?.send('app:visibility', { visible: false });
+        // Aparelhos na mesma rede (só no servidor de comunidade; o nó local tem a rede local própria).
+        if (kind === 'server') {
+          myPeerId = d.peerId;
+          set({ nearby: [], nearbyOk: {} });
+          get().lanHello();
+          // Para o painel do administrador: onde o app está aberto.
+          rt?.send('app:hello', appPlatform());
+        }
+      });
+      rt.on('lan:nearby', ({ peers }) => {
+        set({ nearby: peers });
+        probe.update(peers, myPeerId);
+      });
+      rt.on('lan:signal', ({ from, data }) => probe.signal(from, data));
+      rt.on('read:mark', ({ channelId, userId, deliveredAt, readAt }) =>
+        set((st) => ({ reads: { ...st.reads, [channelId]: { ...st.reads[channelId], [userId]: { deliveredAt, readAt } } } })),
+      );
+      rt.on('me:background', ({ url }) => set({ myBackground: url }));
+      rt.on('admin:access', (appAdmin) => {
+        set({ appAdmin });
+        if (!appAdmin.canView && primary && get().phase === 'admin') set({ phase: 'app' });
+      });
+      // Moderação de voz.
+      rt.on('voice:move', ({ channelId, by }) => {
+        const ch = Object.values(get().guildData)
+          .flatMap((g) => g.channels)
+          .find((c) => c.id === channelId);
+        notify(`${by.displayName} moveu você para 🔊 ${ch?.name || 'outro canal'}.`, 'info');
+        get().joinVoice(channelId);
+      });
+      rt.on('voice:moderated', ({ action, by }) => {
+        if (action === 'disconnect') notify(`${by.displayName} desconectou você do canal de voz.`, 'info');
+      });
+      rt.on('voice:moved', ({ user, from, to, by, sound }) => {
+        const mine = get().voice?.channelId;
+        const me = get().me?.id;
+        // Som para quem está nos canais envolvidos (se o servidor deixou ligado).
+        if (sound && (mine === from || mine === to || user.id === me)) playSound('moved');
+        if (user.id !== me && (mine === from || mine === to)) notify(`${by.displayName} moveu ${user.displayName}.`, 'info');
       });
       rt.on('ready', (d) => {
         set({
@@ -456,16 +578,30 @@ export function createConnStore({ key, kind, base, primary = false }) {
           }));
           if (!viewing && m.author.id !== s.me?.id) {
             playSound('message');
-            const text = m.content.length > 80 ? `${m.content.slice(0, 80)}…` : m.content;
-            notify(
-              STICKER_RE.test(m.content) ? `${m.author.displayName} enviou um sticker.` : `${m.author.displayName} diz: ${text}`,
-              'presence',
-              m.author,
-              `/?dm=${m.channelId}`,
-            );
+            notify(messageNotice(m.author, m.content), 'presence', m.author, `/?dm=${m.channelId}`);
+          }
+        } else if (m.author.id !== s.me?.id && !(isViewing(m.channelId) && appHasFocus())) {
+          // Canal de servidor: avisa conforme as notificações escolhidas para o servidor.
+          const guildId = Object.entries(s.guildData).find(([, g]) => g.channels.some((c) => c.id === m.channelId))?.[0];
+          const n = { ...DEFAULT_NOTIFY, ...s.guildNotify[guildId] };
+          const me = s.me?.username?.toLowerCase();
+          const mentioned = Boolean(me) && new RegExp(`(^|[^\\w.])@${me.replace(/\./g, '\\.')}(?![\\w])`, 'i').test(plain(m.content));
+          const wants =
+            n.messages === 'all' ? mentioned || !n.mutedChannels.includes(m.channelId) : n.messages === 'mentions' && mentioned;
+          if (wants) {
+            const ch = s.guildData[guildId].channels.find((c) => c.id === m.channelId);
+            playSound('message');
+            notify(`${messageNotice(m.author, m.content)} (#${ch?.name})`, 'presence', m.author, `/?channel=${m.channelId}`);
           }
         }
       });
+      rt.on('message:expires', ({ id, channelId, expiresAt }) =>
+        set((s) => {
+          const list = s.messages[channelId];
+          if (!list) return {};
+          return { messages: { ...s.messages, [channelId]: list.map((m) => (m.id === id ? { ...m, expiresAt } : m)) } };
+        }),
+      );
       rt.on('call:ring', ({ dmId, from }) => {
         if (get().voice?.channelId === dmId) return;
         set({ incomingCall: { dmId, from } });
@@ -479,6 +615,9 @@ export function createConnStore({ key, kind, base, primary = false }) {
           playSound('callEnd');
           notify(`${by.displayName} recusou a chamada`, 'info');
         }
+      });
+      rt.on('message:new', (m) => {
+        if (m.author.id !== get().me?.id) get().markReceived(m.channelId, m.createdAt);
       });
       rt.on('message:new', (m) =>
         set((s) => {
@@ -544,7 +683,23 @@ export function createConnStore({ key, kind, base, primary = false }) {
         }),
       );
       rt.on('music:notice', ({ text }) => notify(text, 'info'));
-      rt.on('voice:channel', ({ channelId, participants }) => {
+      rt.on('voice:channel', ({ guildId, channelId, dm, participants }) => {
+        // Notificações do servidor: alguém entrou num canal de voz ou começou a transmitir.
+        const s0 = get();
+        const n = !dm && guildId && s0.guildNotify[guildId];
+        const inThisCall = s0.voice?.channelId === channelId; // dentro da chamada já há sons próprios
+        if (n && (n.voiceJoin || n.streams) && !inThisCall) {
+          const before = new Map((s0.voiceStates[channelId] || []).map((p) => [p.peerId, p]));
+          const ch = s0.guildData[guildId]?.channels.find((c) => c.id === channelId);
+          for (const p of participants) {
+            if (p.user.id === s0.me?.id) continue;
+            const was = before.get(p.peerId);
+            if (!was && n.voiceJoin && !participants.some((o) => o !== p && o.user.id === p.user.id))
+              notify(`${p.user.displayName} entrou em 🔊 ${ch?.name || 'um canal de voz'}.`, 'presence', p.user);
+            else if (was && !was.screen && p.screen && n.streams)
+              notify(`${p.user.displayName} começou a transmitir em 🔊 ${ch?.name || 'um canal de voz'}.`, 'presence', p.user);
+          }
+        }
         set((s) => {
           const voiceStates = { ...s.voiceStates };
           if (participants.length) voiceStates[channelId] = participants;
@@ -575,13 +730,18 @@ export function createConnStore({ key, kind, base, primary = false }) {
         });
         if (primary && get().view?.channelId === channelId) get().selectGuild(guildId);
       });
-      rt.on('member:joined', ({ guildId, user }) =>
-        set((s) => {
-          const g = s.guildData[guildId];
+      rt.on('member:joined', ({ guildId, user }) => {
+        const s = get();
+        if (user.id !== s.me?.id && s.guildNotify[guildId]?.members) {
+          const g = s.guilds.find((x) => x.id === guildId);
+          notify(`${user.displayName} entrou em ${g?.name || 'um servidor'}.`, 'presence', user);
+        }
+        set((st) => {
+          const g = st.guildData[guildId];
           if (!g || g.members.some((m) => m.id === user.id)) return {};
-          return { guildData: { ...s.guildData, [guildId]: { ...g, members: [...g.members, user] } } };
-        }),
-      );
+          return { guildData: { ...st.guildData, [guildId]: { ...g, members: [...g.members, user] } } };
+        });
+      });
       rt.on('member:left', ({ guildId, userId }) =>
         set((s) => {
           const g = s.guildData[guildId];
@@ -593,7 +753,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
       );
       rt.on('guild:updated', (g) => get().applyGuild(g));
       rt.on('channel:updated', (ch) => get()._upsertChannel(ch));
-      rt.on('member:perms', ({ guildId, userId, perms }) => get()._applyPerms(guildId, userId, perms));
+      rt.on('member:perms', ({ guildId, userId, perms, custom }) => get()._applyPerms(guildId, userId, perms, custom !== false));
       // Canais visíveis mudaram (canal privado, ou virei/deixei de ser admin): recarrega o servidor.
       rt.on('guild:refresh', async ({ guildId }) => {
         if (!get().guildData[guildId]) return;
@@ -853,6 +1013,14 @@ export function createConnStore({ key, kind, base, primary = false }) {
       const before = older && current.length ? `&before=${current[0].createdAt}` : '';
       try {
         const list = await api.get(`/api/channels/${channelId}/messages?limit=50${before}`);
+        if (!older) {
+          api
+            .get(`/api/channels/${channelId}/reads`)
+            .then((rows) => set((st) => ({ reads: { ...st.reads, [channelId]: Object.fromEntries(rows.map((r) => [r.userId, r])) } })))
+            .catch(() => {});
+          const last = [...list].reverse().find((m) => m.author.id !== get().me?.id);
+          if (last) get().markReceived(channelId, last.createdAt);
+        }
         set((s) => ({
           messages: { ...s.messages, [channelId]: older ? [...list, ...(s.messages[channelId] || [])] : list },
           hasMore: { ...s.hasMore, [channelId]: list.length === 50 },
@@ -937,20 +1105,90 @@ export function createConnStore({ key, kind, base, primary = false }) {
         return { guildData: { ...s.guildData, [ch.guildId]: { ...g, channels } } };
       });
     },
-    /** Dá ou tira permissões (bits de PERM) de um membro. */
-    async setMemberPerms(guildId, userId, perms) {
-      const res = await api.patch(`/api/guilds/${guildId}/members/${userId}`, { perms });
-      get()._applyPerms(guildId, userId, res.perms);
+    /**
+     * Permissões personalizadas de um membro (bits de PERM). `custom = false` tira a pessoa da lista:
+     * ela volta a ter as permissões padrão do servidor.
+     */
+    async setMemberPerms(guildId, userId, perms, custom = true) {
+      const res = await api.patch(`/api/guilds/${guildId}/members/${userId}`, { perms, custom });
+      get()._applyPerms(guildId, userId, res.perms, res.custom);
     },
-    _applyPerms(guildId, userId, perms) {
+    _applyPerms(guildId, userId, perms, custom = true) {
       set((s) => {
         const g = s.guildData[guildId];
         if (!g) return {};
         const next = { ...(g.perms || {}) };
-        if (perms) next[userId] = perms;
+        if (custom) next[userId] = perms;
         else delete next[userId];
         return { guildData: { ...s.guildData, [guildId]: { ...g, perms: next } } };
       });
+    },
+    /** O que avisar neste servidor (vale também para as notificações push). */
+    async setGuildNotify(guildId, settings) {
+      const saved = await api.put(`/api/guilds/${guildId}/notify`, settings);
+      set((s) => ({ guildNotify: { ...s.guildNotify, [guildId]: saved } }));
+    },
+    /** Recebi as mensagens até `at` (vira ✓✓ para quem mandou). */
+    markReceived(channelId, at) {
+      const mark = (marks.get(channelId) || { delivered: 0, read: 0 });
+      if (at <= mark.delivered) return;
+      mark.delivered = at;
+      marks.set(channelId, mark);
+      flushMarks(channelId);
+    },
+    /** Li a conversa até a última mensagem (vira o olho para quem mandou, se eu deixar). */
+    markRead(channelId) {
+      const list = get().messages[channelId];
+      const last = list && [...list].reverse().find((m) => !m.notice && m.author.id !== get().me?.id);
+      if (!last) return;
+      const mark = marks.get(channelId) || { delivered: 0, read: 0 };
+      const sendRead = prefs().receipts?.sendRead !== false;
+      if (last.createdAt <= mark.delivered && (!sendRead || last.createdAt <= mark.read)) return;
+      mark.delivered = Math.max(mark.delivered, last.createdAt);
+      if (sendRead) mark.read = Math.max(mark.read, last.createdAt);
+      marks.set(channelId, mark);
+      flushMarks(channelId);
+    },
+    /** Moderação de voz: `mute`, `unmute`, `disconnect` ou `move` (com `channelId`). */
+    async moderateVoice(peerId, action, channelId) {
+      const res = await rt?.request('voice:moderate', { peerId, action, channelId });
+      if (!res || res.error) notify(res?.error || 'Sem conexão');
+    },
+    /** Silenciar alguém só para mim (vale em todas as chamadas). */
+    toggleLocalMute(userId) {
+      const cur = { ...(prefs().localMutes || {}) };
+      if (cur[userId]) delete cur[userId];
+      else cur[userId] = true;
+      get().setAppearance({ localMutes: cur });
+      for (const c of connRegistry.values()) c.getState()._applyLocalMutes();
+    },
+    _applyLocalMutes() {
+      voiceClient?.setLocalMutes(Object.keys(prefs().localMutes || {}));
+    },
+    /** Fundo da tela de início (só eu vejo). `blob` já redimensionado; null tira. */
+    async setMyBackground(blob) {
+      const res = blob ? await api.put('/api/me/background', blob) : await api.del('/api/me/background');
+      set({ myBackground: res?.url || null });
+    },
+    /** Fundo do servidor (administradores). */
+    async setGuildBackground(guildId, blob) {
+      get().applyGuild(blob ? await api.put(`/api/guilds/${guildId}/background`, blob) : await api.del(`/api/guilds/${guildId}/background`));
+    },
+    /** Registro do servidor com filtros (`kind`, `user`, `channel`, `q`, `before`, `since`). */
+    guildLog(guildId, params = {}) {
+      const q = new URLSearchParams(Object.entries(params).filter(([, v]) => v != null && v !== '')).toString();
+      return api.get(`/api/guilds/${guildId}/log${q ? `?${q}` : ''}`);
+    },
+    /** Validade de um arquivo: ms a partir de agora, ou null (não expira). */
+    setFileTtl: (fileId, ttlMs) => api.patch(`/api/files/${fileId}`, { ttlMs }),
+    /** Aparecer (ou não) para quem está na mesma rede. */
+    lanHello() {
+      if (kind !== 'server') return;
+      rt?.send('lan:hello', { visible: prefs().nearbyVisible !== false, device: deviceLabel() });
+      if (prefs().nearbyVisible === false) {
+        probe.update([], myPeerId);
+        set({ nearby: [], nearbyOk: {} });
+      }
     },
     /** Código de convite (só para quem pode convidar). */
     async fetchInvite(guildId) {
@@ -1022,6 +1260,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
       try {
         const { selfMuted, selfDeafened } = ui().getState();
         const p = prefs();
+        client.setLocalMutes(Object.keys(p.localMutes || {}));
         await client.join(channelId, {
           muted: selfMuted,
           deafened: selfDeafened,
@@ -1097,6 +1336,13 @@ export function createConnStore({ key, kind, base, primary = false }) {
     async toggleScreen(preset) {
       if (!voiceClient) return;
       if (!window.isSecureContext) return notify(INSECURE_MSG);
+      if (!voiceClient.screen && !navigator.mediaDevices?.getDisplayMedia)
+        return notify(
+          /iPhone|iPad|iPod/.test(navigator.userAgent)
+            ? 'O iPhone e o iPad não deixam apps da web compartilharem a tela. Use o PadoSpeak no computador para transmitir (assistir funciona normalmente).'
+            : 'Este navegador não oferece compartilhar a tela. No Android, use o Chrome atualizado; no computador, o Chrome, o Edge ou o app PadoSpeak.',
+          'info',
+        );
       try {
         await voiceClient.setScreen(!voiceClient.screen, preset);
       } catch (e) {
@@ -1235,15 +1481,17 @@ export function createConnStore({ key, kind, base, primary = false }) {
      * Envia um arquivo para a conversa/canal e devolve { id, name, mime, size }. `onProgress(0..1)`.
      * Usa XHR para acompanhar o envio (o fetch não informa o progresso do upload).
      */
-    async uploadFile(channelId, file, onProgress) {
+    async uploadFile(channelId, file, onProgress, { kind: fileKind } = {}) {
       // Texto, documentos e afins vão comprimidos (gzip); o servidor guarda assim e o download volta
-      // com Content-Encoding: gzip, que o navegador descomprime sozinho.
-      const packed = await gzipIfWorth(file);
+      // com Content-Encoding: gzip, que o navegador descomprime sozinho. Arquivo acima do limite
+      // normal (grande, some em 10 min) vai como está.
+      const maxFile = get().config?.files?.maxFile;
+      const packed = fileKind || (maxFile && file.size > maxFile) ? null : await gzipIfWorth(file);
       return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open(
           'POST',
-          `${baseUrl}/api/files?channel=${encodeURIComponent(channelId)}&name=${encodeURIComponent(file.name)}${packed ? '&encoding=gzip' : ''}`,
+          `${baseUrl}/api/files?channel=${encodeURIComponent(channelId)}&name=${encodeURIComponent(file.name)}${packed ? '&encoding=gzip' : ''}${fileKind ? `&kind=${fileKind}` : ''}`,
         );
         if (token) xhr.setRequestHeader('authorization', `Bearer ${token}`);
         xhr.setRequestHeader('content-type', file.type || 'application/octet-stream');
@@ -1494,6 +1742,25 @@ const watchPrefs = (p) => ({
   dmCamera: p.autoWatchDmCamera !== false,
 });
 
+/** Onde o app está aberto: app do Windows, app instalado (PWA) ou navegador; aparelho e sistema. */
+function appPlatform() {
+  const ua = navigator.userAgent;
+  const os = /Android/i.test(ua)
+    ? 'Android'
+    : /iPhone|iPad|iPod/i.test(ua)
+      ? 'iOS'
+      : /Windows/i.test(ua)
+        ? 'Windows'
+        : /Mac OS/i.test(ua)
+          ? 'macOS'
+          : /Linux/i.test(ua)
+            ? 'Linux'
+            : '';
+  const layout = currentLayout();
+  const device = isTauri ? 'computador' : isTouch ? (layout === 'phone' ? 'celular' : 'tablet') : 'computador';
+  return { platform: isTauri ? 'app' : isStandalone ? 'pwa' : 'navegador', device, os };
+}
+
 /** Formatos que já vêm comprimidos (imagem, vídeo, áudio, compactados, Office): não vale comprimir. */
 const PACKED_EXT =
   /\.(zip|rar|7z|gz|tgz|bz2|xz|zst|docx|xlsx|pptx|odt|ods|odp|epub|jar|apk|png|jpe?g|gif|webp|avif|heic|mp3|mp4|m4a|aac|ogg|opus|webm|mkv|mov|avi|flac|woff2?)$/i;
@@ -1511,28 +1778,44 @@ async function gzipIfWorth(file) {
 }
 
 /** Bits de permissão dentro de um servidor (iguais aos do servidor). */
-export const PERM = { ADMIN: 1, INVITE: 2, CHANNELS: 4 };
+export const PERM = { ADMIN: 1, INVITE: 2, CHANNELS: 4, MUTE: 8, DISCONNECT: 16, MOVE: 32 };
+const ALL_PERMS = 63;
+
+/** Bits de um membro: os da lista personalizada, ou o padrão do servidor. */
+export function memberBits(s, guildId, userId) {
+  const guild = s.guilds.find((g) => g.id === guildId);
+  if (guild && guild.ownerId === userId) return ALL_PERMS;
+  const custom = s.guildData[guildId]?.perms?.[userId];
+  return custom ?? guild?.defaultPerms ?? PERM.INVITE;
+}
 
 /** O que eu posso fazer num servidor: dono e admin podem tudo. */
 export function permsOf(s, guildId) {
   const guild = s.guilds.find((g) => g.id === guildId);
   const owner = Boolean(guild && s.me && guild.ownerId === s.me.id);
-  const bits = owner ? 7 : s.guildData[guildId]?.perms?.[s.me?.id] || 0;
+  const bits = s.me ? memberBits(s, guildId, s.me.id) : 0;
+  return permFlags(owner, bits);
+}
+
+const permFlags = (owner, bits) => {
   const admin = owner || (bits & PERM.ADMIN) !== 0;
+  const has = (b) => admin || (bits & b) !== 0;
   return {
     owner,
     admin,
-    invite: admin || (bits & PERM.INVITE) !== 0,
-    channels: admin || (bits & PERM.CHANNELS) !== 0,
+    invite: has(PERM.INVITE),
+    channels: has(PERM.CHANNELS),
+    mute: has(PERM.MUTE),
+    disconnect: has(PERM.DISCONNECT),
+    move: has(PERM.MOVE),
   };
-}
+};
 
 /** Hook: minhas permissões no servidor, a partir de um store de conexão (`useStore` ou `useConn()`). */
 export function usePerms(useC, guildId) {
   const owner = useC((s) => Boolean(s.me && s.guilds.find((g) => g.id === guildId)?.ownerId === s.me.id));
-  const bits = useC((s) => s.guildData[guildId]?.perms?.[s.me?.id] || 0);
-  const admin = owner || (bits & PERM.ADMIN) !== 0;
-  return { owner, admin, invite: admin || (bits & PERM.INVITE) !== 0, channels: admin || (bits & PERM.CHANNELS) !== 0 };
+  const bits = useC((s) => (s.me ? memberBits(s, guildId, s.me.id) : 0));
+  return permFlags(owner, bits);
 }
 
 /** Separa a resposta de /api/guilds/{id} em dados do servidor e o resto (canais, membros, permissões). */
@@ -1557,6 +1840,7 @@ globalThis.__padospeak = {
   changeServer: (...a) => changeServer(...a),
   openLanDm: (...a) => openLanDm(...a),
   connectServer: (...a) => connectServer(...a),
+  NearbyProbe,
 };
 
 // =====================================================================
@@ -1742,7 +2026,7 @@ export async function syncProfileTo(target) {
   if (target.getState().kind === 'server' && theirs.username.toLowerCase() !== mine.username.toLowerCase()) return;
   try {
     const patch = {};
-    for (const k of ['displayName', 'bio', 'nameColor', 'bioColor', 'bannerColor']) {
+    for (const k of ['displayName', 'bio', 'nameColor', 'bioColor', 'bannerColor', 'messageColor']) {
       if ((mine[k] || '') !== (theirs[k] || '')) patch[k] = mine[k] || '';
     }
     if (Object.keys(patch).length) await target.getState().updateProfile(patch);
@@ -1879,25 +2163,37 @@ export const stickerHome = () => primaryConn();
  * Envia um arquivo numa conversa/canal: sobe para o servidor da conversa e manda a mensagem
  * `[arquivo:<id>:<tamanho>:<tipo>:<nome>]`. Programas e scripts só dentro de um .zip.
  */
-export const FILE_RE = /^\[arquivo:([0-9a-f]{32}):(\d+):([^:\]]*):([^\]]*)\]$/;
-export async function sendFile(connKey, channelId, file, { onProgress, replyTo } = {}) {
+export const FILE_RE = /^\[arquivo:([0-9a-f]{32}):(\d+):([^:\]]*):([^\]]*)\](?:\n([\s\S]*))?$/;
+/** `caption`: texto que vai junto, na mesma mensagem (linha de baixo). */
+const withCaption = (tag, caption) => (caption?.trim() ? `${tag}\n${caption.trim()}` : tag);
+export async function sendFile(connKey, channelId, file, { onProgress, replyTo, caption } = {}) {
   const target = getConn(connKey);
   const info = await target.getState().uploadFile(channelId, file, onProgress);
-  const name = info.name.replace(/[\]\n]/g, '_');
-  return target.getState().sendMessage(channelId, `[arquivo:${info.id}:${info.size}:${info.mime}:${name}]`, replyTo);
+  const name = info.name.replace(/[\]\n:]/g, '_');
+  return target.getState().sendMessage(channelId, withCaption(`[arquivo:${info.id}:${info.size}:${info.mime}:${name}]`, caption), replyTo);
 }
 
-export async function sendSticker(connKey, channelId, sticker) {
+/** Mensagem de voz gravada no app (`blob` de áudio, `durationMs`). */
+export async function sendVoice(connKey, channelId, blob, durationMs, { onProgress, replyTo } = {}) {
+  const target = getConn(connKey);
+  const ext = /mp4|aac/.test(blob.type) ? 'm4a' : /ogg/.test(blob.type) ? 'ogg' : 'weba';
+  const file = new File([blob], `mensagem-de-voz.${ext}`, { type: blob.type || 'audio/webm' });
+  const info = await target.getState().uploadFile(channelId, file, onProgress, { kind: 'voice' });
+  return target.getState().sendMessage(channelId, `[voz:${info.id}:${Math.round(durationMs)}:${info.mime}]`, replyTo);
+}
+
+export async function sendSticker(connKey, channelId, sticker, { caption, replyTo } = {}) {
   const target = getConn(connKey);
   try {
-    if (sticker.emote) return await target.getState().sendMessage(channelId, `[sticker:emote:${sticker.emote}]`);
+    if (sticker.emote)
+      return await target.getState().sendMessage(channelId, withCaption(`[sticker:emote:${sticker.emote}]`, caption), replyTo);
     const home = stickerHome();
     let id = sticker.id;
     if (home !== target) {
       const blob = await home.getState().stickerBlob(sticker.id);
       id = (await target.getState().uploadSticker(blob, sticker.name)).id;
     }
-    return await target.getState().sendMessage(channelId, `[sticker:${id}]`);
+    return await target.getState().sendMessage(channelId, withCaption(`[sticker:${id}]`, caption), replyTo);
   } catch (e) {
     useStore.getState().notify(`Sticker: ${e.message}`);
     return false;

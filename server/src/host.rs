@@ -32,6 +32,8 @@ pub struct App {
     pub push: Option<Arc<crate::push::Push>>,
     /// Pasta de dados (arquivos enviados nas conversas ficam em `arquivos/`).
     pub data_dir: PathBuf,
+    /// Registro de cada servidor (veja `crate::audit`).
+    pub audit: crate::audit::Sender,
 }
 
 struct Running {
@@ -195,7 +197,10 @@ impl HostManager {
                 }
             }
         };
+        let (audit_tx, audit_rx) = tokio::sync::mpsc::unbounded_channel();
+        hub.set_audit(audit_tx.clone());
         let app = Arc::new(App {
+            audit: audit_tx,
             db: self.db.clone(),
             hub,
             music,
@@ -210,6 +215,9 @@ impl HostManager {
             app.hub.set_lan_mode();
             lan.spawn(app.clone());
         }
+        // Arquivos e áudios vencidos somem (com a mensagem que os mostrava).
+        crate::files::spawn_sweeper(app.clone());
+        crate::audit::spawn_writer(app.clone(), audit_rx);
         // Canais privados: o hub precisa saber quem vê cada um antes da primeira conexão.
         if crate::api::refresh_audiences(&app, None).await.is_err() {
             self.logs.warn("Não foi possível carregar os canais privados");
@@ -221,6 +229,9 @@ impl HostManager {
             .merge(crate::stickers::router())
             .merge(crate::push::router())
             .merge(crate::files::router())
+            .merge(crate::audit::router())
+            .merge(crate::admin::router())
+            .merge(crate::backgrounds::router())
             .route("/ws", get(crate::hub::ws_handler))
             .route("/api/music/stream/{id}", get(crate::music::stream::handler))
             .fallback(crate::assets::static_handler)

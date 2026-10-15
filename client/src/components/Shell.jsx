@@ -25,6 +25,8 @@ import {
   Link2,
   Menu,
   X,
+  VolumeX,
+  ChartColumn,
 } from 'lucide-react';
 import { useStore, primaryConn, setStatusEverywhere, connRegistry, usePerms } from '../store.js';
 import { isDesktop } from '../lib/env.js';
@@ -42,6 +44,7 @@ import { useServerPing } from './hooks.js';
 import MusicPanel from './MusicPanel.jsx';
 import { FormattedText, Floating } from './Emotes.jsx';
 import { plain } from '../lib/text.js';
+import { useVoicePerson, voiceDropProps } from './VoiceMenus.jsx';
 
 const NO_PERMS = {};
 const openProfile = (userId) => useStore.getState().openModal({ type: 'profile', userId });
@@ -231,6 +234,7 @@ export function ProfileBar({ onMenu }) {
 // ---------- Trilho de servidores ----------
 
 export function GuildRail() {
+  const adminAccess = useStore((s) => Boolean(s.appAdmin?.canView));
   const guilds = useStore((s) => s.guilds);
   const current = useStore((s) => s.currentGuildId);
   const { selectGuild, openModal, goHost, homeButton } = useStore.getState();
@@ -276,6 +280,11 @@ export function GuildRail() {
         <Plus size={22} strokeWidth={2.6} />
       </button>
       <span className="rail-fill" />
+      {adminAccess && (
+        <button className="gel admin" title="Painel do administrador" aria-label="Painel do administrador" onClick={() => useStore.getState().goAdmin()}>
+          <ChartColumn size={20} />
+        </button>
+      )}
       {(canHost || isDesktop) && (
         <button className="gel host" title="Hostear servidor" aria-label="Hostear servidor" onClick={goHost}>
           <Server size={20} />
@@ -287,7 +296,7 @@ export function GuildRail() {
 
 // ---------- Canais ----------
 
-function VoiceChannelMembers({ channelId }) {
+function VoiceChannelMembers({ channelId, guildId }) {
   const participants = useStore((s) => s.voiceStates[channelId]) || [];
   const voice = useStore((s) => s.voice);
   const playing = useStore((s) => s.music[channelId]?.current?.track);
@@ -301,37 +310,63 @@ function VoiceChannelMembers({ channelId }) {
           <span>{playing.title}</span>
         </div>
       )}
-      {participants.map((p) => {
-        const speaking = inThisCall && (p.peerId === voice.selfId ? voice.speaking.me : voice.speaking[p.peerId]);
-        const watch = p.screen && p.peerId !== voice?.selfId;
-        return (
-          <div
-            className={`voice-member${watch ? ' watchable' : ''}`}
-            key={p.peerId}
-            role={watch ? 'button' : undefined}
-            tabIndex={watch ? 0 : undefined}
-            title={watch ? `Assistir a transmissão de ${plain(p.user.displayName)}` : undefined}
-            onClick={watch ? () => useStore.getState().watchStream(channelId, p.user.id) : undefined}
-            onKeyDown={watch ? (e) => e.key === 'Enter' && useStore.getState().watchStream(channelId, p.user.id) : undefined}
-          >
-            <Avatar
-              user={p.user}
-              size={20}
-              status={p.screen ? 'live' : 'voice'}
-              speaking={speaking}
-              onClick={watch ? undefined : () => openProfile(p.user.id)}
-            />
-            <UserName user={p.user} className="nm" />
-            {p.screen && <span className="live">AO VIVO</span>}
-            {p.video && <Video size={14} />}
-            {p.deafened ? (
-              <HeadphoneOff size={14} className="muted-ico" aria-label="ensurdecido" />
-            ) : p.muted ? (
-              <MicOff size={14} className="muted-ico" aria-label="mutado" />
-            ) : null}
-          </div>
-        );
-      })}
+      {participants.map((p) => (
+        <VoiceMemberRow
+          key={p.peerId}
+          p={p}
+          channelId={channelId}
+          guildId={guildId}
+          speaking={inThisCall && (p.peerId === voice.selfId ? voice.speaking.me : voice.speaking[p.peerId])}
+          watch={p.screen && p.peerId !== voice?.selfId}
+        />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Pessoa no canal de voz: clique abre o perfil rápido (em quem está ao vivo, abre a transmissão),
+ * botão direito abre o menu e, com permissão, dá para arrastar para outro canal.
+ */
+function VoiceMemberRow({ p, channelId, guildId, speaking, watch }) {
+  const localMuted = useStore((s) => Boolean(s.prefs.localMutes?.[p.user.id]));
+  const { props, overlay } = useVoicePerson({
+    p,
+    channelId,
+    guildId,
+    onClick: watch ? () => useStore.getState().watchStream(channelId, p.user.id) : undefined,
+  });
+  return (
+    <div
+      {...props}
+      className={`voice-member${watch ? ' watchable' : ''}`}
+      role="button"
+      tabIndex={0}
+      title={watch ? `Assistir a transmissão de ${plain(p.user.displayName)}` : undefined}
+      onKeyDown={(e) => e.key === 'Enter' && props.onClick(e)}
+    >
+      <Avatar user={p.user} size={20} status={p.screen ? 'live' : 'voice'} speaking={speaking} />
+      <UserName user={p.user} className="nm" />
+      {p.screen && <span className="live">AO VIVO</span>}
+      {p.video && <Video size={14} />}
+      {p.serverMuted && <MicOff size={14} className="muted-ico server" aria-label="silenciado para todos" />}
+      {localMuted && <VolumeX size={14} className="muted-ico" aria-label="silenciado para você" />}
+      {p.deafened ? (
+        <HeadphoneOff size={14} className="muted-ico" aria-label="ensurdecido" />
+      ) : p.muted && !p.serverMuted ? (
+        <MicOff size={14} className="muted-ico" aria-label="mutado" />
+      ) : null}
+      {overlay}
+    </div>
+  );
+}
+
+/** Canal de voz na lista: entra ao clicar e recebe quem for arrastado para ele (mover). */
+function VoiceChannelRow({ c, active, children }) {
+  const [over, setOver] = useState(false);
+  return (
+    <div className={`voice-drop${over ? ' over' : ''}`} {...voiceDropProps(c.id, setOver)}>
+      {children}
     </div>
   );
 }
@@ -356,8 +391,10 @@ function ChannelGroup({ title, type, list, canManage, guildId, activeId }) {
           </button>
         )}
       </div>
-      {list.map((c) => (
-        <div key={c.id}>
+      {list.map((c) => {
+        const Wrap = type === 'voice' ? VoiceChannelRow : 'div';
+        return (
+        <Wrap key={c.id} {...(type === 'voice' ? { c } : {})}>
           <button
             className={`row channel${activeId === c.id ? ' sel active' : ''}`}
             onClick={() => (type === 'text' ? selectTextChannel(c.id) : joinVoice(c.id))}
@@ -398,9 +435,10 @@ function ChannelGroup({ title, type, list, canManage, guildId, activeId }) {
               </span>
             )}
           </button>
-          {type === 'voice' && <VoiceChannelMembers channelId={c.id} />}
-        </div>
-      ))}
+          {type === 'voice' && <VoiceChannelMembers channelId={c.id} guildId={guildId} />}
+        </Wrap>
+        );
+      })}
     </>
   );
 }
@@ -747,7 +785,7 @@ function TabletShell() {
     useStore.setState({ mobilePane: 'list' });
   }, [pane]);
   return (
-    <div className="aero-app tablet-app">
+    <div className="aero-app tablet-app" {...useAppBackground()}>
       <ProfileBar onMenu={() => setOpen(true)} />
       <div className="aero-body">
         <Main />
@@ -761,12 +799,28 @@ function TabletShell() {
   );
 }
 
+/**
+ * Imagem de fundo da janela: a minha no Início, a do servidor dentro dele. Cobre a janela toda
+ * (aumenta e corta as sobras, sem faixas pretas).
+ */
+export function useAppBackground() {
+  const home = useStore((s) => s.currentGuildId == null);
+  const guildBg = useStore((s) => s.guilds.find((g) => g.id === s.currentGuildId)?.backgroundUrl);
+  const base = useStore((s) => s.baseUrl);
+  const prim = primaryConn();
+  const myBg = prim((s) => s.myBackground);
+  const primBase = prim((s) => s.baseUrl);
+  const url = home ? myBg && primBase + myBg : guildBg && base + guildBg;
+  return url ? { 'data-bg': '1', style: { '--app-bg-img': `url("${url}")` } } : {};
+}
+
 export default function Shell() {
   const layout = useLayout();
+  const bg = useAppBackground();
   if (layout === 'phone') return <MobileShell />;
   if (layout === 'tablet') return <TabletShell />;
   return (
-    <div className="aero-app">
+    <div className="aero-app" {...bg}>
       <ProfileBar />
       <div className="aero-body">
         <GuildRail />

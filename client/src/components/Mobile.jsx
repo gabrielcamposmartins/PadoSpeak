@@ -16,13 +16,15 @@ import {
   Share,
   SquarePlus,
   X,
+  CircleAlert,
+  ChartColumn,
 } from 'lucide-react';
 import { useStore, primaryConn, localLogout } from '../store.js';
 import { isDesktop } from '../lib/env.js';
 import { useAcross } from './conn.jsx';
 import Avatar from './Avatar.jsx';
 import { FormattedText } from './Emotes.jsx';
-import { ProfileBar, GuildRail, ChannelSidebar, Main, VoiceStatus, StatusMenu } from './Shell.jsx';
+import { useAppBackground, ProfileBar, GuildRail, ChannelSidebar, Main, VoiceStatus, StatusMenu } from './Shell.jsx';
 import { HomeSidebar, FriendsPage, FriendTabs } from './Home.jsx';
 import MusicPanel from './MusicPanel.jsx';
 import { colorClass, colorStyle, STATUS_INFO } from './Avatar.jsx';
@@ -159,6 +161,7 @@ function MePage() {
   const me = prim((s) => s.me);
   const base = prim((s) => s.baseUrl);
   const myStatus = prim((s) => s.myStatus);
+  const adminAccess = useStore((s) => Boolean(s.appAdmin?.canView));
   if (!me) return null;
   const { openModal, logout } = useStore.getState();
   const info = STATUS_INFO[myStatus] || STATUS_INFO.online;
@@ -194,6 +197,22 @@ function MePage() {
           <span>
             <b>Configurações</b>
             <small>Tema, microfone, câmera e sons</small>
+          </span>
+        </button>
+        {adminAccess && (
+          <button className="m-row" onClick={() => useStore.getState().goAdmin()}>
+            <ChartColumn size={20} className="ico-blue" />
+            <span>
+              <b>Painel do administrador</b>
+              <small>Pessoas, servidores e horários de uso</small>
+            </span>
+          </button>
+        )}
+        <button className="m-row" onClick={() => openModal({ type: 'changelog' })}>
+          <CircleAlert size={20} className="ico-gold" />
+          <span>
+            <b>Notas de atualização</b>
+            <small>O que mudou em cada versão</small>
           </span>
         </button>
         <button
@@ -240,8 +259,9 @@ export default function MobileShell() {
   useEffect(() => setBadge(unread), [unread]);
 
   const detail = pane === 'detail' && (music || ['dm', 'text', 'voice'].includes(view?.type));
+  const bg = useAppBackground();
   return (
-    <div className={`aero-app mobile-app${detail ? ' m-open' : ''}`}>
+    <div className={`aero-app mobile-app${detail ? ' m-open' : ''}`} {...bg}>
       {!detail && <ProfileBar />}
       <div className="m-body">
         {detail ? (

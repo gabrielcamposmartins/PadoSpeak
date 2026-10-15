@@ -7,11 +7,11 @@ import { useConn } from './conn.jsx';
 
 const MAX_BYTES = 2 * 1024 * 1024;
 
-/** `{ emote }` ou `{ id }` se a mensagem for só um sticker. */
+/** `{ emote }` ou `{ id }` (e o texto que foi junto) se a mensagem for um sticker. */
 export function parseSticker(content) {
   const m = STICKER_RE.exec(content.trim());
   if (!m) return null;
-  return m[1] ? { emote: m[2] } : { id: m[2] };
+  return m[1] ? { emote: m[2], caption: m[3] || '' } : { id: m[2], caption: m[3] || '' };
 }
 
 /** Sticker dentro da conversa (a imagem é do servidor da conversa). */
@@ -129,7 +129,7 @@ export function StickerPicker({ anchorRef, onPick, onClose }) {
         </div>
       )}
       <div className="popover-hint">
-        {tab === 'padrao' ? 'Clique para mandar.' : 'Seus stickers valem em todas as conversas · GIF animado também · até 2 MB.'}
+        {tab === 'padrao' ? 'Clique para escolher (dá para escrever algo junto antes de mandar).' : 'Seus stickers valem em todas as conversas · GIF animado também · até 2 MB.'}
       </div>
     </Floating>
   );
