@@ -1,7 +1,7 @@
 // Emoticons no estilo Aero (desenhos próprios em SVG, com brilho de vidro) e o texto formatado das mensagens.
 import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { plain, visibleLength, paletteOf } from '../lib/text.js';
+import { plain, visibleLength, paletteOf, colorSpans } from '../lib/text.js';
 import { useStore } from '../store.js';
 
 export { plain, visibleLength };
@@ -384,8 +384,21 @@ export const TEXT_COLORS = [
   ['#d6418f', 'Rosa'],
 ];
 
+/** `[cor=#hex]…[/cor]` com o `[/cor]` certo (pode haver outra cor dentro); sem par, o mais próximo. */
+const COLOR_RULE_RE = /\[cor=(#[0-9a-fA-F]{6})\]([\s\S]+?)\[\/cor\]/;
+const colorMatch = {
+  exec(rest) {
+    const lazy = COLOR_RULE_RE.exec(rest);
+    if (!lazy) return null;
+    const span = colorSpans(rest.slice(lazy.index)).find((s) => s.open === 0);
+    if (!span || span.innerEnd === span.innerStart) return lazy;
+    const whole = rest.slice(lazy.index, lazy.index + span.end);
+    return Object.assign([whole, span.hex, whole.slice(span.innerStart, span.innerEnd)], { index: lazy.index });
+  },
+};
+
 const FORMAT_RULES = [
-  { re: /\[cor=(#[0-9a-fA-F]{6})\]([\s\S]+?)\[\/cor\]/, color: true },
+  { re: colorMatch, color: true },
   { re: /\*\*([\s\S]+?)\*\*/, tag: 'b' },
   { re: /__([\s\S]+?)__/, tag: 'u' },
   { re: /~~([\s\S]+?)~~/, tag: 's' },

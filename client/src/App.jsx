@@ -14,6 +14,7 @@ import { TitleBar } from './components/Aero.jsx';
 import { FormattedText } from './components/Emotes.jsx';
 import { useAcross, unreadTotal } from './components/conn.jsx';
 import { setUnreadBadge } from './lib/badge.js';
+import { hasShared, takeShared } from './lib/share.js';
 
 /** Aviso que sobe no canto, como o "fulano acabou de entrar" do Messenger. */
 function Toast({ toast }) {
@@ -82,6 +83,22 @@ function UnreadBadge() {
   return null;
 }
 
+/** Veio do "Compartilhar" do celular: pergunta para qual conversa mandar (depois de entrar). */
+function SharedInbox() {
+  useEffect(() => {
+    if (!hasShared()) return;
+    history.replaceState(null, '', '/');
+    takeShared()
+      .then((shared) => {
+        if (!shared) return;
+        useStore.setState({ sharePending: { ...shared, target: null } });
+        useStore.getState().openModal({ type: 'share' });
+      })
+      .catch(() => {});
+  }, []);
+  return null;
+}
+
 export default function App() {
   const phase = useStore((s) => s.phase);
   const toast = useStore((s) => s.toast);
@@ -108,6 +125,7 @@ export default function App() {
       <Modals />
       {loggedIn && <IncomingCalls />}
       {loggedIn && <UnreadBadge />}
+      {loggedIn && phase === 'app' && <SharedInbox />}
       {toast && <Toast key={toast.id} toast={toast} />}
       <UpdateOverlay />
     </>

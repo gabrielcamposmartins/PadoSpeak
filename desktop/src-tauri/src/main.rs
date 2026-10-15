@@ -86,6 +86,27 @@ fn apply_autostart(cfg: &Autostart) {
     }
 }
 
+/// Abre um endereço https no navegador padrão (baixar o instalador, instalar o app pelo navegador).
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    if !url.starts_with("https://") || url.chars().any(|c| c.is_whitespace() || c == '"') {
+        return Err("Endereço inválido".into());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // sem janela de console
+        std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", &url])
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(windows))]
+    std::process::Command::new("xdg-open").arg(&url).spawn().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 fn autostart_get(cfg: State<'_, Autostart>) -> Value {
     json!({ "available": cfg.available, "enabled": cfg.available && startup::enabled() })
@@ -292,7 +313,7 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, local_node, notify_windows, autostart_get, autostart_set])
+        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, local_node, notify_windows, autostart_get, autostart_set, open_url])
         .build(tauri::generate_context!())
         .expect("erro ao iniciar o PadoSpeak");
 

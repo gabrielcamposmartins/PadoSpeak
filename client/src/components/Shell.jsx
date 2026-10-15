@@ -817,12 +817,17 @@ export function useAppBackground() {
   return url ? { 'data-bg': '1', style: { '--app-bg-img': `url("${url}")` } } : {};
 }
 
-/** Faixa "Baixe o app para Windows" (só no navegador de um computador com Windows; o X fecha de vez). */
-const BANNER_KEY = 'padospeak.downloadBannerClosed';
+/**
+ * Faixa "Baixe o app para Windows" (só no navegador de um computador com Windows). O X esconde por
+ * uma semana; depois ela volta.
+ */
+const BANNER_KEY = 'padospeak.downloadBannerClosedAt';
+const BANNER_AGAIN_MS = 7 * 24 * 3600 * 1000;
 export function DownloadBanner() {
   const [closed, setClosed] = useState(() => {
     try {
-      return localStorage.getItem(BANNER_KEY) === '1';
+      const at = Number(localStorage.getItem(BANNER_KEY));
+      return at > 0 && Date.now() - at < BANNER_AGAIN_MS;
     } catch {
       return false;
     }
@@ -845,7 +850,7 @@ export function DownloadBanner() {
         onClick={() => {
           setClosed(true);
           try {
-            localStorage.setItem(BANNER_KEY, '1');
+            localStorage.setItem(BANNER_KEY, String(Date.now()));
           } catch {
             /* sem armazenamento: só fecha agora */
           }

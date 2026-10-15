@@ -21,7 +21,7 @@ import { useStore, sendSticker, sendFile, sendVoice, usePerms } from '../store.j
 import { FileView, UploadList, parseFile, parseVoice, isBlockedFile, VoiceNote, ExpiresTag } from './Files.jsx';
 import { StickerPicker, StickerView, parseSticker } from './Stickers.jsx';
 import FormatTools, { formatKey } from './FormatTools.jsx';
-import { SendPreview, CameraCapture, VoiceRecorder } from './Compose.jsx';
+import { SendPreview, CameraCapture, VoiceRecorder, requestMic } from './Compose.jsx';
 import { useConn, useConnKey } from './conn.jsx';
 import Avatar, { UserName, Orb, usePresence, useUser, colorClass, colorStyle } from './Avatar.jsx';
 import { RichText, FormattedText, plain, EmojiText, EmojiPicker, Floating } from './Emotes.jsx';
@@ -122,10 +122,11 @@ function ComposerTools({ inputRef, text, setText, channelId, onFiles, onSticker 
         type="button"
         className="gloss tool-nudge"
         title="Chamar atenção: faz a janela de quem está aqui tremer (até 3 vezes por minuto)"
+        aria-label="Chamar atenção"
         onClick={() => useC.getState().sendNudge(channelId)}
       >
         <Vibrate size={15} />
-        Chamar atenção
+        <span className="tool-label">Chamar atenção</span>
       </button>
     </FormatTools>
   );
@@ -517,6 +518,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
   const [uploads, setUploads] = useState([]); // arquivos sendo enviados
   const [dragging, setDragging] = useState(false);
   const [pending, setPending] = useState(null); // { items, camera } esperando confirmação
+  const [shareCaption, setShareCaption] = useState(''); // texto que veio junto ao compartilhar
   const [camera, setCamera] = useState(false);
   const [recording, setRecording] = useState(false);
   const connKey = useConnKey();
@@ -545,6 +547,19 @@ export default function ChatView({ channel, variant = 'channel' }) {
       document.removeEventListener('visibilitychange', read);
     };
   }, [channel.id, messages]);
+
+  // Compartilhado pelo celular para esta conversa: arquivos vão para a prévia; só texto/link, para a caixa.
+  const shareTarget = useStore((s) => s.sharePending?.target);
+  useEffect(() => {
+    if (!shareTarget || shareTarget !== channel.id) return;
+    const shared = useStore.getState().sharePending;
+    useStore.setState({ sharePending: null });
+    if (shared.files.length) {
+      sendFiles(shared.files);
+      setShareCaption(shared.text);
+    } else setText(shared.text);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shareTarget, channel.id]);
 
   /** Arquivos escolhidos (botão, arrastar ou colar): vão para a prévia antes de enviar. */
   function sendFiles(files) {
@@ -828,7 +843,10 @@ export default function ChatView({ channel, variant = 'channel' }) {
         className="gloss compose-ico"
         title="Gravar mensagem de voz"
         aria-label="Gravar mensagem de voz"
-        onClick={() => setRecording(true)}
+        onClick={() => {
+          requestMic();
+          setRecording(true);
+        }}
       >
         <Mic size={17} className="ico-green" />
       </button>
@@ -866,8 +884,15 @@ export default function ChatView({ channel, variant = 'channel' }) {
         <SendPreview
           items={pending.items}
           target={target}
-          onSend={confirmSend}
-          onCancel={() => setPending(null)}
+          initialCaption={shareCaption}
+          onSend={(caption) => {
+            setShareCaption('');
+            return confirmSend(caption);
+          }}
+          onCancel={() => {
+            setShareCaption('');
+            setPending(null);
+          }}
           onRetake={
             pending.camera
               ? () => {

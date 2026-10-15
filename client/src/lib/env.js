@@ -9,6 +9,15 @@ export const isPanel =
 /** Instalador da última versão do app desktop (link fixo da release mais recente no GitHub). */
 export const DOWNLOAD_URL = 'https://github.com/gabrielcamposmartins/PadoSpeak/releases/latest/download/PadoSpeak-setup.exe';
 
+/** Abre um endereço fora do app: no app desktop, no navegador padrão; no navegador, numa aba nova. */
+export async function openExternal(url) {
+  if (isTauri) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return invoke('open_url', { url });
+  }
+  window.open(url, '_blank', 'noopener');
+}
+
 /** Servidor de comunidade padrão do app desktop. */
 export const DEFAULT_SERVER = 'https://padospeak.padoru.org';
 

@@ -41,6 +41,11 @@ import {
   ArrowRightLeft,
   MicOff,
   PhoneOff,
+  Monitor,
+  Smartphone,
+  Share,
+  SquarePlus,
+  CircleCheck,
 } from 'lucide-react';
 import {
   useStore,
@@ -55,7 +60,8 @@ import {
   PERM,
   DEFAULT_NOTIFY,
 } from '../store.js';
-import { isDesktop, isTauri } from '../lib/env.js';
+import { isDesktop, isTauri, DOWNLOAD_URL, DEFAULT_SERVER, openExternal } from '../lib/env.js';
+import { usePwa, installState, install } from '../lib/pwa.js';
 import { ConnProvider, useConn } from './conn.jsx';
 import Avatar, { useUser, UserName, colorClass, colorStyle } from './Avatar.jsx';
 import LatencyChart from './LatencyChart.jsx';
@@ -79,6 +85,7 @@ const TITLES = {
   serverLogin: 'Entrar no servidor',
   guildSettings: 'Configurações do servidor',
   changelog: 'Notas de atualização',
+  share: 'Compartilhar',
 };
 
 /** Fundo do banner do perfil (acima da foto) a partir de uma cor. */
@@ -479,7 +486,93 @@ const SETTINGS_TABS = [
   ['aparencia', 'Aparência', Palette],
   ['funcionalidade', 'Funcionalidade', SlidersHorizontal],
   ['formatacao', 'Formatação de texto', Type],
+  ['apps', 'Apps', Download],
 ];
+
+/** Instalar o PadoSpeak: o app para Windows e o app instalável (PWA), em qualquer aparelho. */
+function AppsTab() {
+  usePwa();
+  const serverUrl = primaryConn()((s) => s.baseUrl);
+  const [help, setHelp] = useState(null);
+  const state = installState();
+  // No app desktop, o app instalável vem do servidor de comunidade aberto no navegador.
+  const webUrl = /^https:\/\//.test(serverUrl || '') ? serverUrl : DEFAULT_SERVER;
+  const download = (e) => {
+    if (!isTauri) return;
+    e.preventDefault();
+    openExternal(DOWNLOAD_URL).catch((err) => useStore.getState().notify(String(err?.message || err)));
+  };
+  const installPwa = async () => {
+    if (state.mode === 'prompt') return install();
+    if (state.mode === 'desktop') {
+      await openExternal(webUrl).catch((err) => useStore.getState().notify(String(err?.message || err)));
+      return setHelp('desktop');
+    }
+    setHelp(state.mode === 'manual' ? state.browser : state.mode);
+  };
+  const helpText = {
+    desktop: (
+      <>
+        Abrimos o PadoSpeak no seu navegador (<b>{webUrl.replace(/^https:\/\//, '')}</b>). Lá, clique no ícone de instalar na
+        barra de endereço, ou no menu do navegador → “Instalar PadoSpeak”. No celular, abra o mesmo endereço.
+      </>
+    ),
+    ios: (
+      <>
+        No Safari, toque em <Share size={14} aria-label="Compartilhar" /> Compartilhar (embaixo) e depois em{' '}
+        <SquarePlus size={14} aria-hidden="true" /> “Adicionar à Tela de Início”.
+      </>
+    ),
+    ipad: (
+      <>
+        No Safari, toque em <Share size={14} aria-label="Compartilhar" /> Compartilhar (no alto, à direita) e depois em{' '}
+        <SquarePlus size={14} aria-hidden="true" /> “Adicionar à Tela de Início”.
+      </>
+    ),
+    android: <>No menu ⋮ do navegador, toque em “Instalar app” ou “Adicionar à tela inicial”.</>,
+    safari: <>No Safari, abra o menu Arquivo → “Adicionar ao Dock”.</>,
+    firefox: <>O Firefox não instala apps de sites. Abra este endereço no Chrome ou no Edge e use o ícone de instalar na barra de endereço.</>,
+    chromium: (
+      <>
+        Clique no ícone de instalar na barra de endereço, ou no menu ⋮ do navegador → “Instalar PadoSpeak”. Se a opção não aparecer, o
+        app já pode estar instalado neste computador.
+      </>
+    ),
+  }[help];
+  const installed = state.mode === 'installed';
+  return (
+    <>
+      <div className="settings-sec">PadoSpeak para Windows</div>
+      <div className="app-offer">
+        <Monitor size={30} className="ico-blue" aria-hidden="true" />
+        <div className="install-text">
+          <b>App para Windows</b>
+          <span>Fica na bandeja perto do relógio, avisa com as notificações do Windows e pode iniciar junto com o computador.</span>
+        </div>
+        <a className="btn" href={DOWNLOAD_URL} onClick={download}>
+          <Download size={15} /> Baixar para Windows
+        </a>
+      </div>
+      <div className="settings-sec">App instalável (celular, tablet e computador)</div>
+      <div className="app-offer">
+        <Smartphone size={30} className="ico-green" aria-hidden="true" />
+        <div className="install-text">
+          <b>Instalar o PadoSpeak</b>
+          <span>Abre direto da tela inicial ou da área de trabalho, em tela cheia, e recebe notificações.</span>
+        </div>
+        <button type="button" className="go" onClick={installPwa} disabled={installed}>
+          {installed ? <CircleCheck size={15} /> : <Download size={15} />} {installed ? 'Já instalado' : 'Instalar app'}
+        </button>
+      </div>
+      {installed && <p className="kv">Você está usando o PadoSpeak instalado neste aparelho.</p>}
+      {helpText && (
+        <p className="kv app-help" role="status">
+          {helpText}
+        </p>
+      )}
+    </>
+  );
+}
 
 /** Cores da paleta pessoal (Ctrl+1…8) e a lista de atalhos. */
 function TextFormatting() {
@@ -837,6 +930,7 @@ function SettingsModal({ close }) {
           {tab === 'aparencia' && appearance}
           {tab === 'funcionalidade' && features}
           {tab === 'formatacao' && <TextFormatting />}
+          {tab === 'apps' && <AppsTab />}
         </div>
       </div>
       <div className="modal-foot">
@@ -1380,6 +1474,92 @@ function EditProfileModal({ close }) {
         </button>
       </div>
     </form>
+  );
+}
+
+/** Compartilhado pelo celular: escolher a conversa (a prévia de envio abre nela). */
+function ShareModal({ close }) {
+  const shared = useStore((s) => s.sharePending);
+  const dms = useStore((s) => s.dms) || [];
+  const guilds = useStore((s) => s.guilds) || [];
+  const guildData = useStore((s) => s.guildData);
+  const [q, setQ] = useState('');
+  // Os canais de cada servidor (no celular eles só carregam quando o servidor é aberto).
+  useEffect(() => {
+    const st = useStore.getState();
+    for (const g of st.guilds || []) if (!st.guildData[g.id]) st.loadGuild(g.id).catch(() => {});
+  }, []);
+  const match = (t) => plain(t || '').toLowerCase().includes(q.trim().toLowerCase());
+  const cancel = () => {
+    useStore.setState({ sharePending: null });
+    close();
+  };
+  const pick = async (target, open) => {
+    useStore.setState((s) => ({ sharePending: s.sharePending && { ...s.sharePending, target } }));
+    close();
+    await open();
+  };
+  if (!shared) return null;
+  const what = shared.files.length
+    ? shared.files.length === 1
+      ? shared.files[0].name
+      : `${shared.files.length} arquivos`
+    : shared.text.slice(0, 80);
+  const dmList = dms.filter((d) => match(d.recipient?.displayName) || match(d.recipient?.username) || match(d.name));
+  const channels = guilds.flatMap((g) =>
+    (guildData[g.id]?.channels || [])
+      .filter((c) => c.type === 'text' && (match(c.name) || match(g.name)))
+      .map((c) => ({ guild: g, channel: c })),
+  );
+  return (
+    <>
+      <div className="modal-body">
+        <h2>Compartilhar com…</h2>
+        <p className="sub">
+          <b>{what}</b> — escolha a conversa. Antes de enviar, dá para ver a prévia e escrever um texto junto.
+        </p>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar conversa ou canal" aria-label="Buscar conversa ou canal" />
+        <div className="pick-list share-list">
+          {dmList.length === 0 && channels.length === 0 && <p className="sub">Nenhuma conversa encontrada.</p>}
+          {dmList.map((d) => (
+            <button key={d.id} className="pick-row" onClick={() => pick(d.id, () => useStore.getState().selectDm(d.id))}>
+              <Avatar user={d.recipient} size={32} />
+              <span>
+                <b>
+                  <FormattedText text={d.recipient?.displayName || d.name} />
+                </b>{' '}
+                <small>@{d.recipient?.username}</small>
+              </span>
+            </button>
+          ))}
+          {channels.map(({ guild, channel }) => (
+            <button
+              key={channel.id}
+              className="pick-row"
+              onClick={() =>
+                pick(channel.id, async () => {
+                  await useStore.getState().selectGuild(guild.id);
+                  useStore.getState().selectTextChannel(channel.id);
+                })
+              }
+            >
+              <span className="share-hash">
+                <Hash size={18} />
+              </span>
+              <span>
+                <b>{channel.name}</b> <small>{guild.name}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="modal-foot">
+        <span />
+        <button className="btn ghost" onClick={cancel}>
+          Cancelar
+        </button>
+      </div>
+    </>
   );
 }
 
@@ -2510,6 +2690,7 @@ const MODALS = {
   settings: SettingsModal,
   guildSettings: GuildSettingsModal,
   changelog: ChangelogModal,
+  share: ShareModal,
 };
 
 export default function Modals() {

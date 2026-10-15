@@ -3392,6 +3392,19 @@ html.framed .overlay {
 .pick-row small {
   color: var(--muted);
 }
+.share-list {
+  max-height: min(380px, 50vh);
+}
+.share-hash {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--row-hover);
+  color: var(--ico-blue);
+}
 
 /* ---------- Avisos no canto ---------- */
 .toast {
@@ -4287,6 +4300,21 @@ fieldset.plain {
   font-size: 12px;
   font-weight: 600;
   color: #b55a00;
+}
+.tool-nudge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+/* Celular: só o ícone, na mesma linha dos outros botões */
+.mobile-app .tool-nudge {
+  width: 28px;
+  padding: 0;
+  margin-left: 2px;
+  justify-content: center;
+}
+.mobile-app .tool-nudge .tool-label {
+  display: none;
 }
 :root[data-theme='dark'] .tool-nudge {
   color: #ffc46b;
@@ -5251,6 +5279,47 @@ html[data-touch] .msg .tools .icon-btn {
 .m-chats > .push-card {
   margin: 6px 6px 2px;
 }
+/* Configurações → Apps */
+.app-offer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  margin-bottom: 14px;
+  border-radius: 10px;
+  border: 1px solid var(--panel-border);
+  background: var(--panel);
+}
+.app-offer > svg {
+  flex: none;
+}
+.app-offer .btn,
+.app-offer .go {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+  white-space: nowrap;
+  text-decoration: none;
+}
+.app-help svg {
+  vertical-align: -2px;
+  color: var(--accent, #1a8fd6);
+}
+@media (max-width: 560px) {
+  .app-offer {
+    flex-wrap: wrap;
+  }
+  .app-offer .install-text {
+    flex: 1 1 calc(100% - 50px);
+  }
+  .app-offer .btn,
+  .app-offer .go {
+    margin-left: 42px;
+  }
+}
 .install-card img {
   border-radius: 10px;
   flex: none;
@@ -5597,11 +5666,21 @@ html[data-layout='phone'] .auth-page {
   position: fixed;
   inset: 0;
   z-index: 120;
+  background: rgba(3, 16, 31, 0.86);
+}
+.lightbox-scroll {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  cursor: zoom-out;
+}
+.lightbox-stage {
+  width: 100%;
+  height: 100%;
   display: grid;
+  grid-template: minmax(0, 1fr) / minmax(0, 1fr);
   place-items: center;
   padding: 24px 16px 70px;
-  background: rgba(3, 16, 31, 0.86);
-  cursor: zoom-out;
 }
 .lightbox img {
   max-width: 100%;
@@ -5610,6 +5689,31 @@ html[data-layout='phone'] .auth-page {
   border-radius: 6px;
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
   cursor: default;
+}
+.lightbox img.can-zoom {
+  cursor: zoom-in;
+}
+/* Ampliada: rola nos dois sentidos; arrastar com o mouse move a imagem */
+.lightbox.zoomed .lightbox-scroll {
+  overflow: auto;
+  overscroll-behavior: contain;
+  cursor: grab;
+}
+.lightbox.zoomed.grabbing .lightbox-scroll {
+  cursor: grabbing;
+}
+.lightbox.zoomed .lightbox-stage {
+  width: max-content;
+  height: max-content;
+  min-width: 100%;
+  min-height: 100%;
+  grid-template: auto / auto;
+}
+.lightbox.zoomed img {
+  max-width: none;
+  max-height: none;
+  cursor: inherit;
+  user-select: none;
 }
 .lightbox-bar {
   position: fixed;
@@ -6491,6 +6595,24 @@ html[data-touch] [data-tip]::after {
 .settings-pane {
   min-height: 360px;
 }
+/* Celular: as quatro abas cabem lado a lado (ícone em cima do nome) */
+@media (max-width: 560px) {
+  .settings-tabs {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 2px;
+  }
+  .settings-tabs button {
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: 3px;
+    min-width: 0;
+    padding: 6px 2px;
+    font-size: 11px;
+    line-height: 1.2;
+    text-align: center;
+  }
+}
 .palette-edit {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -6681,6 +6803,7 @@ kbd {
 }
 .voice-rec {
   flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -6753,7 +6876,25 @@ kbd {
   min-width: 0;
 }
 .voice-rec.review .voice-wave {
-  min-width: 60px;
+  min-width: 0;
+  overflow: hidden;
+}
+.voice-rec.review .voice-wave i {
+  min-width: 1px;
+}
+/* Celular: o áudio ocupa a linha de cima; Descartar, Gravar de novo e Enviar ficam embaixo */
+.mobile-app .voice-rec.review {
+  flex-wrap: wrap;
+  padding: 8px;
+}
+.mobile-app .voice-rec.review .voice-note {
+  order: -1;
+  flex: 1 1 100%;
+}
+.mobile-app .voice-rec.review .send-btn {
+  align-self: center;
+  margin-left: auto;
+  min-height: 40px;
 }
 
 /* ---------- Mensagem de voz ---------- */
@@ -7016,6 +7157,30 @@ kbd {
 }
 .cam-side {
   justify-self: end;
+  display: flex;
+  gap: 6px;
+}
+/* Câmera em tela cheia */
+.modal.camera-sheet.full {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+}
+.camera-sheet.full .cam-stage {
+  flex: 1;
+  min-height: 0;
+}
+.camera-sheet.full .cam-video {
+  width: 100%;
+  height: 100%;
+  max-height: none;
 }
 @media (max-width: 640px) {
   .compose-ico {

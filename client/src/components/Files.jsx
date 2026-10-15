@@ -1,8 +1,9 @@
 // Arquivos nas conversas: imagem e vídeo aparecem direto, texto mostra o começo, o resto vira um
 // cartão para baixar. A mensagem guarda `[arquivo:<id>:<tamanho>:<tipo>:<nome>]` (e, na linha de
 // baixo, o texto que foi junto). Mensagens de voz: `[voz:<id>:<duração ms>:<tipo>]`.
-import { useEffect, useRef, useState } from 'react';
-import { Download, FileText, FileArchive, File as FileIcon, X, ExternalLink, Play, Pause, Timer } from 'lucide-react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { Download, FileText, FileArchive, File as FileIcon, X, ExternalLink, Play, Pause, Timer, ZoomIn, ZoomOut } from 'lucide-react';
 import { FILE_RE, VOICE_RE } from '../store.js';
 import { useConn } from './conn.jsx';
 
@@ -150,18 +151,137 @@ export function VoiceNote({ voice, src }) {
 const BLOCKED = /\.(exe|msi|msp|bat|cmd|com|scr|pif|cpl|msc|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|hta|jar|apk|app|dmg|pkg|deb|rpm|sh|bash|run|bin|lnk|reg|dll|sys|drv|ocx|appx|msix|appxbundle|msixbundle|gadget|inf|elf|command|scf|url|iso|img|vhd|vhdx)$/i;
 export const isBlockedFile = (name) => BLOCKED.test(name);
 
-/** Imagem em tamanho grande, por cima de tudo (clique fora ou Esc fecha). */
+/** Imagem em tamanho grande, por cima de tudo (clique fora ou Esc fecha). Se ela encolheu para caber
+ *  (comprida, larga ou grande demais), clicar amplia no ponto clicado e dá para arrastar (ou rolar,
+ *  no toque) para ver as partes; outro clique volta a caber na tela. */
 function Lightbox({ src, name, download, onClose }) {
+  const box = useRef(null);
+  const img = useRef(null);
+  const drag = useRef(null);
+  const [zoomTo, setZoomTo] = useState(0); // escala da ampliação; 0 = já cabe, não amplia
+  const [zoom, setZoom] = useState(null); // { w, h, fx, fy, cx, cy } enquanto ampliada
+  const [grabbing, setGrabbing] = useState(false);
+
   useEffect(() => {
     const onKey = (e) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
-  return (
-    <div className="lightbox" role="dialog" aria-label={name} onClick={onClose}>
-      <img src={src} alt={name} onClick={(e) => e.stopPropagation()} />
-      <div className="lightbox-bar" onClick={(e) => e.stopPropagation()}>
+
+  // Ampliada: preenche a largura (imagem comprida) ou a altura (larga), pelo menos 2× o tamanho que
+  // cabia, sem passar do tamanho real (a não ser que nem assim caiba).
+  const measure = useCallback(() => {
+    const el = img.current;
+    if (!el?.naturalWidth || !box.current) return;
+    const pad = getComputedStyle(el.parentElement);
+    const aw = box.current.clientWidth - parseFloat(pad.paddingLeft) - parseFloat(pad.paddingRight);
+    const ah = box.current.clientHeight - parseFloat(pad.paddingTop) - parseFloat(pad.paddingBottom);
+    const sx = aw / el.naturalWidth;
+    const sy = ah / el.naturalHeight;
+    const fit = Math.min(1, sx, sy);
+    const z = Math.min(1, Math.max(sx, sy, fit * 2));
+    setZoomTo(z > fit * 1.05 ? z : 0);
+  }, []);
+  useEffect(() => {
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, [measure]);
+
+  // Ao ampliar, o ponto clicado fica debaixo do cursor.
+  useLayoutEffect(() => {
+    if (!zoom) return;
+    const el = img.current;
+    box.current.scrollLeft = el.offsetLeft + zoom.fx * el.offsetWidth - zoom.cx;
+    box.current.scrollTop = el.offsetTop + zoom.fy * el.offsetHeight - zoom.cy;
+  }, [zoom]);
+
+  const zoomIn = (e) => {
+    const el = img.current;
+    const r = el.getBoundingClientRect();
+    const b = box.current.getBoundingClientRect();
+    const px = e ? e.clientX : r.left + r.width / 2;
+    const py = e ? e.clientY : r.top + r.height / 2;
+    setZoom({
+      w: Math.round(el.naturalWidth * zoomTo),
+      h: Math.round(el.naturalHeight * zoomTo),
+      fx: (px - r.left) / r.width,
+      fy: (py - r.top) / r.height,
+      cx: px - b.left,
+      cy: py - b.top,
+    });
+  };
+
+  const onClick = (e) => {
+    if (drag.current?.moved) return void (drag.current = null);
+    if (zoom) return setZoom(null);
+    if (e.target !== img.current) return onClose();
+    if (zoomTo) zoomIn(e);
+  };
+  // Arrastar com o mouse rola a imagem ampliada (no toque, a rolagem nativa já faz isso).
+  const onPointerDown = (e) => {
+    if (!zoom || e.pointerType !== 'mouse' || e.button !== 0) return;
+    e.preventDefault();
+    drag.current = { id: e.pointerId, x: e.clientX, y: e.clientY, sl: box.current.scrollLeft, st: box.current.scrollTop, moved: false };
+  };
+  const onPointerMove = (e) => {
+    const d = drag.current;
+    if (!d || d.id !== e.pointerId || d.done) return;
+    const dx = e.clientX - d.x;
+    const dy = e.clientY - d.y;
+    if (!d.moved && Math.abs(dx) + Math.abs(dy) > 4) {
+      d.moved = true;
+      box.current.setPointerCapture(e.pointerId);
+      setGrabbing(true);
+    }
+    if (!d.moved) return;
+    box.current.scrollLeft = d.sl - dx;
+    box.current.scrollTop = d.st - dy;
+  };
+  const onPointerUp = (e) => {
+    const d = drag.current;
+    if (!d || d.id !== e.pointerId) return;
+    d.done = true;
+    if (!d.moved) drag.current = null;
+    setGrabbing(false);
+  };
+
+  // No body: dentro da janela da conversa o `position: fixed` ficaria preso a ela.
+  return createPortal(
+    <div className={`lightbox${zoom ? ' zoomed' : ''}${grabbing ? ' grabbing' : ''}`} role="dialog" aria-label={name}>
+      <div
+        className="lightbox-scroll"
+        ref={box}
+        onClick={onClick}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+      >
+        <div className="lightbox-stage">
+          <img
+            ref={img}
+            src={src}
+            alt={name}
+            draggable={false}
+            onLoad={measure}
+            className={zoomTo && !zoom ? 'can-zoom' : undefined}
+            style={zoom ? { width: zoom.w, height: zoom.h } : undefined}
+            title={zoom ? 'Arraste para ver as partes · clique para voltar' : zoomTo ? 'Clique para ampliar' : undefined}
+          />
+        </div>
+      </div>
+      <div className="lightbox-bar">
         <span>{name}</span>
+        {zoomTo > 0 && (
+          <button
+            className="gloss"
+            onClick={() => (zoom ? setZoom(null) : zoomIn())}
+            aria-label={zoom ? 'Ajustar à tela' : 'Ampliar'}
+            title={zoom ? 'Ajustar à tela' : 'Ampliar'}
+          >
+            {zoom ? <ZoomOut size={15} /> : <ZoomIn size={15} />}
+          </button>
+        )}
         <a className="gloss" href={download} download={name}>
           <Download size={15} /> Baixar
         </a>
@@ -169,7 +289,8 @@ function Lightbox({ src, name, download, onClose }) {
           <X size={15} />
         </button>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

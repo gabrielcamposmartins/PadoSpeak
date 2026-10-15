@@ -8,7 +8,7 @@ import { useRef, useState } from 'react';
 import { Bold, Italic, Underline, Strikethrough, Smile, Baseline } from 'lucide-react';
 import { useStore } from '../store.js';
 import { EmojiPicker, ColorPicker, editField, insertText } from './Emotes.jsx';
-import { DEFAULT_PALETTE, paletteOf } from '../lib/text.js';
+import { DEFAULT_PALETTE, paletteOf, colorSpans } from '../lib/text.js';
 
 export { DEFAULT_PALETTE, paletteOf };
 export const usePalette = () => paletteOf(useStore((s) => s.prefs));
@@ -42,25 +42,61 @@ function toggleWrap(el, text, setText, before, after, placeholder) {
   editField(el, text, setText, before, after, start === end ? '' : placeholder);
 }
 
-const COLOR_ALL = /^\[cor=(#[0-9a-fA-F]{6})\]([\s\S]*)\[\/cor\]$/;
-
-/** Pinta a seleção (ou a mensagem toda, sem seleção) com uma cor. */
-function applyColor(el, text, setText, hex) {
-  const start = el?.selectionStart ?? text.length;
-  const end = el?.selectionEnd ?? text.length;
-  if (start === end && text.trim()) {
-    const whole = COLOR_ALL.exec(text);
-    // A mensagem toda já tem cor: troca (ou tira, se for a mesma).
-    const inner = whole ? whole[2] : text;
-    const next = whole && whole[1].toLowerCase() === hex.toLowerCase() ? inner : `[cor=${hex}]${inner}[/cor]`;
-    setText(next);
+/**
+ * Pinta a seleção (ou a mensagem toda, sem seleção) com uma cor. A tag nova nunca corta outra no meio:
+ * se o trecho já é um colorido inteiro, troca a cor dele (a mesma cor tira); se pega só parte de um
+ * colorido, a seleção cresce até englobá-lo, e a cor nova fica por fora (as de dentro continuam).
+ * `placeholder`: sem seleção, insere um texto de exemplo em vez de pintar a mensagem toda.
+ */
+export function applyColor(el, text, setText, hex, placeholder = '') {
+  let start = el?.selectionStart ?? text.length;
+  let end = el?.selectionEnd ?? text.length;
+  // Mensagem toda: o cursor vai para o fim (para continuar escrevendo); seleção: o trecho pintado.
+  const select = (next, a, b) =>
     requestAnimationFrame(() => {
       el?.focus();
-      el?.setSelectionRange(next.length, next.length);
+      if (whole) el?.setSelectionRange(next.length, next.length);
+      else el?.setSelectionRange(a, b);
     });
-    return;
+  const whole = start === end;
+  if (whole) {
+    if (placeholder || !text.trim()) return editField(el, text, setText, `[cor=${hex}]`, '[/cor]', placeholder);
+    start = 0;
+    end = text.length;
   }
-  editField(el, text, setText, `[cor=${hex}]`, '[/cor]', '');
+  const spans = colorSpans(text);
+  // Não cortar um colorido: se a seleção pega parte dele (ou das tags), passa a pegá-lo inteiro.
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const s of spans) {
+      const overlaps = start < s.end && end > s.open;
+      const inside = start >= s.innerStart && end <= s.innerEnd;
+      const covers = start <= s.open && end >= s.end;
+      if (overlaps && !inside && !covers) {
+        start = Math.min(start, s.open);
+        end = Math.max(end, s.end);
+        grew = true;
+      }
+    }
+  }
+  // Espaços nas pontas ficam de fora.
+  while (start < end && /\s/.test(text[start])) start += 1;
+  while (end > start && /\s/.test(text[end - 1])) end -= 1;
+  if (start === end) return;
+  // O trecho já é um colorido inteiro (com ou sem as tags na seleção): troca a cor, ou tira se for a mesma.
+  const same = spans.find((s) => (s.open === start && s.end === end) || (s.innerStart === start && s.innerEnd === end));
+  if (same) {
+    const inner = text.slice(same.innerStart, same.innerEnd);
+    const tag = same.hex.toLowerCase() === hex.toLowerCase() ? ['', ''] : [`[cor=${hex}]`, '[/cor]'];
+    const next = text.slice(0, same.open) + tag[0] + inner + tag[1] + text.slice(same.end);
+    setText(next);
+    const a = same.open + tag[0].length;
+    return select(next, a, a + inner.length);
+  }
+  const next = `${text.slice(0, start)}[cor=${hex}]${text.slice(start, end)}[/cor]${text.slice(end)}`;
+  setText(next);
+  const a = start + `[cor=${hex}]`.length;
+  select(next, a, a + (end - start));
 }
 
 /**
@@ -133,7 +169,7 @@ export default function FormatTools({ inputRef, text, setText, maxRaw, children,
             onClose={() => setOpen(null)}
             onPick={(hex) => {
               setOpen(null);
-              wrap(`[cor=${hex}]`, '[/cor]', 'texto colorido');
+              applyColor(inputRef.current, text, guarded, hex, 'texto colorido');
             }}
           />
         )}

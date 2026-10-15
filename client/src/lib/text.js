@@ -21,3 +21,23 @@ export function paletteOf(prefs) {
   const p = Array.isArray(prefs?.textPalette) ? prefs.textPalette : [];
   return DEFAULT_PALETTE.map((c, i) => (/^#[0-9a-f]{6}$/i.test(p[i] || '') ? p[i] : c));
 }
+
+const COLOR_TAG = /\[cor=(#[0-9a-fA-F]{6})\]|\[\/cor\]/g;
+
+/**
+ * Trechos coloridos do texto, casando cada `[cor=#hex]` com o seu `[/cor]` (uma cor pode ficar dentro
+ * de outra). Cada um: `{ hex, open, innerStart, innerEnd, end }` (posições no texto com as tags).
+ */
+export function colorSpans(text) {
+  const spans = [];
+  const stack = [];
+  COLOR_TAG.lastIndex = 0;
+  for (let m; (m = COLOR_TAG.exec(text)); ) {
+    if (m[1]) stack.push({ hex: m[1], open: m.index, innerStart: m.index + m[0].length });
+    else if (stack.length) {
+      const s = stack.pop();
+      spans.push({ ...s, innerEnd: m.index, end: m.index + m[0].length });
+    }
+  }
+  return spans.sort((a, b) => a.open - b.open);
+}

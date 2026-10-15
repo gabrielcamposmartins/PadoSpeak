@@ -1,5 +1,20 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.6.4 — 15/10/2026
+
+### Novidades
+- Nova aba **Apps** nas configurações: botão para **baixar o app para Windows** e para **instalar o PadoSpeak** como app (celular, tablet e computador), em qualquer aparelho.
+- **Imagens grandes, compridas ou largas**: clique na imagem aberta para ampliar e arraste (ou role) para ver as partes; outro clique volta a caber na tela. A visualização agora ocupa a tela inteira.
+- **Compartilhar com o PadoSpeak** no Android: no app instalado, o PadoSpeak aparece no “Compartilhar” do celular (prints, fotos, vídeos, arquivos e links). Escolha a conversa e confira a prévia antes de enviar. Se não aparecer logo, reinstale o app pela aba Apps das configurações.
+- Botão de **tela cheia** na janela da câmera (tirar foto ou gravar vídeo).
+- A faixa para baixar o app para Windows volta a aparecer uma semana depois de fechada.
+
+### Correções
+- **Cores (Ctrl+1 a Ctrl+8)**: pintar um texto que já tem cor não bagunça mais as tags. A cor nova fica por fora da que já existe, ou troca a cor quando o trecho todo já é colorido. Cores uma dentro da outra aparecem certas.
+- **Mensagens de voz no iPhone (app instalado)**: o microfone é pedido no próprio toque, a gravação sai em um formato que o iPhone toca e, se o navegador recusar as opções do gravador, usa as dele.
+- No celular, o botão **Enviar** da mensagem de voz não fica mais fora da tela.
+- No celular, o **Chamar atenção** fica na mesma linha dos outros botões de formatação.
+
 ## 1.6.3 — 15/10/2026
 
 ### Novidades

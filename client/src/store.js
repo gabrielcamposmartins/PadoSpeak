@@ -244,6 +244,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
     appAdmin: null, // { canView, owner }: painel do administrador do app
     friendsTab: 'online', // online | all | pending | add
     modal: null,
+    sharePending: null, // compartilhado pelo celular: { files, text, target }
     toast: null,
 
     // ---------- Interface (só faz sentido no principal) ----------

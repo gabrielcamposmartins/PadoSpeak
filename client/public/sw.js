@@ -17,9 +17,38 @@ self.addEventListener('activate', (e) => {
   );
 });
 
+// "Compartilhar" do Android: guarda o que veio e abre o app, que pergunta para qual conversa mandar.
+const SHARE = 'padospeak-share';
+async function receiveShare(req) {
+  try {
+    const form = await req.formData();
+    await caches.delete(SHARE);
+    const cache = await caches.open(SHARE);
+    const files = [];
+    for (const [i, f] of form.getAll('files').entries()) {
+      if (!f || typeof f === 'string' || !f.size) continue;
+      const key = `/__share/file/${i}`;
+      await cache.put(key, new Response(f, { headers: { 'content-type': f.type || 'application/octet-stream' } }));
+      files.push({ key, name: f.name || `arquivo-${i + 1}`, type: f.type });
+    }
+    const text = [form.get('title'), form.get('text'), form.get('url')]
+      .filter((t) => typeof t === 'string' && t.trim())
+      .filter((t, i, all) => all.indexOf(t) === i)
+      .join('\n');
+    await cache.put('/__share/meta', new Response(JSON.stringify({ text, files }), { headers: { 'content-type': 'application/json' } }));
+  } catch {
+    /* abre o app mesmo assim */
+  }
+  return Response.redirect('/?compartilhar=1', 303);
+}
+
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   const url = new URL(req.url);
+  if (req.method === 'POST' && url.origin === location.origin && url.pathname === '/compartilhar') {
+    e.respondWith(receiveShare(req));
+    return;
+  }
   if (req.method !== 'GET' || url.origin !== location.origin) return;
   // API, WebSocket e música sempre pela rede.
   if (url.pathname.startsWith('/api/') || url.pathname === '/ws') return;

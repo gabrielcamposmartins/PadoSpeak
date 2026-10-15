@@ -17,6 +17,8 @@ import {
   FileArchive,
   File as FileIcon,
   TriangleAlert,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react';
 import { useStore } from '../store.js';
 import { TitleBar } from './Aero.jsx';
@@ -88,8 +90,8 @@ function FilePreview({ file, big }) {
  * Confirmação do envio. `items`: `{ kind: 'file', file }` ou `{ kind: 'sticker', sticker }`.
  * `onSend(caption)` envia; `onRetake` (câmera) volta para tirar outra.
  */
-export function SendPreview({ items, target, onSend, onCancel, onRetake }) {
-  const [caption, setCaption] = useState('');
+export function SendPreview({ items, target, onSend, onCancel, onRetake, initialCaption = '' }) {
+  const [caption, setCaption] = useState(initialCaption);
   const [busy, setBusy] = useState(false);
   const ref = useRef(null);
   const limits = useStore((s) => s.config?.files);
@@ -207,6 +209,7 @@ export function CameraCapture({ onDone, onClose }) {
   const video = useRef(null);
   const [stream, setStream] = useState(null);
   const [mode, setMode] = useState('photo'); // photo | video
+  const [full, setFull] = useState(false); // tela cheia
   const [error, setError] = useState('');
   const [devices, setDevices] = useState([]);
   const [deviceIdx, setDeviceIdx] = useState(0);
@@ -326,6 +329,25 @@ export function CameraCapture({ onDone, onClose }) {
     else setDeviceIdx((i) => (i + 1) % devices.length);
   };
 
+  // Tela cheia: a janela ocupa a tela toda (e, onde o navegador deixa, some a barra dele também).
+  useEffect(() => {
+    const sync = () => !document.fullscreenElement && setFull(false);
+    document.addEventListener('fullscreenchange', sync);
+    return () => {
+      document.removeEventListener('fullscreenchange', sync);
+      if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+    };
+  }, []);
+  const toggleFull = () => {
+    if (full) {
+      setFull(false);
+      if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+    } else {
+      setFull(true);
+      document.documentElement.requestFullscreen?.().catch(() => {});
+    }
+  };
+
   return (
     <Sheet
       title={mode === 'photo' ? 'Tirar foto' : 'Gravar vídeo'}
@@ -336,7 +358,7 @@ export function CameraCapture({ onDone, onClose }) {
         }
         onClose();
       }}
-      className="camera-sheet"
+      className={`camera-sheet${full ? ' full' : ''}`}
     >
       <div className="cam-stage">
         {error ? (
@@ -382,6 +404,16 @@ export function CameraCapture({ onDone, onClose }) {
           {mode === 'photo' ? <Circle size={30} /> : rec ? <Square size={22} /> : <Circle size={30} />}
         </button>
         <div className="cam-side">
+          <button
+            type="button"
+            className="gloss mini"
+            title={full ? 'Sair da tela cheia' : 'Tela cheia'}
+            aria-label={full ? 'Sair da tela cheia' : 'Tela cheia'}
+            aria-pressed={full}
+            onClick={toggleFull}
+          >
+            {full ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+          </button>
           {canFlip && (
             <button type="button" className="gloss mini" title="Trocar câmera" aria-label="Trocar câmera" disabled={Boolean(rec)} onClick={flip}>
               <SwitchCamera size={16} />
@@ -394,6 +426,49 @@ export function CameraCapture({ onDone, onClose }) {
 }
 
 const VOICE_MAX_MS = 10 * 60 * 1000;
+
+/** Safari (Mac, iPhone e iPad, inclusive os outros navegadores do iPhone): grava e toca melhor em MP4. */
+const webkit = typeof navigator !== 'undefined' && /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|Edg|OPR/.test(navigator.userAgent);
+const VOICE_MIMES = webkit
+  ? ['audio/mp4', 'audio/mp4;codecs=mp4a.40.2', 'audio/webm;codecs=opus', 'audio/webm']
+  : ['audio/webm;codecs=opus', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/webm'];
+
+/** Microfone pedido no próprio toque do botão (no iPhone, fora do toque o pedido pode não abrir). */
+let pendingMic = null;
+export function requestMic() {
+  const md = navigator.mediaDevices;
+  if (!md?.getUserMedia) {
+    pendingMic = Promise.reject(Object.assign(new Error('este navegador não deixa gravar áudio aqui.'), { name: 'NotSupportedError' }));
+  } else {
+    const base = { echoCancellation: true, noiseSuppression: true };
+    const micId = useStore.getState().prefs.devices?.mic;
+    pendingMic = md
+      .getUserMedia({ audio: micId ? { ...base, deviceId: { ideal: micId } } : base })
+      // microfone escolhido em outro aparelho (ou que sumiu): usa o padrão
+      .catch((e) => (micId && e?.name !== 'NotAllowedError' ? md.getUserMedia({ audio: base }) : Promise.reject(e)));
+  }
+  pendingMic.catch(() => {});
+  return pendingMic;
+}
+const takeMic = () => {
+  const p = pendingMic || requestMic();
+  pendingMic = null;
+  return p;
+};
+
+/** Gravador do áudio, com o formato escolhido e, se o navegador recusar as opções, o padrão dele. */
+function newRecorder(stream) {
+  const mimeType = pickMime(VOICE_MIMES);
+  for (const opts of [{ ...(mimeType ? { mimeType } : {}), audioBitsPerSecond: 64000 }, mimeType ? { mimeType } : null, {}]) {
+    if (!opts) continue;
+    try {
+      return { recorder: new MediaRecorder(stream, opts), mimeType: opts.mimeType || '' };
+    } catch {
+      /* tenta a próxima */
+    }
+  }
+  throw Object.assign(new Error('este navegador não sabe gravar áudio.'), { name: 'NotSupportedError' });
+}
 
 /**
  * Gravador da mensagem de voz (no lugar da caixa de texto). Começa ao aparecer; "Parar" mostra a
@@ -413,21 +488,27 @@ export function VoiceRecorder({ onSend, onCancel }) {
     let ctx = null;
     let raf = 0;
     setState({ phase: 'starting' });
-    const micId = useStore.getState().prefs.devices?.mic;
-    navigator.mediaDevices
-      ?.getUserMedia({ audio: { ...(micId ? { deviceId: { ideal: micId } } : {}), echoCancellation: true, noiseSuppression: true } })
+    takeMic()
       .then((stream) => {
         if (!alive) return stream.getTracks().forEach((t) => t.stop());
-        const mimeType = pickMime(['audio/webm;codecs=opus', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/webm']);
-        const recorder = new MediaRecorder(stream, { ...(mimeType ? { mimeType } : {}), audioBitsPerSecond: 48000 });
+        let made;
+        try {
+          made = newRecorder(stream);
+          // Sem fatias: no Safari, gravar em pedaços pode gerar um arquivo que não toca.
+          made.recorder.start();
+        } catch (e) {
+          stream.getTracks().forEach((t) => t.stop());
+          throw e;
+        }
+        const { recorder, mimeType } = made;
         const chunks = [];
         recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-        recorder.start(500);
         rec.current = { stream, recorder, chunks, started: Date.now(), mimeType };
         setState({ phase: 'recording' });
         // Medidor do volume (só para mostrar que está captando).
         try {
-          ctx = new AudioContext();
+          ctx = new (window.AudioContext || window.webkitAudioContext)();
+          ctx.resume?.().catch(() => {});
           const an = ctx.createAnalyser();
           an.fftSize = 256;
           ctx.createMediaStreamSource(stream).connect(an);
@@ -500,7 +581,10 @@ export function VoiceRecorder({ onSend, onCancel }) {
           <Trash2 size={15} />
         </button>
         <VoiceNote voice={{ id: 'previa', duration: state.ms }} src={reviewUrl} />
-        <button type="button" className="gloss mini" onClick={() => setTake((n) => n + 1)} title="Gravar de novo" aria-label="Gravar de novo">
+        <button type="button" className="gloss mini" onClick={() => {
+            requestMic();
+            setTake((n) => n + 1);
+          }} title="Gravar de novo" aria-label="Gravar de novo">
           <RotateCcw size={15} />
         </button>
         <button type="button" className="go send-btn" onClick={() => onSend(state.blob, state.ms)} title="Enviar mensagem de voz" aria-label="Enviar mensagem de voz">

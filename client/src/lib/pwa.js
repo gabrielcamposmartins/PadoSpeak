@@ -50,6 +50,26 @@ export function installMode({ ignoreDismiss = false } = {}) {
   return null;
 }
 
+/**
+ * Para a aba "Apps" das configurações (que mostra o botão em qualquer lugar): 'installed', 'prompt'
+ * (o navegador abre o pedido de instalar), 'ios' / 'ipad', 'desktop' (app do Windows: instala pelo
+ * navegador) ou 'manual' (pelo menu do navegador; `browser` diz qual).
+ */
+export function installState() {
+  if (isTauri || isDesktop) return { mode: 'desktop' };
+  if (installed) return { mode: 'installed' };
+  if (pwaCapable && deferredPrompt) return { mode: 'prompt' };
+  if (ios) return { mode: ipad ? 'ipad' : 'ios' };
+  const browser = /Firefox\//.test(ua)
+    ? 'firefox'
+    : /Android/.test(ua)
+      ? 'android'
+      : /Macintosh/.test(ua) && /Safari\//.test(ua) && !/Chrome|Chromium|Edg/.test(ua)
+        ? 'safari'
+        : 'chromium';
+  return { mode: 'manual', browser, secure: typeof window !== 'undefined' && window.isSecureContext };
+}
+
 export function dismissInstall() {
   storage.set(DISMISS_KEY, String(Date.now()));
   emit();
