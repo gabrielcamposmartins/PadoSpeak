@@ -1,7 +1,7 @@
 {
   "$schema": "../../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "PadoSpeak",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "identifier": "dev.padospeak.desktop",
   "build": {
     "frontendDist": "../../client/dist",
@@ -20,6 +20,7 @@
         "backgroundColor": "#d4ecfb",
         "dragDropEnabled": false,
         "label": "main",
+        "visible": false,
         "decorations": false,
         "shadow": true,
         "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required"
@@ -61,7 +62,8 @@
         "headerImage": "installer/header.bmp",
         "sidebarImage": "installer/sidebar.bmp",
         "startMenuFolder": "PadoSpeak",
-        "compression": "lzma"
+        "compression": "lzma",
+        "installerHooks": "installer/hooks.nsh"
       }
     },
     "createUpdaterArtifacts": true

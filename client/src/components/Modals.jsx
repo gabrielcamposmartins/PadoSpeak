@@ -13,6 +13,15 @@ import {
   BellOff,
   X,
   Download,
+  Lock,
+  Crown,
+  Shield,
+  FileText,
+  FileArchive,
+  FileVideo,
+  FileAudio,
+  File as FileIcon,
+  LogOut,
 } from 'lucide-react';
 import {
   useStore,
@@ -23,8 +32,10 @@ import {
   syncProfileEverywhere,
   localLogout,
   serverAuthenticate,
+  usePerms,
+  PERM,
 } from '../store.js';
-import { isDesktop } from '../lib/env.js';
+import { isDesktop, isTauri } from '../lib/env.js';
 import { ConnProvider, useConn } from './conn.jsx';
 import Avatar, { useUser, UserName, colorClass, colorStyle } from './Avatar.jsx';
 import LatencyChart from './LatencyChart.jsx';
@@ -221,28 +232,52 @@ function GuildForm({ close, me }) {
   );
 }
 
-function ChannelModal({ close, guildId, channelType }) {
-  const [type, setType] = useState(channelType || 'text');
-  const [name, setName] = useState('');
-  const { busy, error, run } = useAction(() => useStore.getState().createChannel(guildId, name, type), close);
+function ChannelModal({ close, guildId, channelType, channelId }) {
+  const channel = useStore((s) => s.guildData[guildId]?.channels.find((c) => c.id === channelId));
+  const members = useStore((s) => s.guildData[guildId]?.members) || [];
+  const memberPerms = useStore((s) => s.guildData[guildId]?.perms) || {};
+  const access = useStore((s) => s.guildData[guildId]?.channelAccess?.[channelId]);
+  const ownerId = useStore((s) => s.guilds.find((g) => g.id === guildId)?.ownerId);
+  const perms = usePerms(useStore, guildId);
+  const editing = Boolean(channel);
+  const [type, setType] = useState(channel?.type || channelType || 'text');
+  const [name, setName] = useState(channel?.name || '');
+  const [isPrivate, setPrivate] = useState(Boolean(channel?.private));
+  const [allowed, setAllowed] = useState(() => new Set(access || []));
+  // Dono e admins sempre veem; a lista é só para os outros.
+  const alwaysSees = (m) => m.id === ownerId || (memberPerms[m.id] & PERM.ADMIN) !== 0;
+  const { busy, error, run } = useAction(async () => {
+    const st = useStore.getState();
+    if (!editing) return st.createChannel(guildId, name, type);
+    if (name.trim() !== channel.name) await st.updateChannel(channelId, name);
+    const before = new Set(access || []);
+    const changed =
+      isPrivate !== Boolean(channel.private) ||
+      (isPrivate && (before.size !== allowed.size || [...allowed].some((id) => !before.has(id))));
+    if (perms.admin && changed) await st.setChannelAccess(channelId, isPrivate, [...allowed]);
+  }, close);
   return (
     <form onSubmit={run}>
       <div className="modal-body">
-        <h2>Criar canal</h2>
+        <h2>{editing ? `Editar ${type === 'text' ? '#' : ''}${channel.name}` : 'Criar canal'}</h2>
         <p className="sub">&nbsp;</p>
-        <div className={`radio-card${type === 'text' ? ' active' : ''}`} onClick={() => setType('text')}>
-          <Hash />
-          <div>
-            Texto<small>Mensagens, links e opiniões</small>
-          </div>
-        </div>
-        <div className={`radio-card${type === 'voice' ? ' active' : ''}`} onClick={() => setType('voice')}>
-          <Volume2 />
-          <div>
-            Voz<small>Voz, vídeo e compartilhamento de tela em 1080p</small>
-          </div>
-        </div>
-        <label className="field" style={{ marginTop: 16 }}>
+        {!editing && (
+          <>
+            <div className={`radio-card${type === 'text' ? ' active' : ''}`} onClick={() => setType('text')}>
+              <Hash />
+              <div>
+                Texto<small>Mensagens, links e opiniões</small>
+              </div>
+            </div>
+            <div className={`radio-card${type === 'voice' ? ' active' : ''}`} onClick={() => setType('voice')}>
+              <Volume2 />
+              <div>
+                Voz<small>Voz, vídeo e compartilhamento de tela em 1080p</small>
+              </div>
+            </div>
+          </>
+        )}
+        <label className="field" style={{ marginTop: editing ? 0 : 16 }}>
           <span>Nome do canal</span>
           <input
             autoFocus
@@ -253,6 +288,44 @@ function ChannelModal({ close, guildId, channelType }) {
             required
           />
         </label>
+        {editing && perms.admin && (
+          <div className="channel-access">
+            <label className="checkbox">
+              <input type="checkbox" checked={isPrivate} onChange={(e) => setPrivate(e.target.checked)} />
+              <span>
+                <Lock size={13} /> Canal privado
+                <small className="check-hint">
+                  Só as pessoas marcadas abaixo veem este canal (o dono e os administradores sempre veem).
+                </small>
+              </span>
+            </label>
+            {isPrivate && (
+              <div className="access-list" role="group" aria-label="Quem pode ver o canal">
+                {members.map((m) => {
+                  const always = alwaysSees(m);
+                  return (
+                    <label key={m.id} className={`access-row${always ? ' always' : ''}`}>
+                      <input
+                        type="checkbox"
+                        checked={always || allowed.has(m.id)}
+                        disabled={always}
+                        onChange={(e) => {
+                          const next = new Set(allowed);
+                          if (e.target.checked) next.add(m.id);
+                          else next.delete(m.id);
+                          setAllowed(next);
+                        }}
+                      />
+                      <Avatar user={m} size={22} frame={false} />
+                      <UserName user={m} className="access-name" />
+                      {always && <small>{m.id === ownerId ? 'dono' : 'admin'}</small>}
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
         {error && <p className="error-text">{error}</p>}
       </div>
       <div className="modal-foot">
@@ -260,7 +333,7 @@ function ChannelModal({ close, guildId, channelType }) {
           Cancelar
         </button>
         <button className="btn" disabled={busy || !name.trim()}>
-          Criar canal
+          {editing ? 'Salvar' : 'Criar canal'}
         </button>
       </div>
     </form>
@@ -276,7 +349,11 @@ function InviteModal({ close, guild }) {
   const options = isLoopback(serverUrl) && addresses.length ? addresses : [serverUrl];
   const [base, setBase] = useState(options[0]);
   const [copied, setCopied] = useState(false);
-  const link = `${base}/invite/${guild.inviteCode}`;
+  const [code, setCode] = useState(guild.inviteCode || '');
+  useEffect(() => {
+    if (!code) useStore.getState().fetchInvite(guild.id).then(setCode, (e) => useStore.getState().notify(e.message));
+  }, [guild.id]);
+  const link = code ? `${base}/invite/${code}` : 'Carregando…';
   return (
     <>
       <div className="modal-body">
@@ -315,7 +392,7 @@ function InviteModal({ close, guild }) {
             </button>
           </div>
           <small>
-            Código: <code>{guild.inviteCode}</code> · No app PadoSpeak, use o endereço <code>{base}</code> na tela de
+            Código: <code>{code || '…'}</code> · No app PadoSpeak, use o endereço <code>{base}</code> na tela de
             login.
           </small>
         </div>
@@ -387,6 +464,27 @@ function SettingsModal({ close }) {
   const [rnnoise, setRnnoise] = useState(useStore.getState().prefs.noiseSuppression !== false);
   const [sounds, setSounds] = useState(useStore.getState().prefs.sounds !== false);
   const [repeatAlerts, setRepeatAlerts] = useState(useStore.getState().prefs.repeatAlerts !== false);
+  // App desktop: iniciar com o Windows (abre minimizado na bandeja).
+  const [autostart, setAutostart] = useState(null);
+  const [autostartOn, setAutostartOn] = useState(false);
+  useEffect(() => {
+    if (!isTauri) return;
+    import('@tauri-apps/api/core')
+      .then(({ invoke }) => invoke('autostart_get'))
+      .then((a) => {
+        setAutostart(a);
+        setAutostartOn(a.enabled);
+      })
+      .catch(() => {});
+  }, []);
+  const [watch, setWatch] = useState(() => {
+    const p = useStore.getState().prefs;
+    return {
+      autoWatchCamera: Boolean(p.autoWatchCamera),
+      autoWatchScreen: Boolean(p.autoWatchScreen),
+      autoWatchDmCamera: p.autoWatchDmCamera !== false,
+    };
+  });
   const nudge = prim((s) => s.nudgeSettings);
   const [theme, setTheme] = useState(useStore.getState().prefs.theme || 'light');
   const [scene, setScene] = useState(useStore.getState().prefs.scene ?? 0);
@@ -542,6 +640,35 @@ function SettingsModal({ close }) {
                 Os nomes dos dispositivos aparecem depois que você permitir o acesso (entre em um canal de voz).
               </p>
             )}
+            <div className="settings-sec">Vídeo e transmissões</div>
+            <p className="kv">
+              Câmeras e transmissões só chegam quando você clica para ver — assim não gastam sua internet à toa.
+            </p>
+            {[
+              ['autoWatchDmCamera', 'Ver a câmera automaticamente em chamadas diretas', 'Chamadas de voz entre você e um amigo.'],
+              ['autoWatchCamera', 'Ver câmeras automaticamente nos servidores', 'Abre a câmera de todo mundo do canal de voz.'],
+              ['autoWatchScreen', 'Assistir transmissões automaticamente', 'Abre toda tela compartilhada assim que começar.'],
+            ].map(([k, label, hint]) => (
+              <label className="checkbox" key={k}>
+                <input type="checkbox" checked={watch[k]} onChange={(e) => setWatch({ ...watch, [k]: e.target.checked })} />
+                <span>
+                  {label}
+                  <small className="check-hint">{hint}</small>
+                </span>
+              </label>
+            ))}
+            {autostart?.available && (
+              <>
+                <div className="settings-sec">Sistema</div>
+                <label className="checkbox">
+                  <input type="checkbox" checked={autostartOn} onChange={(e) => setAutostartOn(e.target.checked)} />
+                  <span>
+                    Iniciar o PadoSpeak com o Windows
+                    <small className="check-hint">Abre minimizado na bandeja, perto do relógio, para receber mensagens e chamadas.</small>
+                  </span>
+                </label>
+              </>
+            )}
             <div className="settings-sec">Notificações</div>
             <label className="checkbox">
               <input type="checkbox" checked={repeatAlerts} onChange={(e) => setRepeatAlerts(e.target.checked)} />
@@ -573,6 +700,11 @@ function SettingsModal({ close }) {
             useStore.getState().setDevices(choice);
             useStore.getState().setSounds(sounds);
             useStore.getState().setRepeatAlerts(repeatAlerts);
+            if (autostart?.available && autostartOn !== autostart.enabled)
+              import('@tauri-apps/api/core')
+                .then(({ invoke }) => invoke('autostart_set', { on: autostartOn }))
+                .catch((e) => useStore.getState().notify(`Iniciar com o Windows: ${e}`));
+            useStore.getState().setWatchPrefs(watch);
             if (rnnoise !== (useStore.getState().prefs.noiseSuppression !== false))
               useStore.getState().setNoiseSuppression(rnnoise);
             close();
@@ -1070,13 +1202,19 @@ function ServerLoginModal({ close }) {
 
 /** Janelas mais largas que o padrão. */
 /** Configuração do servidor (só o dono): nome, ícone e os arquivos enviados nos canais. */
-function GuildSettingsModal({ guildId, close }) {
-  const guild = useStore((s) => s.guilds.find((g) => g.id === guildId));
-  const base = useStore((s) => s.baseUrl);
-  const [name, setName] = useState(guild?.name || '');
+/** Ícone do tipo de arquivo para os cards. */
+function fileKindIcon(f) {
+  if (f.mime.startsWith('video/')) return FileVideo;
+  if (f.mime.startsWith('audio/')) return FileAudio;
+  if (/zip|rar|7z|tar|gzip/.test(f.mime) || /\.(zip|rar|7z|tar|gz)$/i.test(f.name)) return FileArchive;
+  if (f.mime.startsWith('text/') || /pdf|document|sheet|presentation/.test(f.mime)) return FileText;
+  return FileIcon;
+}
+
+/** Arquivos enviados nos canais, em cards (prévia para imagens). */
+function GuildFiles({ guildId }) {
   const [files, setFiles] = useState(null);
   const [busy, setBusy] = useState(false);
-  const iconInput = useRef(null);
   const st = useStore.getState();
   const load = () =>
     st
@@ -1086,6 +1224,153 @@ function GuildSettingsModal({ guildId, close }) {
   useEffect(() => {
     load();
   }, [guildId]);
+  const when = (ms) => new Date(ms).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' });
+  if (!files) return <p className="kv">Carregando…</p>;
+  return (
+    <>
+      <p className="kv gs-files-sum">
+        {files.files.length} {files.files.length === 1 ? 'arquivo' : 'arquivos'} · {fmtSize(files.total)}
+        {files.stored != null && files.stored < files.total && ` (ocupam ${fmtSize(files.stored)} comprimidos)`} · até{' '}
+        {fmtSize(files.maxFile)} por arquivo
+      </p>
+      {files.files.length === 0 ? (
+        <p className="kv">Nenhum arquivo enviado nos canais ainda.</p>
+      ) : (
+        <div className="gs-file-grid" aria-label="Arquivos no servidor">
+          {files.files.map((f) => {
+            const Icon = fileKindIcon(f);
+            return (
+              <div className="gs-card" key={f.id}>
+                <a className="gs-card-thumb" href={st.fileUrl(f.id)} target="_blank" rel="noreferrer" title={f.name}>
+                  {f.mime.startsWith('image/') ? (
+                    <img src={st.fileUrl(f.id)} alt="" loading="lazy" />
+                  ) : (
+                    <Icon size={34} strokeWidth={1.5} />
+                  )}
+                </a>
+                <div className="gs-card-body">
+                  <a className="gs-card-name" href={st.fileUrl(f.id)} target="_blank" rel="noreferrer" title={f.name}>
+                    {f.name}
+                  </a>
+                  <span className="gs-card-meta">
+                    {fmtSize(f.size)} · #{f.channelName || 'canal apagado'}
+                  </span>
+                  <span className="gs-card-meta">
+                    {plain(f.by) || f.byUsername} · {when(f.createdAt)}
+                  </span>
+                </div>
+                <div className="gs-card-actions">
+                  <a className="gloss mini" href={st.fileUrl(f.id, true)} download={f.name} title="Baixar" aria-label={`Baixar ${f.name}`}>
+                    <Download size={14} />
+                  </a>
+                  <button
+                    className="gloss mini danger-ico"
+                    title="Apagar arquivo"
+                    aria-label={`Apagar ${f.name}`}
+                    disabled={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      try {
+                        await st.deleteFile(f.id);
+                        await load();
+                      } catch (e) {
+                        st.notify(e.message);
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </>
+  );
+}
+
+const PERM_OPTIONS = [
+  { bit: PERM.ADMIN, label: 'Administrador', hint: 'Tudo, menos excluir o servidor' },
+  { bit: PERM.INVITE, label: 'Convidar pessoas', hint: 'Vê e compartilha o convite' },
+  { bit: PERM.CHANNELS, label: 'Criar e editar canais', hint: 'Cria, renomeia e exclui canais' },
+];
+
+/** Membros e o que cada um pode fazer. */
+function GuildMembers({ guildId, perms: mine }) {
+  const members = useStore((s) => s.guildData[guildId]?.members) || [];
+  const memberPerms = useStore((s) => s.guildData[guildId]?.perms) || {};
+  const ownerId = useStore((s) => s.guilds.find((g) => g.id === guildId)?.ownerId);
+  const [busy, setBusy] = useState(null);
+  const sorted = [...members].sort((a, b) => (a.id === ownerId ? -1 : b.id === ownerId ? 1 : 0));
+  const toggle = async (m, bit, on) => {
+    const cur = memberPerms[m.id] || 0;
+    setBusy(m.id);
+    try {
+      await useStore.getState().setMemberPerms(guildId, m.id, on ? cur | bit : cur & ~bit);
+    } catch (e) {
+      useStore.getState().notify(e.message);
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <div className="gs-members" role="table" aria-label="Permissões dos membros">
+      <div className="gs-member gs-member-head" role="row">
+        <span>Membro</span>
+        {PERM_OPTIONS.map((o) => (
+          <span key={o.bit} title={o.hint}>
+            {o.label}
+          </span>
+        ))}
+      </div>
+      {sorted.map((m) => {
+        const owner = m.id === ownerId;
+        const bits = owner ? 7 : memberPerms[m.id] || 0;
+        const isAdmin = (bits & PERM.ADMIN) !== 0;
+        // Só o dono mexe em admins (e em quem é admin).
+        const locked = owner || (isAdmin && !mine.owner);
+        return (
+          <div className="gs-member" role="row" key={m.id}>
+            <span className="gs-member-who">
+              <Avatar user={m} size={28} frame={false} />
+              <UserName user={m} className="gs-member-name" />
+              {owner && <Crown size={13} className="crown" aria-label="Dono" />}
+              {!owner && isAdmin && <Shield size={13} className="crown admin-badge" aria-label="Administrador" />}
+            </span>
+            {PERM_OPTIONS.map((o) => {
+              const implied = o.bit !== PERM.ADMIN && isAdmin;
+              const disabled = busy === m.id || locked || implied || (o.bit === PERM.ADMIN && !mine.owner);
+              return (
+                <label key={o.bit} className="gs-perm" title={owner ? 'O dono tem todas as permissões' : o.hint}>
+                  <input
+                    type="checkbox"
+                    aria-label={`${o.label}: ${plain(m.displayName) || m.username}`}
+                    checked={(bits & o.bit) !== 0 || implied}
+                    disabled={disabled}
+                    onChange={(e) => toggle(m, o.bit, e.target.checked)}
+                  />
+                </label>
+              );
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function GuildSettingsModal({ guildId, close }) {
+  const guild = useStore((s) => s.guilds.find((g) => g.id === guildId));
+  const base = useStore((s) => s.baseUrl);
+  const perms = usePerms(useStore, guildId);
+  const [tab, setTab] = useState('geral');
+  const [name, setName] = useState(guild?.name || '');
+  const [busy, setBusy] = useState(false);
+  const iconInput = useRef(null);
+  const st = useStore.getState();
   if (!guild) return null;
   const run = async (fn) => {
     setBusy(true);
@@ -1102,90 +1387,109 @@ function GuildSettingsModal({ guildId, close }) {
     e.target.value = '';
     if (file) run(async () => st.uploadGuildIcon(guildId, await prepareAvatar(file)));
   };
-  const when = (ms) => new Date(ms).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' });
+  const tabs = [
+    ['geral', 'Geral'],
+    ...(perms.admin
+      ? [
+          ['membros', 'Membros e permissões'],
+          ['arquivos', 'Arquivos'],
+        ]
+      : []),
+  ];
+  const myPerms = PERM_OPTIONS.filter((o) => (o.bit === PERM.ADMIN ? perms.admin : o.bit === PERM.INVITE ? perms.invite : perms.channels));
   return (
     <>
       <div className="modal-body guild-settings">
         <h2>Configurações do servidor</h2>
-        <p className="sub">Só você, como dono, vê esta tela.</p>
-        <div className="gs-top">
-          <div className="gs-icon">
-            <span className={`gel guild guild-icon big${guild.iconUrl ? ' has-img' : ''}`} style={{ '--c': guild.iconColor }}>
-              {guild.iconUrl ? <img src={base + guild.iconUrl} alt="" /> : <span>{guild.name.slice(0, 2).toUpperCase()}</span>}
-            </span>
-            <div className="gs-icon-actions">
-              <button className="btn secondary" disabled={busy} onClick={() => iconInput.current?.click()}>
-                <Camera size={16} /> Escolher ícone
+        {tabs.length > 1 && (
+          <div className="gs-tabs" role="tablist">
+            {tabs.map(([id, label]) => (
+              <button
+                key={id}
+                role="tab"
+                aria-selected={tab === id}
+                className={tab === id ? 'on' : ''}
+                onClick={() => setTab(id)}
+              >
+                {label}
               </button>
-              {guild.iconUrl && (
-                <button className="btn ghost" disabled={busy} onClick={() => run(() => st.removeGuildIcon(guildId))}>
-                  <Trash2 size={16} /> Remover ícone
-                </button>
-              )}
-              <small>PNG, JPEG, WebP ou GIF. A imagem é recortada em quadrado.</small>
-              <input ref={iconInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={pickIcon} />
-            </div>
-          </div>
-          <form
-            className="field gs-name"
-            onSubmit={(e) => {
-              e.preventDefault();
-              run(() => st.updateGuild(guildId, { name }));
-            }}
-          >
-            <label htmlFor="gs-name">Nome do servidor</label>
-            <div className="gs-name-row">
-              <input id="gs-name" value={name} maxLength={48} onChange={(e) => setName(e.target.value)} required />
-              <button className="btn" disabled={busy || !name.trim() || name.trim() === guild.name}>
-                Salvar
-              </button>
-            </div>
-          </form>
-        </div>
-        <div className="settings-sec gs-files-head">
-          <span>Arquivos no servidor</span>
-          {files && (
-            <small>
-              {files.files.length} {files.files.length === 1 ? 'arquivo' : 'arquivos'} · {fmtSize(files.total)} · até{' '}
-              {fmtSize(files.maxFile)} por arquivo
-            </small>
-          )}
-        </div>
-        {!files ? (
-          <p className="kv">Carregando…</p>
-        ) : files.files.length === 0 ? (
-          <p className="kv">Nenhum arquivo enviado nos canais ainda.</p>
-        ) : (
-          <div className="gs-files" role="table" aria-label="Arquivos no servidor">
-            {files.files.map((f) => (
-              <div className="gs-file" role="row" key={f.id}>
-                <a href={st.fileUrl(f.id)} target="_blank" rel="noreferrer" className="gs-file-name" title={f.name}>
-                  {f.name}
-                </a>
-                <span className="gs-file-meta">
-                  {fmtSize(f.size)} · #{f.channelName || 'canal apagado'} · {plain(f.by) || f.byUsername} · {when(f.createdAt)}
-                </span>
-                <a className="gloss mini" href={st.fileUrl(f.id, true)} download={f.name} title="Baixar" aria-label={`Baixar ${f.name}`}>
-                  <Download size={14} />
-                </a>
-                <button
-                  className="gloss mini danger-ico"
-                  title="Apagar arquivo"
-                  aria-label={`Apagar ${f.name}`}
-                  disabled={busy}
-                  onClick={() =>
-                    run(async () => {
-                      await st.deleteFile(f.id);
-                      await load();
-                    })
-                  }
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
             ))}
           </div>
         )}
+        {tab === 'geral' && (
+          <>
+            {perms.admin ? (
+              <div className="gs-top">
+                <div className="gs-icon">
+                  <span className={`gel guild guild-icon big${guild.iconUrl ? ' has-img' : ''}`} style={{ '--c': guild.iconColor }}>
+                    {guild.iconUrl ? <img src={base + guild.iconUrl} alt="" /> : <span>{guild.name.slice(0, 2).toUpperCase()}</span>}
+                  </span>
+                  <div className="gs-icon-actions">
+                    <button className="btn secondary" disabled={busy} onClick={() => iconInput.current?.click()}>
+                      <Camera size={16} /> Escolher ícone
+                    </button>
+                    {guild.iconUrl && (
+                      <button className="btn ghost" disabled={busy} onClick={() => run(() => st.removeGuildIcon(guildId))}>
+                        <Trash2 size={16} /> Remover ícone
+                      </button>
+                    )}
+                    <small>PNG, JPEG, WebP ou GIF. A imagem é recortada em quadrado.</small>
+                    <input ref={iconInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={pickIcon} />
+                  </div>
+                </div>
+                <form
+                  className="field gs-name"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    run(() => st.updateGuild(guildId, { name }));
+                  }}
+                >
+                  <label htmlFor="gs-name">Nome do servidor</label>
+                  <div className="gs-name-row">
+                    <input id="gs-name" value={name} maxLength={48} onChange={(e) => setName(e.target.value)} required />
+                    <button className="btn" disabled={busy || !name.trim() || name.trim() === guild.name}>
+                      Salvar
+                    </button>
+                  </div>
+                </form>
+              </div>
+            ) : (
+              <div className="gs-mine">
+                <p className="kv">
+                  {myPerms.length
+                    ? `Você pode: ${myPerms.map((o) => o.label.toLowerCase()).join(', ')}.`
+                    : 'Você é membro deste servidor. Os administradores podem te dar permissões para convidar pessoas ou criar canais.'}
+                </p>
+              </div>
+            )}
+            <div className="settings-sec">{perms.owner ? 'Excluir servidor' : 'Sair do servidor'}</div>
+            <div className="gs-danger">
+              <p className="kv">
+                {perms.owner
+                  ? 'Todos os canais, mensagens e arquivos serão apagados para sempre.'
+                  : 'Você precisará de um novo convite para voltar.'}
+              </p>
+              <button
+                className="btn red"
+                onClick={() =>
+                  st.openModal({
+                    type: 'confirm',
+                    title: perms.owner ? `Excluir "${guild.name}"?` : `Sair de "${guild.name}"?`,
+                    text: perms.owner
+                      ? 'Todos os canais e mensagens serão apagados para sempre.'
+                      : 'Você precisará de um novo convite para voltar.',
+                    action: () => (perms.owner ? st.deleteGuild(guild.id) : st.leaveGuild(guild.id)),
+                  })
+                }
+              >
+                {perms.owner ? <Trash2 size={16} /> : <LogOut size={16} />}
+                {perms.owner ? 'Excluir servidor' : 'Sair do servidor'}
+              </button>
+            </div>
+          </>
+        )}
+        {tab === 'membros' && perms.admin && <GuildMembers guildId={guildId} perms={perms} />}
+        {tab === 'arquivos' && perms.admin && <GuildFiles guildId={guildId} />}
       </div>
       <div className="modal-foot">
         <button className="btn" onClick={close}>
@@ -1218,7 +1522,11 @@ export default function Modals() {
   if (!modal) return null;
   const Component = MODALS[modal.type];
   return (
-    <Modal onClose={close} size={SIZES[modal.type]} title={TITLES[modal.type]}>
+    <Modal
+      onClose={close}
+      size={SIZES[modal.type]}
+      title={modal.type === 'channel' && modal.channelId ? 'Editar canal' : TITLES[modal.type]}
+    >
       <Component key={modal.userId || modal.type} {...modal} close={close} />
     </Modal>
   );

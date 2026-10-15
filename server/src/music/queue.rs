@@ -187,6 +187,7 @@ impl ChannelMusic {
 
 pub struct MusicManager {
     hub: Arc<Hub>,
+    db: crate::db::Db,
     logs: Logs,
     data_dir: PathBuf,
     /// Cliente HTTP geral (Spotify, downloads de ferramentas).
@@ -206,6 +207,7 @@ impl MusicManager {
     /// `cookies`: (arquivo cookies.txt, navegador) configurados pelo host para o YouTube.
     pub fn new(
         hub: Arc<Hub>,
+        db: crate::db::Db,
         logs: Logs,
         data_dir: PathBuf,
         cookies: (String, String),
@@ -216,6 +218,7 @@ impl MusicManager {
         };
         let me = Arc::new(Self {
             hub,
+            db,
             logs,
             data_dir,
             http: client(None),
@@ -291,12 +294,12 @@ impl MusicManager {
             }
         };
         if let Some((guild_id, p)) = payload {
-            self.hub.to_guild(&guild_id, "music:state", p);
+            self.hub.to_channel(&guild_id, channel_id, "music:state", p);
         }
     }
 
     fn notice(&self, guild_id: &str, channel_id: &str, text: String) {
-        self.hub.to_guild(guild_id, "music:notice", json!({ "channelId": channel_id, "text": text }));
+        self.hub.to_channel(guild_id, channel_id, "music:notice", json!({ "channelId": channel_id, "text": text }));
     }
 
     /// Estados das filas ativas nas guilds informadas (para o `ready` do WebSocket).
@@ -349,6 +352,7 @@ impl MusicManager {
             };
             let mut next_to_load = None;
             let mut failure = None;
+            let mut played = None;
             {
                 let mut channels = me.channels.lock().unwrap();
                 let Some(chan) = channels.get_mut(&channel_id) else { return };
@@ -356,11 +360,19 @@ impl MusicManager {
                     return; // fila mudou enquanto carregava
                 }
                 match result {
-                    Ok(audio) => chan.start(crate::now_ms(), audio.duration_ms),
+                    Ok(audio) => {
+                        chan.start(crate::now_ms(), audio.duration_ms);
+                        played = Some(chan.guild_id.clone());
+                    }
                     Err(e) => {
                         failure = Some((chan.guild_id.clone(), format!("Não foi possível tocar \"{}\": {e}", track.title)));
                         next_to_load = chan.advance_dropping().map(|t| (t, chan.generation));
                     }
+                }
+            }
+            if let Some(guild_id) = played {
+                if let Err(e) = super::library::record_play(&me.db, &guild_id, &track).await {
+                    me.logs.warn(format!("Não foi possível registrar a música tocada: {e}"));
                 }
             }
             if let Some((guild_id, text)) = failure {

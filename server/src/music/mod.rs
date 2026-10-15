@@ -3,6 +3,7 @@
 //! O servidor é o "DJ": guarda a fila, resolve links do YouTube/Spotify com o yt-dlp e serve o
 //! áudio por proxy (`/api/music/stream/{id}`). Quem está no canal toca o mesmo stream em sincronia,
 //! a partir do relógio da faixa (`startedAt`) definido aqui.
+pub mod library;
 pub mod queue;
 pub mod resolve;
 pub mod stream;

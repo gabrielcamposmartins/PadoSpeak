@@ -218,6 +218,63 @@ CREATE TABLE IF NOT EXISTS guild_icons (
 );
 "#,
     ),
+    (
+        9,
+        r#"
+-- Reações nas mensagens (canais e conversas diretas): um emoticon por pessoa, cada um conta uma vez.
+CREATE TABLE IF NOT EXISTS message_reactions (
+  message_id TEXT NOT NULL,
+  channel_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  emoji TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (message_id, user_id, emoji)
+);
+CREATE INDEX IF NOT EXISTS idx_reactions_message ON message_reactions(message_id, created_at);
+"#,
+    ),
+    (
+        10,
+        r#"
+-- Permissões por membro (bits: 1 admin, 2 convidar, 4 criar/editar canais). O dono tem todas.
+ALTER TABLE guild_members ADD COLUMN perms INTEGER NOT NULL DEFAULT 0;
+-- Músicas favoritas de cada pessoa.
+CREATE TABLE IF NOT EXISTS music_favorites (
+  user_id TEXT NOT NULL,
+  track_key TEXT NOT NULL,
+  title TEXT NOT NULL,
+  artist TEXT,
+  page_url TEXT NOT NULL,
+  thumbnail TEXT,
+  duration_ms INTEGER,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, track_key)
+);
+-- Músicas tocadas em cada servidor (para "Mais tocadas"; guarda só as últimas 2 semanas).
+CREATE TABLE IF NOT EXISTS music_plays (
+  guild_id TEXT NOT NULL,
+  track_key TEXT NOT NULL,
+  title TEXT NOT NULL,
+  artist TEXT,
+  page_url TEXT NOT NULL,
+  thumbnail TEXT,
+  duration_ms INTEGER,
+  played_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_music_plays ON music_plays(guild_id, played_at);
+-- Canais privados: só quem está em channel_access (além do dono e dos admins) vê.
+ALTER TABLE channels ADD COLUMN private INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS channel_access (
+  channel_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  PRIMARY KEY (channel_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_channel_access_user ON channel_access(user_id);
+-- Arquivos comprimidos (gzip) no disco: `encoding` e o tamanho ocupado.
+ALTER TABLE files ADD COLUMN encoding TEXT;
+ALTER TABLE files ADD COLUMN stored INTEGER;
+"#,
+    ),
 ];
 
 impl Db {

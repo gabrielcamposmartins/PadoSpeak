@@ -468,6 +468,7 @@ pub async fn dm_messages(app: &App, dm_id: &str, before: i64, limit: i64) -> Api
     for m in &mut list {
         open_message(&app.db, m);
     }
+    attach_reactions(&app.db, &mut list).await?;
     list.reverse();
     Ok(list)
 }

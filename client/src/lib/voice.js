@@ -38,6 +38,8 @@ export class VoiceClient {
     this.camera = null;
     this.screen = null;
     this.devices = { mic: '', camera: '', output: '' };
+    // Vídeo sob demanda: câmera/tela de alguém só começam a chegar quando você pede (ou pelas preferências).
+    this.watchPrefs = { camera: false, screen: false, dmCamera: true };
     this.state = {
       channelId: null,
       guildId: null,
@@ -58,8 +60,9 @@ export class VoiceClient {
 
   // ---------- Ciclo de vida ----------
 
-  async join(channelId, { muted = false, deafened = false, devices, noiseSuppression = true } = {}) {
+  async join(channelId, { muted = false, deafened = false, devices, noiseSuppression = true, watch } = {}) {
     Object.assign(this.devices, devices || {});
+    Object.assign(this.watchPrefs, watch || {});
     this.noiseSuppression = noiseSuppression;
     this.state.muted = muted;
     this.state.deafened = deafened;
@@ -97,9 +100,14 @@ export class VoiceClient {
     this.state.guildId = res.guildId;
     this.state.dm = Boolean(res.dm);
     for (const p of res.peers) this.ensurePeer(p.peerId, p);
+    // Quem já estava no canal (ou mandou sinal antes da resposta) recebe o pedido conforme as preferências.
+    for (const peer of this.peers.values()) this.applyAutoWatch(peer);
     if (this.mic) this.watchLevel('me', this.mic);
     this.meterTimer = setInterval(() => this.tickSpeaking(), 120);
-    this.statsTimer = setInterval(() => this.collectStats(), 2000);
+    this.statsTimer = setInterval(() => {
+      this.collectStats();
+      this.startLateSenders();
+    }, 2000);
     this.changed();
   }
 
@@ -134,7 +142,10 @@ export class VoiceClient {
     let peer = this.peers.get(peerId);
     if (peer) {
       if (info) {
+        const wasLive = Boolean(peer.info.screen);
         Object.assign(peer.info, info);
+        // A transmissão acabou: da próxima vez é preciso pedir de novo (a não ser que assista automaticamente).
+        if (wasLive && !peer.info.screen && peer.watching.screen && !this.watchPrefs.screen) this.setWatching(peer, { screen: false });
         this.applyAudio(peer);
       }
       return peer;
@@ -152,6 +163,9 @@ export class VoiceClient {
       streams: new Map(),
       audioEls: new Map(),
       senders: {},
+      // O que esta pessoa pediu para receber de mim / o que eu pedi para receber dela.
+      wants: { camera: false, screen: false },
+      watching: { camera: false, screen: false },
       volume: 1,
       streamVolume: 1,
       streamMuted: false,
@@ -176,6 +190,7 @@ export class VoiceClient {
     pc.onconnectionstatechange = () => {
       peer.connectionState = pc.connectionState;
       if (pc.connectionState === 'failed') pc.restartIce();
+      if (pc.connectionState === 'connected') this.sendWant(peer);
       this.changed();
     };
     pc.ontrack = ({ track, streams }) => {
@@ -196,11 +211,89 @@ export class VoiceClient {
       this.changed();
     };
 
-    // Envia tudo o que já está ativo localmente.
-    if (this.mic) peer.senders.mic = pc.addTrack(this.mic.getAudioTracks()[0], this.mic);
-    if (this.camera) peer.senders.camera = pc.addTrack(this.camera.getVideoTracks()[0], this.camera);
-    if (this.screen) this.addScreenTracks(peer);
+    // Na primeira negociação só o lado não educado oferece. Se os dois oferecem juntos, o educado desfaz a
+    // oferta no meio da coleta ICE e o Chrome às vezes nunca mais gera candidatos ("Conectando…" para
+    // sempre). O educado só anexa a voz depois de responder (startSenders).
+    peer.createdAt = Date.now();
+    if (peer.polite) peer.lateSenders = true;
+    else this.startSenders(peer);
+    if (this.state.channelId) this.applyAutoWatch(peer);
     return peer;
+  }
+
+  /** Anexa a voz (sempre vai; câmera e tela só depois que a pessoa pedir, em syncVideo). */
+  startSenders(peer) {
+    peer.lateSenders = false;
+    const { pc } = peer;
+    if (pc.signalingState === 'closed') return;
+    if (this.mic) {
+      if (!peer.senders.mic) peer.senders.mic = pc.addTrack(this.mic.getAudioTracks()[0], this.mic);
+    } else if (!peer.polite && !pc.getTransceivers().length) {
+      // Sem microfone: ainda assim inicia a negociação para ouvir a outra pessoa.
+      pc.addTransceiver('audio', { direction: 'recvonly' });
+    }
+    this.syncVideo(peer);
+  }
+
+  /** Rede de segurança: se a oferta inicial não chegar (versão antiga do outro lado, por exemplo), anexa assim mesmo. */
+  startLateSenders() {
+    for (const peer of this.peers.values()) {
+      if (peer.lateSenders && Date.now() - peer.createdAt > 3000) this.startSenders(peer);
+    }
+  }
+
+  /** Pede câmera/tela de um par recém-chegado conforme as preferências (chamada direta: câmera). */
+  applyAutoWatch(peer) {
+    if (peer.autoApplied) return;
+    peer.autoApplied = true;
+    const camera = this.watchPrefs.camera || (this.state.dm && this.watchPrefs.dmCamera !== false);
+    const screen = this.watchPrefs.screen;
+    if (camera || screen) this.setWatching(peer, { camera: camera || peer.watching.camera, screen: screen || peer.watching.screen });
+  }
+
+  /** Receptor: liga/desliga o recebimento da câmera ou da tela de um par e avisa o par. */
+  setWatching(peer, patch) {
+    const next = { ...peer.watching, ...patch };
+    if (next.camera === peer.watching.camera && next.screen === peer.watching.screen) return;
+    peer.watching = next;
+    peer.wantDirty = true;
+    this.sendWant(peer);
+  }
+
+  /**
+   * O pedido só sai com a conexão de voz já estabelecida: mandado antes, faz os dois lados oferecerem ao
+   * mesmo tempo na negociação inicial (o Chrome às vezes não se recupera dessa colisão).
+   */
+  sendWant(peer) {
+    if (!peer.wantDirty || peer.pc.connectionState !== 'connected') return;
+    peer.wantDirty = false;
+    this.signal(peer.id, { want: peer.watching });
+  }
+
+  watch(peerId, kind, on) {
+    const peer = this.peers.get(peerId);
+    if (!peer) return;
+    this.setWatching(peer, { [kind]: on });
+    this.changed();
+  }
+
+  /** Emissor: deixa as trilhas de vídeo de um par de acordo com o que está ligado e o que ele pediu. */
+  syncVideo(peer) {
+    const { pc, senders, wants } = peer;
+    if (pc.signalingState === 'closed' || peer.lateSenders) return;
+    const camTrack = this.camera?.getVideoTracks()[0];
+    if (camTrack && wants.camera && !senders.camera) senders.camera = pc.addTrack(camTrack, this.camera);
+    else if ((!camTrack || !wants.camera) && senders.camera) {
+      pc.removeTrack(senders.camera);
+      senders.camera = null;
+    }
+    if (this.screen && wants.screen && !senders.screenVideo) this.addScreenTracks(peer);
+    else if ((!this.screen || !wants.screen) && senders.screenVideo) {
+      for (const k of ['screenVideo', 'screenAudio']) {
+        if (senders[k]) pc.removeTrack(senders[k]);
+        senders[k] = null;
+      }
+    }
   }
 
   removePeer(peerId, notify = true) {
@@ -224,9 +317,13 @@ export class VoiceClient {
     peer.queue = peer.queue.then(() => this.processSignal(peer, data)).catch((e) => console.warn('[voz] sinal', e));
   }
 
-  async processSignal(peer, { description, candidate }) {
+  async processSignal(peer, { description, candidate, want }) {
     const { pc } = peer;
-    if (description) {
+    if (want) {
+      peer.wants = { camera: Boolean(want.camera), screen: Boolean(want.screen) };
+      this.syncVideo(peer);
+      this.changed();
+    } else if (description) {
       const collision = description.type === 'offer' && (peer.makingOffer || pc.signalingState !== 'stable');
       peer.ignoreOffer = !peer.polite && collision;
       if (peer.ignoreOffer) return;
@@ -234,6 +331,7 @@ export class VoiceClient {
       if (description.type === 'offer') {
         await pc.setLocalDescription();
         this.signal(peer.id, { description: pc.localDescription });
+        if (peer.lateSenders) this.startSenders(peer);
       }
       this.tuneSenders(peer);
     } else if (candidate) {
@@ -402,7 +500,7 @@ export class VoiceClient {
     const track = this.mic.getAudioTracks()[0];
     for (const peer of this.peers.values()) {
       if (peer.senders.mic) await peer.senders.mic.replaceTrack(track);
-      else peer.senders.mic = peer.pc.addTrack(track, this.mic);
+      else if (!peer.lateSenders) peer.senders.mic = peer.pc.addTrack(track, this.mic);
     }
     for (const s of [old.raw, old.mic]) s?.getTracks().forEach((t) => t.stop());
     old.pipe?.close();
@@ -456,7 +554,7 @@ export class VoiceClient {
       };
       // Estado antes das trilhas: quem recebe já sabe que este stream é a câmera.
       this.pushState({ video: true, cameraStreamId: this.camera.id });
-      for (const peer of this.peers.values()) peer.senders.camera = peer.pc.addTrack(track, this.camera);
+      for (const peer of this.peers.values()) this.syncVideo(peer);
     } else if (!on && this.camera) {
       this.state.cameraFacing = 'user';
       for (const peer of this.peers.values()) {
@@ -525,7 +623,7 @@ export class VoiceClient {
       video.onended = () => this.setScreen(false);
       this.state.screenPreset = presetKey;
       this.pushState({ screen: true, screenStreamId: this.screen.id });
-      for (const peer of this.peers.values()) this.addScreenTracks(peer);
+      for (const peer of this.peers.values()) this.syncVideo(peer);
     } else if (!on && this.screen) {
       for (const peer of this.peers.values()) {
         for (const k of ['screenVideo', 'screenAudio']) {
@@ -696,6 +794,7 @@ export class VoiceClient {
       lines.push(`  caminho: ${JSON.stringify(p.stats?.path || null)}`);
       lines.push(
         `  anunciado: câmera=${Boolean(p.info.video)} tela=${Boolean(p.info.screen)} streams recebidos=${p.streams.size}`,
+        `  assistindo: câmera=${p.watching.camera} tela=${p.watching.screen} · pediu de mim: câmera=${p.wants.camera} tela=${p.wants.screen}`,
       );
       for (const [id, v] of Object.entries(p.stats?.video || {}))
         lines.push(`  vídeo ${v.dir} ${id.slice(0, 8)}: ${JSON.stringify(v)}`);
@@ -731,6 +830,9 @@ export class VoiceClient {
       localScreen: this.screen,
       localCameraStats: this.videoStats(this.camera),
       localScreenStats: this.videoStats(this.screen),
+      // Quantas pessoas estão recebendo sua câmera/tela agora.
+      cameraViewers: [...this.peers.values()].filter((p) => p.senders.camera).length,
+      screenViewers: [...this.peers.values()].filter((p) => p.senders.screenVideo).length,
       speaking: { ...this.speaking },
       peers: [...this.peers.values()].map((p) => ({
         peerId: p.id,
@@ -747,6 +849,9 @@ export class VoiceClient {
         cameraStream: p.info.video ? p.streams.get(p.info.cameraStreamId) || null : null,
         screenStream: p.info.screen ? p.streams.get(p.info.screenStreamId) || null : null,
         screenAnnounced: Boolean(p.info.screen),
+        cameraAnnounced: Boolean(p.info.video),
+        watchingCamera: p.watching.camera,
+        watchingScreen: p.watching.screen,
       })),
     };
   }

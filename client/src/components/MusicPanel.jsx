@@ -1,8 +1,24 @@
 import { useEffect, useState } from 'react';
-import { Play, Pause, SkipForward, SkipBack, RotateCcw, Music, X, LoaderCircle, Volume2, ArrowLeft, History } from 'lucide-react';
+import {
+  Play,
+  Pause,
+  SkipForward,
+  SkipBack,
+  RotateCcw,
+  Music,
+  X,
+  LoaderCircle,
+  Volume2,
+  ArrowLeft,
+  History,
+  Star,
+  TrendingUp,
+  ListPlus,
+} from 'lucide-react';
 import { useStore } from '../store.js';
 import { MusicPlayer } from '../lib/music.js';
 import { plain } from '../lib/text.js';
+import VolumeSlider from './Volume.jsx';
 
 const fmt = (sec) => {
   if (!Number.isFinite(sec)) return '--:--';
@@ -23,6 +39,85 @@ export function extractLinks(text) {
 }
 
 const isSpotify = (track) => /spotify/i.test(track.pageUrl || '');
+
+/** Mesma chave do servidor (`music::library::track_key`): a mesma música em links diferentes. */
+export function trackKey(pageUrl = '') {
+  const url = pageUrl.trim();
+  const v = url.split(/[?&]/).find((p) => p.startsWith('v='));
+  if (v) return `yt:${v.slice(2, 18)}`;
+  if (url.startsWith('https://youtu.be/')) return `yt:${url.slice(17).split(/[?/]/)[0]}`;
+  return url.split('?')[0].replace(/\/+$/, '');
+}
+
+/** Estrela: favorita/desfavorita a música. */
+function FavStar({ track }) {
+  const favorites = useStore((s) => s.musicLibrary.favorites);
+  const key = trackKey(track.pageUrl);
+  const on = favorites.some((f) => f.key === key);
+  if (!track.pageUrl) return null;
+  return (
+    <button
+      type="button"
+      className={`gloss mini fav-star${on ? ' on' : ''}`}
+      title={on ? 'Tirar das favoritas' : 'Favoritar'}
+      aria-label={on ? `Tirar ${track.title} das favoritas` : `Favoritar ${track.title}`}
+      aria-pressed={on}
+      onClick={(e) => {
+        e.stopPropagation();
+        useStore.getState().toggleFavorite(track, !on);
+      }}
+    >
+      <Star size={13} fill={on ? 'currentColor' : 'none'} />
+    </button>
+  );
+}
+
+/** Lista recolhível (Tocadas recentemente, Favoritas, Mais tocadas). */
+function TrackSection({ icon: Icon, title, tracks, canAdd, empty, extra }) {
+  const [open, setOpen] = useState(false);
+  const { addMusic } = useStore.getState();
+  return (
+    <>
+      <div className="queue-head">
+        <button type="button" className="history-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
+          <Icon size={13} /> {title} ({tracks.length})
+        </button>
+      </div>
+      {open &&
+        (tracks.length === 0 ? (
+          <p className="music-section-empty">{empty}</p>
+        ) : (
+          <ol className="music-queue music-history">
+            {tracks.map((t) => (
+              <li key={t.id || t.key} title={`${t.title}${t.addedBy ? ` · por ${plain(t.addedBy.displayName)}` : ''}`}>
+                <div className="mq-text">
+                  <span className="mq-title">{t.title}</span>
+                  <span className="mq-sub">
+                    <Source track={t} />
+                    {plain(t.addedBy?.displayName) || t.artist}
+                    {t.durationMs ? ` · ${fmt(t.durationMs / 1000)}` : ''}
+                    {extra?.(t)}
+                  </span>
+                </div>
+                <FavStar track={t} />
+                {canAdd && (
+                  <button
+                    type="button"
+                    className="gloss mini"
+                    title="Adicionar à fila"
+                    aria-label={`Adicionar ${t.title} à fila`}
+                    onClick={() => addMusic([t.pageUrl])}
+                  >
+                    <ListPlus size={13} />
+                  </button>
+                )}
+              </li>
+            ))}
+          </ol>
+        ))}
+    </>
+  );
+}
 
 function Source({ track }) {
   return isSpotify(track) ? <span className="src sp">Spotify</span> : <span className="src yt">YouTube</span>;
@@ -89,9 +184,12 @@ function NowPlaying({ state }) {
           <Source track={track} />
           {track.addedBy && <span>adicionado por {plain(track.addedBy.displayName)}</span>}
         </div>
-        <a className="np-title" href={track.pageUrl} target="_blank" rel="noreferrer" title={track.title}>
-          {track.title}
-        </a>
+        <div className="np-title-row">
+          <a className="np-title" href={track.pageUrl} target="_blank" rel="noreferrer" title={track.title}>
+            {track.title}
+          </a>
+          <FavStar track={track} />
+        </div>
         {track.artist && <div className="np-artist">{track.artist}</div>}
         <div
           className="np-progress"
@@ -140,53 +238,11 @@ function NowPlaying({ state }) {
           </button>
           <label className="np-volume">
             Volume da música (só você)
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              value={volume}
-              onChange={(e) => setMusicVolume(Number(e.target.value))}
-            />
+            <VolumeSlider label="Volume da música" value={volume} onChange={setMusicVolume} />
           </label>
         </div>
       </div>
     </div>
-  );
-}
-
-/** Últimas músicas que tocaram no canal (até 30), a mais recente primeiro. */
-function RecentTracks({ history }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <div className="queue-head">
-        <button
-          type="button"
-          className="history-toggle"
-          aria-expanded={open}
-          onClick={() => setOpen(!open)}
-        >
-          <History size={13} /> Tocadas recentemente ({history.length})
-        </button>
-      </div>
-      {open && (
-        <ol className="music-queue music-history">
-          {history.map((t) => (
-            <li key={t.id} title={`${t.title}${t.addedBy ? ` · por ${plain(t.addedBy.displayName)}` : ''}`}>
-              <div className="mq-text">
-                <span className="mq-title">{t.title}</span>
-                <span className="mq-sub">
-                  <Source track={t} />
-                  {plain(t.addedBy?.displayName) || t.artist}
-                  {t.durationMs ? ` · ${fmt(t.durationMs / 1000)}` : ''}
-                </span>
-              </div>
-            </li>
-          ))}
-        </ol>
-      )}
-    </>
   );
 }
 
@@ -196,7 +252,13 @@ export default function MusicPanel() {
   const channels = useStore((s) => s.guildData[s.currentGuildId]?.channels) || [];
   const music = useStore((s) => s.music);
   const adding = useStore((s) => s.musicAdding);
+  const library = useStore((s) => s.musicLibrary);
   const { addMusic, musicControl, joinVoice, toggleMusicPanel } = useStore.getState();
+  const currentId = useStore((s) => (voice?.channelId ? s.music[voice.channelId]?.current?.track.id : null));
+  // Favoritas e mais tocadas: ao abrir o painel e a cada música nova.
+  useEffect(() => {
+    if (guildId) useStore.getState().loadMusicLibrary(guildId);
+  }, [guildId, currentId]);
   const [dragging, setDragging] = useState(false);
   const [link, setLink] = useState('');
 
@@ -294,6 +356,7 @@ export default function MusicPanel() {
                           {t.durationMs ? ` · ${fmt(t.durationMs / 1000)}` : ''}
                         </span>
                       </div>
+                      <FavStar track={t} />
                       <button
                         className="gloss mini mq-del"
                         title="Remover da fila"
@@ -308,7 +371,24 @@ export default function MusicPanel() {
               </>
             )}
 
-            {state?.history?.length > 0 && <RecentTracks history={state.history} />}
+            {state?.history?.length > 0 && (
+              <TrackSection icon={History} title="Tocadas recentemente" tracks={state.history} canAdd />
+            )}
+            <TrackSection
+              icon={Star}
+              title="Favoritas"
+              tracks={library.favorites}
+              canAdd
+              empty="Toque na estrela de uma música para guardá-la aqui."
+            />
+            <TrackSection
+              icon={TrendingUp}
+              title="Mais tocadas"
+              tracks={library.guildId === guildId ? library.top : []}
+              canAdd
+              empty="Nada tocou neste servidor nas últimas 2 semanas."
+              extra={(t) => ` · ${t.plays}×`}
+            />
           </>
         )}
 
@@ -335,9 +415,14 @@ export default function MusicPanel() {
             setLink('');
           }}
         >
-          <label htmlFor="musicLink">Cole ou arraste um link do YouTube ou Spotify</label>
+          <label htmlFor="musicLink">YouTube/Spotify</label>
           <div className="music-add-row">
-            <input id="musicLink" value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://..." />
+            <input
+              id="musicLink"
+              value={link}
+              onChange={(e) => setLink(e.target.value)}
+              placeholder="Cole ou arraste um link do YouTube ou Spotify"
+            />
             <button className="go" disabled={!link.trim()}>
               Adicionar
             </button>

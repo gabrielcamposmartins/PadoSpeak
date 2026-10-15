@@ -5,7 +5,7 @@ use crate::models::*;
 use axum::extract::{ConnectInfo, FromRequestParts, Path, Query, State};
 use axum::http::{request::Parts, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -94,10 +94,15 @@ pub async fn is_member(app: &App, guild_id: &str, user_id: &str) -> ApiResult<bo
         .is_some())
 }
 
+/// Condição SQL "o membro `m` vê o canal `c`" (público, dono, admin ou com acesso).
+const CAN_SEE: &str = "(c.private = 0 OR m.user_id = g.owner_id OR (m.perms & 1) != 0 \
+    OR EXISTS (SELECT 1 FROM channel_access a WHERE a.channel_id = c.id AND a.user_id = m.user_id))";
+
 pub async fn channel_with_access(app: &App, channel_id: &str, user_id: &str) -> Option<Channel> {
     let sql = format!(
         "SELECT {CHANNEL_COLS} FROM channels c \
-         JOIN guild_members m ON m.guild_id = c.guild_id AND m.user_id = ?1 WHERE c.id = ?2"
+         JOIN guild_members m ON m.guild_id = c.guild_id AND m.user_id = ?1 \
+         JOIN guilds g ON g.id = c.guild_id WHERE c.id = ?2 AND {CAN_SEE}"
     );
     app.db.query_one(&sql, [user_id, channel_id], channel_from_row).await.ok().flatten()
 }
@@ -109,15 +114,58 @@ pub async fn guild_ids_of(app: &App, user_id: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Permissões dentro de um servidor (bits na coluna `guild_members.perms`).
+pub mod perm {
+    pub const ADMIN: i64 = 1;
+    pub const INVITE: i64 = 2;
+    pub const CHANNELS: i64 = 4;
+    pub const ALL: i64 = ADMIN | INVITE | CHANNELS;
+    /// Admin vale por todas.
+    pub fn has(perms: i64, flag: i64) -> bool {
+        perms & ADMIN != 0 || perms & flag != 0
+    }
+}
+
+/// Permissões de um membro (o dono tem todas); `None` se não for membro.
+pub async fn member_perms(app: &App, guild_id: &str, user_id: &str) -> ApiResult<Option<i64>> {
+    Ok(app
+        .db
+        .query_one(
+            "SELECT CASE WHEN g.owner_id = m.user_id THEN ?3 ELSE m.perms END FROM guild_members m \
+             JOIN guilds g ON g.id = m.guild_id WHERE m.guild_id = ?1 AND m.user_id = ?2",
+            libsql::params![guild_id, user_id, perm::ALL],
+            |r| r.get::<i64>(0),
+        )
+        .await?)
+}
+
+/// Exige uma permissão no servidor (não membro: 404).
+pub async fn require_perm(app: &App, guild_id: &str, user_id: &str, flag: i64, msg: &str) -> ApiResult<i64> {
+    let perms = member_perms(app, guild_id, user_id).await?.ok_or_else(|| not_found("Servidor não encontrado"))?;
+    if !perm::has(perms, flag) {
+        return Err(forbidden(msg));
+    }
+    Ok(perms)
+}
+
+/// O código de convite só vai para quem pode convidar.
+fn mask_invite(mut g: GuildFull, perms: i64) -> GuildFull {
+    if !perm::has(perms, perm::INVITE) {
+        g.guild.invite_code = String::new();
+    }
+    g
+}
+
 /// Servidor de que o usuário é membro; para quem não é, ele "não existe" (404).
 async fn member_guild(app: &App, guild_id: &str, user_id: &str) -> ApiResult<GuildFull> {
     if !is_member(app, guild_id, user_id).await? {
         return Err(not_found("Servidor não encontrado"));
     }
-    guild_full(app, guild_id).await?.ok_or_else(|| not_found("Servidor não encontrado"))
+    guild_full(app, guild_id, user_id).await?.ok_or_else(|| not_found("Servidor não encontrado"))
 }
 
-async fn guild_full(app: &App, guild_id: &str) -> ApiResult<Option<GuildFull>> {
+/// Servidor como `viewer` o vê: só os canais que ele pode ver (e, para admins, quem acessa os privados).
+async fn guild_full(app: &App, guild_id: &str, viewer: &str) -> ApiResult<Option<GuildFull>> {
     let sql = format!("SELECT {GUILD_COLS} FROM guilds g WHERE g.id = ?1");
     let Some(guild) = app.db.query_one(&sql, [guild_id], guild_from_row).await? else {
         return Ok(None);
@@ -125,11 +173,34 @@ async fn guild_full(app: &App, guild_id: &str) -> ApiResult<Option<GuildFull>> {
     let channels = app
         .db
         .query_all(
-            &format!("SELECT {CHANNEL_COLS} FROM channels c WHERE c.guild_id = ?1 ORDER BY c.type, c.position, c.created_at"),
-            [guild_id],
+            &format!(
+                "SELECT {CHANNEL_COLS} FROM channels c JOIN guilds g ON g.id = c.guild_id \
+                 JOIN guild_members m ON m.guild_id = c.guild_id AND m.user_id = ?2 \
+                 WHERE c.guild_id = ?1 AND {CAN_SEE} ORDER BY c.type, c.position, c.created_at"
+            ),
+            [guild_id, viewer],
             channel_from_row,
         )
         .await?;
+    let admin = member_perms(app, guild_id, viewer).await?.is_some_and(|p| perm::has(p, perm::ADMIN));
+    let mut channel_access: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    if admin {
+        for c in channels.iter().filter(|c| c.private) {
+            channel_access.insert(c.id.clone(), Vec::new());
+        }
+        let rows = app
+            .db
+            .query_all(
+                "SELECT a.channel_id, a.user_id FROM channel_access a JOIN channels c ON c.id = a.channel_id \
+                 WHERE c.guild_id = ?1 AND c.private = 1",
+                [guild_id],
+                |r| Ok((r.get::<String>(0)?, r.get::<String>(1)?)),
+            )
+            .await?;
+        for (ch, user) in rows {
+            channel_access.entry(ch).or_default().push(user);
+        }
+    }
     let members = app
         .db
         .query_all(
@@ -141,7 +212,39 @@ async fn guild_full(app: &App, guild_id: &str) -> ApiResult<Option<GuildFull>> {
             user_from_row,
         )
         .await?;
-    Ok(Some(GuildFull { guild, channels, members }))
+    let perms = app
+        .db
+        .query_all(
+            "SELECT user_id, perms FROM guild_members WHERE guild_id = ?1 AND perms != 0",
+            [guild_id],
+            |r| Ok((r.get::<String>(0)?, r.get::<i64>(1)?)),
+        )
+        .await?
+        .into_iter()
+        .collect();
+    Ok(Some(GuildFull { guild, channels, members, perms, channel_access }))
+}
+
+/// Recalcula no hub quem pode ver cada canal privado (de um servidor, ou de todos ao subir).
+pub async fn refresh_audiences(app: &App, guild_id: Option<&str>) -> ApiResult<()> {
+    let rows = app
+        .db
+        .query_all(
+            &format!(
+                "SELECT c.id, c.guild_id, m.user_id FROM channels c JOIN guilds g ON g.id = c.guild_id \
+                 JOIN guild_members m ON m.guild_id = c.guild_id \
+                 WHERE c.private = 1 AND (?1 = '' OR c.guild_id = ?1) AND {CAN_SEE}"
+            ),
+            [guild_id.unwrap_or_default()],
+            |r| Ok((r.get::<String>(0)?, r.get::<String>(1)?, r.get::<String>(2)?)),
+        )
+        .await?;
+    let mut map: std::collections::HashMap<String, (String, std::collections::HashSet<String>)> = Default::default();
+    for (ch, guild, user) in rows {
+        map.entry(ch).or_insert_with(|| (guild, Default::default())).1.insert(user);
+    }
+    app.hub.set_restricted(guild_id, map);
+    Ok(())
 }
 
 // ---------- Rotas ----------
@@ -164,8 +267,11 @@ pub fn router() -> Router<Arc<App>> {
                 .layer(axum::extract::DefaultBodyLimit::max(MAX_GUILD_ICON + 64 * 1024)),
         )
         .route("/api/guilds/{id}/leave", post(leave_guild))
+        .route("/api/guilds/{id}/invite", get(get_invite))
+        .route("/api/guilds/{id}/members/{user_id}", patch(set_member_perms))
         .route("/api/guilds/{id}/channels", post(create_channel))
-        .route("/api/channels/{id}", delete(delete_channel))
+        .route("/api/channels/{id}", delete(delete_channel).patch(update_channel))
+        .route("/api/channels/{id}/access", axum::routing::put(set_channel_access))
         .route("/api/channels/{id}/messages", get(list_messages))
 }
 
@@ -270,10 +376,21 @@ async fn me(AuthUser(user, _): AuthUser) -> Json<User> {
 
 async fn list_guilds(State(app): AppState, AuthUser(user, _): AuthUser) -> ApiResult<Json<Vec<Guild>>> {
     let sql = format!(
-        "SELECT {GUILD_COLS} FROM guilds g JOIN guild_members m ON m.guild_id = g.id \
-         WHERE m.user_id = ?1 ORDER BY m.joined_at"
+        "SELECT {GUILD_COLS}, CASE WHEN g.owner_id = m.user_id THEN {all} ELSE m.perms END FROM guilds g \
+         JOIN guild_members m ON m.guild_id = g.id WHERE m.user_id = ?1 ORDER BY m.joined_at",
+        all = perm::ALL
     );
-    Ok(Json(app.db.query_all(&sql, [user.id.as_str()], guild_from_row).await?))
+    let list = app
+        .db
+        .query_all(&sql, [user.id.as_str()], |r| {
+            let mut g = guild_from_row(r)?;
+            if !perm::has(r.get::<i64>(6)?, perm::INVITE) {
+                g.invite_code = String::new();
+            }
+            Ok(g)
+        })
+        .await?;
+    Ok(Json(list))
 }
 
 #[derive(Deserialize)]
@@ -318,7 +435,7 @@ async fn create_guild(
     }
     tx.commit().await?;
     app.hub.join_guild(&user.id, &id);
-    let full = guild_full(&app, &id).await?.ok_or_else(|| not_found("Servidor não encontrado"))?;
+    let full = guild_full(&app, &id, &user.id).await?.ok_or_else(|| not_found("Servidor não encontrado"))?;
     Ok((StatusCode::CREATED, Json(full)))
 }
 
@@ -351,14 +468,14 @@ async fn join_guild(
         app.hub.join_guild(&user.id, &guild_id);
         app.hub.to_guild(&guild_id, "member:joined", json!({ "guildId": guild_id, "user": user }));
     }
-    Ok(Json(guild_full(&app, &guild_id).await?.ok_or_else(|| not_found("Servidor não encontrado"))?))
+    let perms = member_perms(&app, &guild_id, &user.id).await?.unwrap_or(0);
+    let full = guild_full(&app, &guild_id, &user.id).await?.ok_or_else(|| not_found("Servidor não encontrado"))?;
+    Ok(Json(mask_invite(full, perms)))
 }
 
 async fn get_guild(State(app): AppState, AuthUser(user, _): AuthUser, Path(id): Path<String>) -> ApiResult<Json<GuildFull>> {
-    if !is_member(&app, &id, &user.id).await? {
-        return Err(not_found("Servidor não encontrado"));
-    }
-    Ok(Json(guild_full(&app, &id).await?.ok_or_else(|| not_found("Servidor não encontrado"))?))
+    let perms = member_perms(&app, &id, &user.id).await?.ok_or_else(|| not_found("Servidor não encontrado"))?;
+    Ok(Json(mask_invite(guild_full(&app, &id, &user.id).await?.ok_or_else(|| not_found("Servidor não encontrado"))?, perms)))
 }
 
 async fn delete_guild(State(app): AppState, AuthUser(user, _): AuthUser, Path(id): Path<String>) -> ApiResult<StatusCode> {
@@ -384,21 +501,80 @@ async fn delete_guild(State(app): AppState, AuthUser(user, _): AuthUser, Path(id
 /// Ícone do servidor: até 512 KB (o app já manda redimensionado).
 const MAX_GUILD_ICON: usize = 512 * 1024;
 
-/// Servidor do qual o usuário é dono (para quem não é, ele "não existe" ou é proibido mexer).
-async fn owned_guild(app: &App, id: &str, user_id: &str) -> ApiResult<GuildFull> {
-    let g = member_guild(app, id, user_id).await?;
-    if g.guild.owner_id != user_id {
-        return Err(forbidden("Apenas o dono pode mudar o servidor"));
-    }
-    Ok(g)
+/// Servidor que o usuário pode administrar (dono ou admin).
+async fn owned_guild(app: &App, id: &str, user_id: &str) -> ApiResult<()> {
+    require_perm(app, id, user_id, perm::ADMIN, "Apenas administradores podem mudar o servidor").await?;
+    Ok(())
 }
 
-/// Avisa todos do servidor que nome/ícone mudaram.
+/// Avisa todos do servidor que nome/ícone mudaram (sem o código de convite, que nem todos podem ver).
 async fn announce_guild(app: &App, id: &str) -> ApiResult<Guild> {
     let sql = format!("SELECT {GUILD_COLS} FROM guilds g WHERE g.id = ?1");
-    let guild = app.db.query_one(&sql, [id], guild_from_row).await?.ok_or_else(|| not_found("Servidor não encontrado"))?;
+    let mut guild = app.db.query_one(&sql, [id], guild_from_row).await?.ok_or_else(|| not_found("Servidor não encontrado"))?;
+    guild.invite_code = String::new();
     app.hub.to_guild(id, "guild:updated", &guild);
     Ok(guild)
+}
+
+/// Código de convite (só para quem pode convidar).
+async fn get_invite(State(app): AppState, AuthUser(user, _): AuthUser, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    require_perm(&app, &id, &user.id, perm::INVITE, "Você não tem permissão para convidar pessoas").await?;
+    let code = app
+        .db
+        .query_one("SELECT invite_code FROM guilds WHERE id = ?1", [id.as_str()], |r| r.get::<String>(0))
+        .await?
+        .ok_or_else(|| not_found("Servidor não encontrado"))?;
+    Ok(Json(json!({ "code": code })))
+}
+
+#[derive(Deserialize)]
+struct PermsBody {
+    perms: i64,
+}
+
+/// Dá ou tira permissões de um membro. Admins mexem em convite/canais; só o dono dá ou tira admin.
+async fn set_member_perms(
+    State(app): AppState,
+    AuthUser(user, _): AuthUser,
+    Path((id, target)): Path<(String, String)>,
+    Json(body): Json<PermsBody>,
+) -> ApiResult<Json<Value>> {
+    require_perm(&app, &id, &user.id, perm::ADMIN, "Apenas administradores podem mudar permissões").await?;
+    let owner = app
+        .db
+        .query_one("SELECT owner_id FROM guilds WHERE id = ?1", [id.as_str()], |r| r.get::<String>(0))
+        .await?
+        .ok_or_else(|| not_found("Servidor não encontrado"))?;
+    if target == owner {
+        return Err(bad("O dono sempre tem todas as permissões"));
+    }
+    let current = app
+        .db
+        .query_one("SELECT perms FROM guild_members WHERE guild_id = ?1 AND user_id = ?2", [id.as_str(), target.as_str()], |r| {
+            r.get::<i64>(0)
+        })
+        .await?
+        .ok_or_else(|| not_found("Membro não encontrado"))?;
+    let next = body.perms & perm::ALL;
+    if (next ^ current) & perm::ADMIN != 0 && user.id != owner {
+        return Err(forbidden("Só o dono pode dar ou tirar a permissão de administrador"));
+    }
+    if current & perm::ADMIN != 0 && user.id != owner {
+        return Err(forbidden("Só o dono pode mudar as permissões de um administrador"));
+    }
+    app.db
+        .execute(
+            "UPDATE guild_members SET perms = ?1 WHERE guild_id = ?2 AND user_id = ?3",
+            libsql::params![next, id.as_str(), target.as_str()],
+        )
+        .await?;
+    app.hub.to_guild(&id, "member:perms", json!({ "guildId": id, "userId": target, "perms": next }));
+    if (next ^ current) & perm::ADMIN != 0 {
+        refresh_audiences(&app, Some(&id)).await?;
+        app.hub.kick_unallowed_voice();
+        app.hub.to_user(&target, "guild:refresh", json!({ "guildId": id }));
+    }
+    Ok(Json(json!({ "perms": next })))
 }
 
 #[derive(Deserialize)]
@@ -479,8 +655,15 @@ async fn leave_guild(State(app): AppState, AuthUser(user, _): AuthUser, Path(id)
     app.db
         .execute("DELETE FROM guild_members WHERE guild_id = ?1 AND user_id = ?2", [id.as_str(), user.id.as_str()])
         .await?;
+    app.db
+        .execute(
+            "DELETE FROM channel_access WHERE user_id = ?1 AND channel_id IN (SELECT id FROM channels WHERE guild_id = ?2)",
+            [user.id.as_str(), id.as_str()],
+        )
+        .await?;
     app.hub.leave_guild(&user.id, &id);
     app.hub.to_guild(&id, "member:left", json!({ "guildId": id, "userId": user.id }));
+    refresh_audiences(&app, Some(&id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -490,10 +673,8 @@ async fn create_channel(
     Path(id): Path<String>,
     Json(body): Json<NameBody>,
 ) -> ApiResult<(StatusCode, Json<Channel>)> {
+    require_perm(&app, &id, &user.id, perm::CHANNELS, "Você não tem permissão para criar canais").await?;
     let g = member_guild(&app, &id, &user.id).await?;
-    if g.guild.owner_id != user.id {
-        return Err(forbidden("Apenas o dono pode criar canais"));
-    }
     let kind = if body.kind.as_deref() == Some("voice") { "voice" } else { "text" };
     let mut name: String = body.name.trim().chars().take(32).collect();
     if kind == "text" {
@@ -508,6 +689,7 @@ async fn create_channel(
         name,
         kind: kind.to_string(),
         position: g.channels.iter().filter(|c| c.kind == kind).count() as i64,
+        private: false,
     };
     app.db
         .execute(
@@ -521,19 +703,84 @@ async fn create_channel(
 
 async fn delete_channel(State(app): AppState, AuthUser(user, _): AuthUser, Path(id): Path<String>) -> ApiResult<StatusCode> {
     let ch = channel_with_access(&app, &id, &user.id).await.ok_or_else(|| not_found("Canal não encontrado"))?;
-    let g = guild_full(&app, &ch.guild_id).await?.ok_or_else(|| not_found("Servidor não encontrado"))?;
-    if g.guild.owner_id != user.id {
-        return Err(forbidden("Apenas o dono pode excluir canais"));
-    }
+    require_perm(&app, &ch.guild_id, &user.id, perm::CHANNELS, "Você não tem permissão para excluir canais").await?;
     app.hub.close_voice_channel(&ch.id);
     crate::files::delete_files(&app, "SELECT id FROM files WHERE channel_id = ?1", &id).await?;
     let conn = app.db.conn().await?;
     let tx = conn.transaction().await?;
     tx.execute("DELETE FROM messages WHERE channel_id = ?1", [id.as_str()]).await?;
     tx.execute("DELETE FROM channels WHERE id = ?1", [id.as_str()]).await?;
+    tx.execute("DELETE FROM channel_access WHERE channel_id = ?1", [id.as_str()]).await?;
     tx.commit().await?;
     app.hub.to_guild(&ch.guild_id, "channel:deleted", json!({ "guildId": ch.guild_id, "channelId": ch.id }));
+    refresh_audiences(&app, Some(&ch.guild_id)).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct ChannelPatch {
+    name: String,
+}
+
+/// Renomeia um canal (quem pode criar/editar canais).
+async fn update_channel(
+    State(app): AppState,
+    AuthUser(user, _): AuthUser,
+    Path(id): Path<String>,
+    Json(body): Json<ChannelPatch>,
+) -> ApiResult<Json<Channel>> {
+    let mut ch = channel_with_access(&app, &id, &user.id).await.ok_or_else(|| not_found("Canal não encontrado"))?;
+    require_perm(&app, &ch.guild_id, &user.id, perm::CHANNELS, "Você não tem permissão para editar canais").await?;
+    let mut name: String = body.name.trim().chars().take(32).collect();
+    if ch.kind == "text" {
+        name = name.to_lowercase().split_whitespace().collect::<Vec<_>>().join("-");
+    }
+    if name.is_empty() {
+        return Err(bad("Nome obrigatório"));
+    }
+    app.db.execute("UPDATE channels SET name = ?1 WHERE id = ?2", [name.as_str(), id.as_str()]).await?;
+    ch.name = name;
+    app.hub.to_channel(&ch.guild_id, &ch.id, "channel:updated", &ch);
+    Ok(Json(ch))
+}
+
+#[derive(Deserialize)]
+struct AccessBody {
+    private: bool,
+    #[serde(default)]
+    users: Vec<String>,
+}
+
+/// Torna um canal privado (só as pessoas escolhidas, o dono e os admins veem) ou público de novo.
+async fn set_channel_access(
+    State(app): AppState,
+    AuthUser(user, _): AuthUser,
+    Path(id): Path<String>,
+    Json(body): Json<AccessBody>,
+) -> ApiResult<Json<Value>> {
+    let ch = channel_with_access(&app, &id, &user.id).await.ok_or_else(|| not_found("Canal não encontrado"))?;
+    require_perm(&app, &ch.guild_id, &user.id, perm::ADMIN, "Apenas administradores escolhem quem vê um canal").await?;
+    let conn = app.db.conn().await?;
+    let tx = conn.transaction().await?;
+    tx.execute("UPDATE channels SET private = ?1 WHERE id = ?2", libsql::params![body.private as i64, id.as_str()]).await?;
+    tx.execute("DELETE FROM channel_access WHERE channel_id = ?1", [id.as_str()]).await?;
+    if body.private {
+        for u in body.users.iter().take(500) {
+            // Só membros do servidor entram na lista.
+            tx.execute(
+                "INSERT OR IGNORE INTO channel_access (channel_id, user_id) \
+                 SELECT ?1, user_id FROM guild_members WHERE guild_id = ?2 AND user_id = ?3",
+                [id.as_str(), ch.guild_id.as_str(), u.as_str()],
+            )
+            .await?;
+        }
+    }
+    tx.commit().await?;
+    refresh_audiences(&app, Some(&ch.guild_id)).await?;
+    app.hub.kick_unallowed_voice();
+    // Quem ganhou ou perdeu o canal recarrega a lista de canais.
+    app.hub.to_guild(&ch.guild_id, "guild:refresh", json!({ "guildId": ch.guild_id }));
+    Ok(Json(json!({ "ok": true })))
 }
 
 #[derive(Deserialize)]
@@ -561,6 +808,7 @@ async fn list_messages(
     for m in &mut list {
         open_message(&app.db, m);
     }
+    attach_reactions(&app.db, &mut list).await?;
     list.reverse();
     Ok(Json(list))
 }

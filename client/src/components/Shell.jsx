@@ -13,8 +13,10 @@ import {
   Server,
   UserPlus,
   Trash2,
-  DoorOpen,
+  Pencil,
+  Lock,
   Crown,
+  Shield,
   Users,
   Music,
   ChevronDown,
@@ -24,7 +26,7 @@ import {
   Menu,
   X,
 } from 'lucide-react';
-import { useStore, primaryConn, setStatusEverywhere, connRegistry } from '../store.js';
+import { useStore, primaryConn, setStatusEverywhere, connRegistry, usePerms } from '../store.js';
 import { isDesktop } from '../lib/env.js';
 import { ConnProvider, useAcross, useVoiceConn } from './conn.jsx';
 import { canHost } from '../lib/host.js';
@@ -41,6 +43,7 @@ import MusicPanel from './MusicPanel.jsx';
 import { FormattedText, Floating } from './Emotes.jsx';
 import { plain } from '../lib/text.js';
 
+const NO_PERMS = {};
 const openProfile = (userId) => useStore.getState().openModal({ type: 'profile', userId });
 
 const initials = (name) =>
@@ -230,7 +233,7 @@ export function ProfileBar({ onMenu }) {
 export function GuildRail() {
   const guilds = useStore((s) => s.guilds);
   const current = useStore((s) => s.currentGuildId);
-  const { selectGuild, openModal, goHost, goHome } = useStore.getState();
+  const { selectGuild, openModal, goHost, homeButton } = useStore.getState();
   const unread = useAcross((states) =>
     states.reduce((n, st) => n + Object.values(st.unread).reduce((a, b) => a + b, 0), 0),
   );
@@ -244,7 +247,7 @@ export function GuildRail() {
           className="gel home guild-icon"
           title="Início — amigos e conversas"
           aria-label="Início: amigos e conversas"
-          onClick={goHome}
+          onClick={homeButton}
         >
           <BuddiesIcon />
         </button>
@@ -300,14 +303,23 @@ function VoiceChannelMembers({ channelId }) {
       )}
       {participants.map((p) => {
         const speaking = inThisCall && (p.peerId === voice.selfId ? voice.speaking.me : voice.speaking[p.peerId]);
+        const watch = p.screen && p.peerId !== voice?.selfId;
         return (
-          <div className="voice-member" key={p.peerId}>
+          <div
+            className={`voice-member${watch ? ' watchable' : ''}`}
+            key={p.peerId}
+            role={watch ? 'button' : undefined}
+            tabIndex={watch ? 0 : undefined}
+            title={watch ? `Assistir a transmissão de ${plain(p.user.displayName)}` : undefined}
+            onClick={watch ? () => useStore.getState().watchStream(channelId, p.user.id) : undefined}
+            onKeyDown={watch ? (e) => e.key === 'Enter' && useStore.getState().watchStream(channelId, p.user.id) : undefined}
+          >
             <Avatar
               user={p.user}
               size={20}
               status={p.screen ? 'live' : 'voice'}
               speaking={speaking}
-              onClick={() => openProfile(p.user.id)}
+              onClick={watch ? undefined : () => openProfile(p.user.id)}
             />
             <UserName user={p.user} className="nm" />
             {p.screen && <span className="live">AO VIVO</span>}
@@ -324,7 +336,7 @@ function VoiceChannelMembers({ channelId }) {
   );
 }
 
-function ChannelGroup({ title, type, list, isOwner, guildId, activeId }) {
+function ChannelGroup({ title, type, list, canManage, guildId, activeId }) {
   const { selectTextChannel, joinVoice, openModal, deleteChannel } = useStore.getState();
   return (
     <>
@@ -333,7 +345,7 @@ function ChannelGroup({ title, type, list, isOwner, guildId, activeId }) {
         <span className="grp-title">
           {title} ({list.length})
         </span>
-        {isOwner && (
+        {canManage && (
           <button
             className="grp-add"
             title="Criar canal"
@@ -352,7 +364,22 @@ function ChannelGroup({ title, type, list, isOwner, guildId, activeId }) {
           >
             {type === 'text' ? <Hash size={16} /> : <Volume2 size={16} />}
             <span className="label-text">{c.name}</span>
-            {isOwner && (
+            {c.private && <Lock size={12} className="ch-lock" aria-label="Canal privado" />}
+            {canManage && (
+              <span
+                className="ch-del ch-edit"
+                role="button"
+                title="Editar canal"
+                aria-label={`Editar ${c.name}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openModal({ type: 'channel', guildId, channelType: type, channelId: c.id });
+                }}
+              >
+                <Pencil size={13} />
+              </span>
+            )}
+            {canManage && (
               <span
                 className="ch-del"
                 role="button"
@@ -386,7 +413,7 @@ export function ChannelSidebar() {
   const me = useStore((s) => s.me);
   const sidebarView = useStore((s) => s.sidebarView);
   const { openModal, toggleMusicPanel } = useStore.getState();
-  const isOwner = guild?.ownerId === me?.id;
+  const perms = usePerms(useStore, guildId);
 
   if (!guild) {
     return (
@@ -419,37 +446,19 @@ export function ChannelSidebar() {
             <Music size={14} />
             Música
           </button>
-          <button className="gloss" onClick={() => openModal({ type: 'invite', guild })} title="Convidar pessoas">
-            <UserPlus size={14} />
-            Convidar
-          </button>
-          {isOwner && (
-            <button
-              className="gloss"
-              title="Configurações do servidor"
-              aria-label="Configurações do servidor"
-              onClick={() => openModal({ type: 'guildSettings', guildId: guild.id })}
-            >
-              <Settings size={14} />
+          {perms.invite && (
+            <button className="gloss" onClick={() => openModal({ type: 'invite', guild })} title="Convidar pessoas">
+              <UserPlus size={14} />
+              Convidar
             </button>
           )}
           <button
-            className="gloss danger-ico"
-            title={isOwner ? 'Excluir servidor' : 'Sair do servidor'}
-            aria-label={isOwner ? 'Excluir servidor' : 'Sair do servidor'}
-            onClick={() =>
-              openModal({
-                type: 'confirm',
-                title: isOwner ? `Excluir "${guild.name}"?` : `Sair de "${guild.name}"?`,
-                text: isOwner
-                  ? 'Todos os canais e mensagens serão apagados para sempre.'
-                  : 'Você precisará de um novo convite para voltar.',
-                action: () =>
-                  isOwner ? useStore.getState().deleteGuild(guild.id) : useStore.getState().leaveGuild(guild.id),
-              })
-            }
+            className="gloss"
+            title="Configurações do servidor"
+            aria-label="Configurações do servidor"
+            onClick={() => openModal({ type: 'guildSettings', guildId: guild.id })}
           >
-            {isOwner ? <Trash2 size={14} /> : <DoorOpen size={14} />}
+            <Settings size={14} />
           </button>
         </div>
       </div>
@@ -458,7 +467,7 @@ export function ChannelSidebar() {
           title="Canais de texto"
           type="text"
           list={text}
-          isOwner={isOwner}
+          canManage={perms.channels}
           guildId={guildId}
           activeId={view?.channelId}
         />
@@ -466,7 +475,7 @@ export function ChannelSidebar() {
           title="Canais de voz"
           type="voice"
           list={voiceChannels}
-          isOwner={isOwner}
+          canManage={perms.channels}
           guildId={guildId}
           activeId={view?.channelId}
         />
@@ -541,17 +550,26 @@ export function VoiceStatus() {
 
 // ---------- Membros, como lista de contatos ----------
 
-function MemberRow({ m, isOn, ownerId }) {
+function MemberRow({ m, isOn, ownerId, admin }) {
   const activity = useActivity(m.id);
-  const live = useStore((s) => Object.values(s.voiceStates).some((l) => l.some((p) => p.user.id === m.id && p.screen)));
+  const liveIn = useStore(
+    (s) => Object.entries(s.voiceStates).find(([, l]) => l.some((p) => p.user.id === m.id && p.screen))?.[0],
+  );
+  const live = Boolean(liveIn);
   const fresh = useStore((s) => s.users[m.id]) || m;
+  const meId = useStore((s) => s.me?.id);
   return (
-    <button className={`row member${isOn ? '' : ' offline'}`} onClick={() => openProfile(m.id)}>
+    <button
+      className={`row member${isOn ? '' : ' offline'}`}
+      title={live && m.id !== meId ? 'Assistir a transmissão' : undefined}
+      onClick={() => (live && m.id !== meId ? useStore.getState().watchStream(liveIn, m.id) : openProfile(m.id))}
+    >
       <Avatar user={m} size={30} />
       <span className="member-text">
         <span className="member-name">
           <UserName user={m} className="nm" />
           {ownerId === m.id && <Crown size={13} className="crown" aria-label="Dono" />}
+          {ownerId !== m.id && admin && <Shield size={13} className="crown admin-badge" aria-label="Administrador" />}
           {live && <span className="live">AO VIVO</span>}
         </span>
         {isOn && (fresh.bio || activity) && (
@@ -564,18 +582,19 @@ function MemberRow({ m, isOn, ownerId }) {
   );
 }
 
-function MemberList({ onClose }) {
+function MemberList({ onClose, overlay = true }) {
   const guild = useStore((s) => s.guilds.find((g) => g.id === s.currentGuildId));
   const members = useStore((s) => s.guildData[s.currentGuildId]?.members) || [];
+  const memberPerms = useStore((s) => s.guildData[s.currentGuildId]?.perms) || NO_PERMS;
   const online = useStore((s) => s.online);
   const on = members.filter((m) => online[m.id]);
   const off = members.filter((m) => !online[m.id]);
   return (
-    <aside className={`members glass${onClose ? ' members-over' : ''}`} aria-label="Membros">
+    <aside className={`members glass${onClose && overlay ? ' members-over' : ''}${onClose && !overlay ? ' members-side' : ''}`} aria-label="Membros">
       <div className="panel-head">
         <span>Membros de {guild?.name}</span>
         {onClose && (
-          <button className="gloss mini" onClick={onClose} title="Fechar" aria-label="Fechar membros">
+          <button className="gloss mini" onClick={onClose} title={overlay ? 'Fechar' : 'Recolher'} aria-label={overlay ? 'Fechar membros' : 'Recolher membros'}>
             <X size={14} />
           </button>
         )}
@@ -586,7 +605,7 @@ function MemberList({ onClose }) {
           <span className="grp-title">Online ({on.length})</span>
         </div>
         {on.map((m) => (
-          <MemberRow key={m.id} m={m} isOn ownerId={guild?.ownerId} />
+          <MemberRow key={m.id} m={m} isOn ownerId={guild?.ownerId} admin={(memberPerms[m.id] & 1) !== 0} />
         ))}
         {off.length > 0 && (
           <div className="grp">
@@ -595,7 +614,7 @@ function MemberList({ onClose }) {
           </div>
         )}
         {off.map((m) => (
-          <MemberRow key={m.id} m={m} isOn={false} ownerId={guild?.ownerId} />
+          <MemberRow key={m.id} m={m} isOn={false} ownerId={guild?.ownerId} admin={(memberPerms[m.id] & 1) !== 0} />
         ))}
       </div>
     </aside>
@@ -607,6 +626,7 @@ function MemberList({ onClose }) {
 export function Main() {
   const view = useStore((s) => s.view);
   const guild = useStore((s) => s.guilds.find((g) => g.id === s.currentGuildId));
+  const canInvite = usePerms(useStore, guild?.id).invite;
   const channel = useStore((s) => s.guildData[s.currentGuildId]?.channels.find((c) => c.id === s.view?.channelId));
   const onlineCount = useStore(
     (s) => (s.guildData[s.currentGuildId]?.members || []).filter((m) => s.online[m.id]).length,
@@ -614,6 +634,7 @@ export function Main() {
   const guilds = useStore((s) => s.guilds);
   const desktopMembers = useStore((s) => s.showMembers);
   const membersOpen = useStore((s) => s.membersOpen);
+  const voiceMembersOpen = useStore((s) => s.voiceMembersOpen);
   const home = useStore((s) => s.currentGuildId == null);
   const { openModal } = useStore.getState();
   const layout = useLayout();
@@ -645,10 +666,28 @@ export function Main() {
   }
 
   if (view?.type === 'voice' && channel) {
+    const open = useStore.getState().voiceMembersOpen;
     return (
-      <main className="main stage-main">
-        <VoiceView channel={channel} />
-      </main>
+      <>
+        <main className="main stage-main">
+          <VoiceView channel={channel} />
+        </main>
+        {/* Membros também na tela de voz: começam recolhidos numa faixa estreita. */}
+        {voiceMembersOpen ? (
+          <MemberList onClose={() => useStore.setState({ voiceMembersOpen: !open })} overlay={narrow} />
+        ) : (
+          <button
+            className="members-mini glass"
+            onClick={() => useStore.setState({ voiceMembersOpen: true })}
+            title="Mostrar membros"
+            aria-label={`Mostrar membros (${onlineCount} online)`}
+          >
+            <Users size={18} className="ico-purple" />
+            <span>Membros</span>
+            <b>{onlineCount}</b>
+          </button>
+        )}
+      </>
     );
   }
 
@@ -665,10 +704,12 @@ export function Main() {
             </span>
           </div>
           <div className="head-tools">
-            <button className="gloss tool" onClick={() => openModal({ type: 'invite', guild })}>
-              <Link2 size={20} className="ico-blue" />
-              Convite
-            </button>
+            {canInvite && (
+              <button className="gloss tool" onClick={() => openModal({ type: 'invite', guild })}>
+                <Link2 size={20} className="ico-blue" />
+                Convite
+              </button>
+            )}
             {view?.type === 'text' && (
               <button
                 className={`gloss tool${showMembers ? ' pressed' : ''}`}

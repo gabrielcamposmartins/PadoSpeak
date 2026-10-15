@@ -163,6 +163,9 @@ export function createConnStore({ key, kind, base, primary = false }) {
     mobileTab: 'chats', // chats | friends | servers | me
     mobilePane: 'list', // list | detail
     membersOpen: false, // celular/tablet: lista de membros por cima da conversa
+    voiceMembersOpen: false, // tela de voz: lista de membros aberta (começa recolhida)
+    lastHomeView: null, // o que estava aberto no Início antes de ir para um servidor
+    focusRequest: null, // { userId }: destacar a tela dessa pessoa ao abrir a chamada
     users: {}, // atualizações de perfil recebidas (id -> usuário)
     friends: {}, // userId -> { user, status: friend | incoming | outgoing }
     dms: [], // conversas diretas, mais recentes primeiro
@@ -171,6 +174,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
     sidebarView: 'channels', // channels | music
     music: {}, // canal de voz -> estado da fila (music:state)
     serverOffset: 0, // relógio do servidor − relógio local (ms)
+    musicLibrary: { guildId: null, favorites: [], top: [] }, // favoritas e mais tocadas
     musicAdding: 0,
     friendsTab: 'online', // online | all | pending | add
     modal: null,
@@ -497,6 +501,15 @@ export function createConnStore({ key, kind, base, primary = false }) {
           };
         }),
       );
+      rt.on('message:reactions', ({ channelId, messageId, reactions }) =>
+        set((s) => {
+          const list = s.messages[channelId];
+          if (!list) return {};
+          return {
+            messages: { ...s.messages, [channelId]: list.map((m) => (m.id === messageId ? { ...m, reactions } : m)) },
+          };
+        }),
+      );
       rt.on('message:deleted', ({ id, channelId }) =>
         set((s) => {
           const list = s.messages[channelId];
@@ -579,6 +592,21 @@ export function createConnStore({ key, kind, base, primary = false }) {
         }),
       );
       rt.on('guild:updated', (g) => get().applyGuild(g));
+      rt.on('channel:updated', (ch) => get()._upsertChannel(ch));
+      rt.on('member:perms', ({ guildId, userId, perms }) => get()._applyPerms(guildId, userId, perms));
+      // Canais visíveis mudaram (canal privado, ou virei/deixei de ser admin): recarrega o servidor.
+      rt.on('guild:refresh', async ({ guildId }) => {
+        if (!get().guildData[guildId]) return;
+        try {
+          const data = await get().loadGuild(guildId);
+          const ch = get().view?.channelId;
+          const inGuild = get().currentGuildId === guildId;
+          if (primary && inGuild && ch && get().view?.type !== 'dm' && !data.channels.some((c) => c.id === ch))
+            get().selectGuild(guildId);
+        } catch {
+          /* sem acesso: o próprio servidor avisa */
+        }
+      });
       rt.on('guild:deleted', ({ guildId }) =>
         get().forgetGuild(guildId, 'Um servidor do qual você participava foi excluído'),
       );
@@ -786,14 +814,14 @@ export function createConnStore({ key, kind, base, primary = false }) {
     // ---------- Servidores e canais ----------
     async loadGuild(guildId) {
       const full = await api.get(`/api/guilds/${guildId}`);
-      const { channels, members, ...guild } = full;
+      const { guild, data } = splitGuild(full);
       set((s) => ({
-        guildData: { ...s.guildData, [guildId]: { channels, members } },
+        guildData: { ...s.guildData, [guildId]: data },
         guilds: s.guilds.some((g) => g.id === guildId)
           ? s.guilds.map((g) => (g.id === guildId ? guild : g))
           : [...s.guilds, guild],
       }));
-      return full;
+      return data;
     },
 
     async selectGuild(guildId) {
@@ -836,20 +864,20 @@ export function createConnStore({ key, kind, base, primary = false }) {
 
     async createGuild(name) {
       const g = await api.post('/api/guilds', { name });
-      const { channels, members, ...guild } = g;
+      const { guild, data } = splitGuild(g);
       set((s) => ({
         guilds: [...s.guilds.filter((x) => x.id !== g.id), guild],
-        guildData: { ...s.guildData, [g.id]: { channels, members } },
+        guildData: { ...s.guildData, [g.id]: data },
       }));
       get().selectGuild(g.id);
     },
 
     async joinGuild(code) {
       const g = await api.post('/api/guilds/join', { code });
-      const { channels, members, ...guild } = g;
+      const { guild, data } = splitGuild(g);
       set((s) => ({
         guilds: [...s.guilds.filter((x) => x.id !== g.id), guild],
-        guildData: { ...s.guildData, [g.id]: { channels, members } },
+        guildData: { ...s.guildData, [g.id]: data },
       }));
       get().selectGuild(g.id);
     },
@@ -889,6 +917,47 @@ export function createConnStore({ key, kind, base, primary = false }) {
     },
 
     deleteChannel: (channelId) => api.del(`/api/channels/${channelId}`).catch((e) => notify(e.message)),
+    /** Renomeia um canal. */
+    async updateChannel(channelId, name) {
+      get()._upsertChannel(await api.patch(`/api/channels/${channelId}`, { name }));
+    },
+    /** Canal privado (só `users`, o dono e os admins veem) ou público. */
+    async setChannelAccess(channelId, isPrivate, users) {
+      await api.put(`/api/channels/${channelId}/access`, { private: isPrivate, users });
+      const guildId = Object.entries(get().guildData).find(([, g]) => g.channels.some((c) => c.id === channelId))?.[0];
+      if (guildId) await get().loadGuild(guildId);
+    },
+    _upsertChannel(ch) {
+      set((s) => {
+        const g = s.guildData[ch.guildId];
+        if (!g) return {};
+        const channels = g.channels.some((c) => c.id === ch.id)
+          ? g.channels.map((c) => (c.id === ch.id ? { ...c, ...ch } : c))
+          : [...g.channels, ch];
+        return { guildData: { ...s.guildData, [ch.guildId]: { ...g, channels } } };
+      });
+    },
+    /** Dá ou tira permissões (bits de PERM) de um membro. */
+    async setMemberPerms(guildId, userId, perms) {
+      const res = await api.patch(`/api/guilds/${guildId}/members/${userId}`, { perms });
+      get()._applyPerms(guildId, userId, res.perms);
+    },
+    _applyPerms(guildId, userId, perms) {
+      set((s) => {
+        const g = s.guildData[guildId];
+        if (!g) return {};
+        const next = { ...(g.perms || {}) };
+        if (perms) next[userId] = perms;
+        else delete next[userId];
+        return { guildData: { ...s.guildData, [guildId]: { ...g, perms: next } } };
+      });
+    },
+    /** Código de convite (só para quem pode convidar). */
+    async fetchInvite(guildId) {
+      const { code } = await api.get(`/api/guilds/${guildId}/invite`);
+      set((s) => ({ guilds: s.guilds.map((g) => (g.id === guildId ? { ...g, inviteCode: code } : g)) }));
+      return code;
+    },
 
     // ---------- Mensagens ----------
     /** `replyTo`: id da mensagem respondida (aparece citada acima da resposta). */
@@ -902,6 +971,11 @@ export function createConnStore({ key, kind, base, primary = false }) {
     },
     async editMessage(messageId, content) {
       const res = await rt?.request('message:edit', { messageId, content });
+      if (res?.error) notify(res.error);
+    },
+    /** Reage com um emoticon (`on` = false tira a reação). */
+    async reactMessage(messageId, emoji, on = true) {
+      const res = await rt?.request('message:react', { messageId, emoji, on });
       if (res?.error) notify(res.error);
     },
     async deleteMessage(messageId) {
@@ -953,6 +1027,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
           deafened: selfDeafened,
           devices: p.devices,
           noiseSuppression: p.noiseSuppression !== false,
+          watch: watchPrefs(p),
         });
         if (!client.state.micAvailable) {
           notify(
@@ -1030,6 +1105,8 @@ export function createConnStore({ key, kind, base, primary = false }) {
     },
     setScreenPreset: (preset) => voiceClient?.setScreenPreset(preset),
     setPeerVolume: (peerId, v) => voiceClient?.setPeerVolume(peerId, v),
+    /** Assistir (ou parar de assistir) a câmera ou a transmissão de alguém da chamada. */
+    watchPeer: (peerId, kind, on) => voiceClient?.watch(peerId, kind, on),
     setStreamAudio: (peerId, opts) => voiceClient?.setStreamAudio(peerId, opts),
     setScreenAudioMuted: (muted) => voiceClient?.setScreenAudioMuted(muted),
     diagnostics: () => voiceClient?.diagnostics() || 'Fora de chamada.',
@@ -1040,6 +1117,25 @@ export function createConnStore({ key, kind, base, primary = false }) {
       ui().setState((s) =>
         s.sidebarView === 'music' ? { sidebarView: 'channels', mobilePane: 'list' } : { sidebarView: 'music', mobilePane: 'detail' },
       ),
+    /**
+     * Botão Início: vindo de um servidor, volta para a conversa que estava aberta no Início; já no
+     * Início, vai para a página de amigos.
+     */
+    homeButton() {
+      const s = ui().getState();
+      const last = s.lastHomeView;
+      if (s.currentGuildId != null && last?.type === 'dm') {
+        const conn = getConn(last.conn);
+        if (conn.getState().dms.some((d) => d.id === last.channelId)) return conn.getState().selectDm(last.channelId);
+      }
+      s.goHome();
+    },
+    /** Clicar em quem está transmitindo: entra no canal de voz (se preciso) e destaca a tela da pessoa. */
+    async watchStream(channelId, userId) {
+      ui().setState({ focusRequest: { userId, at: Date.now() } });
+      if (get().voice?.channelId === channelId) get().showVoice();
+      else await get().joinVoice(channelId);
+    },
     /** Celular: troca de aba (Conversas, Amigos, Servidores, Eu). */
     setMobileTab(tab) {
       const s = ui().getState();
@@ -1076,6 +1172,19 @@ export function createConnStore({ key, kind, base, primary = false }) {
       }
     },
 
+    /** Favoritas (minhas) e "Mais tocadas" do servidor nas últimas 2 semanas. */
+    async loadMusicLibrary(guildId) {
+      const res = await rt?.request('music:library', { guildId });
+      if (res && !res.error) set({ musicLibrary: { guildId, favorites: res.favorites, top: res.top } });
+    },
+    /** Marca/desmarca uma música como favorita. */
+    async toggleFavorite(track, on) {
+      const { title, artist, pageUrl, thumbnail, durationMs } = track;
+      const res = await rt?.request('music:favorite', { track: { title, artist, pageUrl, thumbnail, durationMs }, on });
+      if (!res || res.error) return notify(res?.error || 'Sem conexão');
+      set((s) => ({ musicLibrary: { ...s.musicLibrary, favorites: res.favorites } }));
+    },
+
     async musicControl(op, trackId) {
       const res = await rt?.request(`music:${op}`, trackId ? { trackId } : {});
       if (res?.error) notify(res.error);
@@ -1085,6 +1194,14 @@ export function createConnStore({ key, kind, base, primary = false }) {
       get().setAppearance({ musicVolume: v });
     },
 
+    /** Preferências de vídeo sob demanda (valem para as próximas pessoas/chamadas). */
+    setWatchPrefs(patch) {
+      get().setAppearance(patch);
+      for (const c of connRegistry.values()) c.getState()._applyWatchPrefs();
+    },
+    _applyWatchPrefs() {
+      if (voiceClient) Object.assign(voiceClient.watchPrefs, watchPrefs(prefs()));
+    },
     async setNoiseSuppression(on) {
       get().setAppearance({ noiseSuppression: on });
       for (const c of connRegistry.values()) c.getState()._applyNoise(on);
@@ -1118,10 +1235,16 @@ export function createConnStore({ key, kind, base, primary = false }) {
      * Envia um arquivo para a conversa/canal e devolve { id, name, mime, size }. `onProgress(0..1)`.
      * Usa XHR para acompanhar o envio (o fetch não informa o progresso do upload).
      */
-    uploadFile(channelId, file, onProgress) {
+    async uploadFile(channelId, file, onProgress) {
+      // Texto, documentos e afins vão comprimidos (gzip); o servidor guarda assim e o download volta
+      // com Content-Encoding: gzip, que o navegador descomprime sozinho.
+      const packed = await gzipIfWorth(file);
       return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        xhr.open('POST', `${baseUrl}/api/files?channel=${encodeURIComponent(channelId)}&name=${encodeURIComponent(file.name)}`);
+        xhr.open(
+          'POST',
+          `${baseUrl}/api/files?channel=${encodeURIComponent(channelId)}&name=${encodeURIComponent(file.name)}${packed ? '&encoding=gzip' : ''}`,
+        );
         if (token) xhr.setRequestHeader('authorization', `Bearer ${token}`);
         xhr.setRequestHeader('content-type', file.type || 'application/octet-stream');
         xhr.upload.onprogress = (e) => e.lengthComputable && onProgress?.(e.loaded / e.total);
@@ -1141,7 +1264,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
             );
         };
         xhr.onerror = () => reject(new Error(`Não foi possível enviar para ${baseUrl}`));
-        xhr.send(file);
+        xhr.send(packed || file);
       });
     },
     deleteFile: (id) => api.del(`/api/files/${id}`),
@@ -1159,7 +1282,8 @@ export function createConnStore({ key, kind, base, primary = false }) {
     applyGuild(g) {
       if (!g) return;
       set((s) => ({
-        guilds: s.guilds.map((x) => (x.id === g.id ? { ...x, ...g } : x)),
+        // O código de convite não vem nos avisos para todos: mantém o que já tinha.
+        guilds: s.guilds.map((x) => (x.id === g.id ? { ...x, ...g, inviteCode: g.inviteCode || x.inviteCode } : x)),
         guildData: s.guildData[g.id] ? { ...s.guildData, [g.id]: { ...s.guildData[g.id], ...g } } : s.guildData,
       }));
     },
@@ -1357,6 +1481,65 @@ export function dropConn(key) {
 /** O servidor de comunidade (e a interface). */
 export const useStore = createConnStore({ key: 'server', kind: 'server', base: savedServerUrl(), primary: true });
 syncConnKeys();
+
+// Ao sair do Início para um servidor, lembra o que estava aberto (o botão Início volta para lá).
+useStore.subscribe((s, prev) => {
+  if (prev.currentGuildId == null && s.currentGuildId != null && prev.view) useStore.setState({ lastHomeView: prev.view });
+});
+
+/** Vídeo sob demanda: o que abrir sozinho ao entrar numa chamada (por padrão só a câmera em chamada direta). */
+const watchPrefs = (p) => ({
+  camera: Boolean(p.autoWatchCamera),
+  screen: Boolean(p.autoWatchScreen),
+  dmCamera: p.autoWatchDmCamera !== false,
+});
+
+/** Formatos que já vêm comprimidos (imagem, vídeo, áudio, compactados, Office): não vale comprimir. */
+const PACKED_EXT =
+  /\.(zip|rar|7z|gz|tgz|bz2|xz|zst|docx|xlsx|pptx|odt|ods|odp|epub|jar|apk|png|jpe?g|gif|webp|avif|heic|mp3|mp4|m4a|aac|ogg|opus|webm|mkv|mov|avi|flac|woff2?)$/i;
+
+/** Comprime o arquivo em gzip antes do envio, se o navegador souber e se economizar pelo menos 10%. */
+async function gzipIfWorth(file) {
+  if (typeof CompressionStream === 'undefined' || file.size < 2048 || file.size > 200 * 1024 * 1024) return null;
+  if (/^(image|video|audio)\//.test(file.type) || PACKED_EXT.test(file.name)) return null;
+  try {
+    const blob = await new Response(file.stream().pipeThrough(new CompressionStream('gzip'))).blob();
+    return blob.size * 10 < file.size * 9 ? blob : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Bits de permissão dentro de um servidor (iguais aos do servidor). */
+export const PERM = { ADMIN: 1, INVITE: 2, CHANNELS: 4 };
+
+/** O que eu posso fazer num servidor: dono e admin podem tudo. */
+export function permsOf(s, guildId) {
+  const guild = s.guilds.find((g) => g.id === guildId);
+  const owner = Boolean(guild && s.me && guild.ownerId === s.me.id);
+  const bits = owner ? 7 : s.guildData[guildId]?.perms?.[s.me?.id] || 0;
+  const admin = owner || (bits & PERM.ADMIN) !== 0;
+  return {
+    owner,
+    admin,
+    invite: admin || (bits & PERM.INVITE) !== 0,
+    channels: admin || (bits & PERM.CHANNELS) !== 0,
+  };
+}
+
+/** Hook: minhas permissões no servidor, a partir de um store de conexão (`useStore` ou `useConn()`). */
+export function usePerms(useC, guildId) {
+  const owner = useC((s) => Boolean(s.me && s.guilds.find((g) => g.id === guildId)?.ownerId === s.me.id));
+  const bits = useC((s) => s.guildData[guildId]?.perms?.[s.me?.id] || 0);
+  const admin = owner || (bits & PERM.ADMIN) !== 0;
+  return { owner, admin, invite: admin || (bits & PERM.INVITE) !== 0, channels: admin || (bits & PERM.CHANNELS) !== 0 };
+}
+
+/** Separa a resposta de /api/guilds/{id} em dados do servidor e o resto (canais, membros, permissões). */
+function splitGuild(full) {
+  const { channels, members, perms = {}, channelAccess = {}, ...guild } = full;
+  return { guild, data: { channels, members, perms, channelAccess } };
+}
 
 /** Conexão com uma chamada em andamento (só uma por vez), ou o servidor. */
 export const activeVoiceConn = () => [...connRegistry.values()].find((c) => c.getState().voice) || useStore;

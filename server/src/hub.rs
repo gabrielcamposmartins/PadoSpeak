@@ -6,7 +6,7 @@
 //! - evento:             `{ "ev": "...", "d": {...} }`
 use crate::api::{channel_with_access, guild_ids_of};
 use crate::host::App;
-use crate::models::{plain_text, reply_preview, user_from_row, Message, ReplyRef, User, USER_COLS};
+use crate::models::{group_reactions, plain_text, reply_preview, user_from_row, Message, Reaction, ReplyRef, User, USER_COLS};
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
@@ -23,6 +23,7 @@ type ConnId = String;
 
 struct Conn {
     tx: UnboundedSender<String>,
+    user_id: String,
     guilds: HashSet<String>,
     /// Amigos aceitos: também recebem a presença deste usuário.
     friends: HashSet<String>,
@@ -63,6 +64,8 @@ struct HubState {
     nudges: HashMap<String, VecDeque<i64>>,
     /// Nó local: a presença vai para todos os conectados (perfil do PC e convidados da rede).
     lan_mode: bool,
+    /// Canais privados → (servidor, quem pode ver). Canal fora daqui é público.
+    restricted: HashMap<String, (String, HashSet<String>)>,
 }
 
 pub const STATUSES: [&str; 4] = ["online", "away", "busy", "invisible"];
@@ -134,6 +137,56 @@ impl Hub {
     pub fn to_guild(&self, guild_id: &str, ev: &str, d: impl Serialize) {
         let s = self.state.lock().unwrap();
         Self::send_to_guild(&s, guild_id, &event(ev, d), None);
+    }
+
+    /// O usuário vê o canal? (canal público, ou ele está na lista do privado)
+    fn can_see(s: &HubState, channel_id: &str, user_id: &str) -> bool {
+        s.restricted.get(channel_id).map_or(true, |(_, users)| users.contains(user_id))
+    }
+
+    /// Como `send_to_guild`, mas um canal privado só chega a quem pode vê-lo.
+    fn send_to_channel(s: &HubState, guild_id: &str, channel_id: &str, msg: &str, except: Option<&str>) {
+        for (id, c) in &s.conns {
+            if c.guilds.contains(guild_id) && Some(id.as_str()) != except && Self::can_see(s, channel_id, &c.user_id) {
+                let _ = c.tx.send(msg.to_string());
+            }
+        }
+    }
+
+    pub fn to_channel(&self, guild_id: &str, channel_id: &str, ev: &str, d: impl Serialize) {
+        let s = self.state.lock().unwrap();
+        Self::send_to_channel(&s, guild_id, channel_id, &event(ev, d), None);
+    }
+
+    pub fn user_can_see(&self, channel_id: &str, user_id: &str) -> bool {
+        Self::can_see(&self.state.lock().unwrap(), channel_id, user_id)
+    }
+
+    /// Troca a lista de canais privados (de um servidor, ou toda) e avisa quem perdeu a visão da voz.
+    pub fn set_restricted(&self, guild_id: Option<&str>, map: HashMap<String, (String, HashSet<String>)>) {
+        let mut s = self.state.lock().unwrap();
+        match guild_id {
+            Some(g) => {
+                s.restricted.retain(|_, (gid, _)| gid != g);
+                s.restricted.extend(map);
+            }
+            None => s.restricted = map,
+        }
+    }
+
+    /// Tira da voz quem está num canal privado que não pode mais ver.
+    pub fn kick_unallowed_voice(&self) {
+        let mut s = self.state.lock().unwrap();
+        let out: Vec<ConnId> = s
+            .voice
+            .iter()
+            .flat_map(|(ch, list)| list.iter().map(move |p| (ch, p)))
+            .filter(|(ch, p)| p.dm_users.is_none() && !Self::can_see(&s, ch, &p.user.id))
+            .map(|(_, p)| p.peer_id.clone())
+            .collect();
+        for id in out {
+            Self::kick_from_voice(&mut s, &id);
+        }
     }
 
     fn send_to(s: &HubState, conn_id: &str, msg: String) {
@@ -300,7 +353,7 @@ impl Hub {
         );
         match &scope.dm_users {
             Some(users) => users.iter().for_each(|u| Self::send_to_user(s, u, &msg)),
-            None => Self::send_to_guild(s, &scope.guild_id, &msg, None),
+            None => Self::send_to_channel(s, &scope.guild_id, channel_id, &msg, None),
         }
     }
 
@@ -449,7 +502,10 @@ impl Hub {
                         None => guilds.contains(&p.guild_id),
                     })
                 })
+                .filter(|(ch, _)| Self::can_see(&s, ch, &user.id))
                 .collect();
+            let music: Vec<&Value> =
+                music.iter().filter(|m| Self::can_see(&s, m["channelId"].as_str().unwrap_or_default(), &user.id)).collect();
             // Um host pode ter vários servidores: só aparece online quem divide um servidor comigo ou é
             // amigo (no nó local da rede, todos se veem).
             let online: Vec<&String> = s
@@ -467,7 +523,10 @@ impl Hub {
                     "voice": voice, "music": music, "serverTime": crate::now_ms()
                 }),
             ));
-            s.conns.insert(conn_id.clone(), Conn { tx: tx.clone(), guilds: guilds.clone(), friends: friends.clone(), visible: true });
+            s.conns.insert(
+                conn_id.clone(),
+                Conn { tx: tx.clone(), user_id: user.id.clone(), guilds: guilds.clone(), friends: friends.clone(), visible: true },
+            );
             if first && Self::visible(&s, &user.id) {
                 Self::presence(&s, &user.id, true, guilds.iter().cloned(), &friends);
             }
@@ -561,15 +620,15 @@ impl Hub {
         let row = app
             .db
             .query_one(
-                "SELECT m.author_id, d.id, d.user_a, d.user_b FROM dm_messages m JOIN dm_channels d ON d.id = m.dm_id \
+                "SELECT m.author_id, d.id, d.user_a, d.user_b, m.content FROM dm_messages m JOIN dm_channels d ON d.id = m.dm_id \
                  WHERE m.id = ?1 AND (d.user_a = ?2 OR d.user_b = ?2)",
                 [message_id, user.id.as_str()],
-                |r| Ok((r.get::<String>(0)?, r.get::<String>(1)?, [r.get::<String>(2)?, r.get::<String>(3)?])),
+                |r| Ok((r.get::<String>(0)?, r.get::<String>(1)?, [r.get::<String>(2)?, r.get::<String>(3)?], r.get::<String>(4)?)),
             )
             .await
             .ok()
             .flatten();
-        let Some((author, dm_id, users)) = row else { return err("Mensagem não encontrada") };
+        let Some((author, dm_id, users, sealed)) = row else { return err("Mensagem não encontrada") };
         if author != user.id {
             return err("Sem permissão");
         }
@@ -588,6 +647,8 @@ impl Hub {
             if app.db.execute("DELETE FROM dm_messages WHERE id = ?1", [message_id]).await.is_err() {
                 return err("Erro ao excluir");
             }
+            let _ = app.db.execute("DELETE FROM message_reactions WHERE message_id = ?1", [message_id]).await;
+            crate::files::delete_message_file(app, &sealed, &dm_id).await;
             self.to_users(&users, "message:deleted", json!({ "id": message_id, "channelId": dm_id }));
         }
         Some(json!({ "ok": true }))
@@ -623,6 +684,7 @@ impl Hub {
                     author: user.clone(),
                     reply_to: None,
                     reply: None,
+                    reactions: Vec::new(),
                 };
                 let reply_to = str_field("replyTo");
                 let ch = channel_with_access(app, &channel_id, &user.id).await;
@@ -679,7 +741,7 @@ impl Hub {
                     app.logs.error(format!("message:send: {e}"));
                     return err("Erro ao salvar mensagem");
                 }
-                self.to_guild(&ch.guild_id, "message:new", &msg);
+                self.to_channel(&ch.guild_id, &ch.id, "message:new", &msg);
                 Some(json!({ "message": msg }))
             }
 
@@ -688,15 +750,15 @@ impl Hub {
                 let row = app
                     .db
                     .query_one(
-                        "SELECT m.author_id, c.guild_id, g.owner_id, m.channel_id FROM messages m \
+                        "SELECT m.author_id, c.guild_id, g.owner_id, m.channel_id, m.content FROM messages m \
                          JOIN channels c ON c.id = m.channel_id JOIN guilds g ON g.id = c.guild_id WHERE m.id = ?1",
                         [message_id.as_str()],
-                        |r| Ok((r.get::<String>(0)?, r.get::<String>(1)?, r.get::<String>(2)?, r.get::<String>(3)?)),
+                        |r| Ok((r.get::<String>(0)?, r.get::<String>(1)?, r.get::<String>(2)?, r.get::<String>(3)?, r.get::<String>(4)?)),
                     )
                     .await
                     .ok()
                     .flatten();
-                let Some((author, guild_id, owner, channel_id)) = row else {
+                let Some((author, guild_id, owner, channel_id, sealed)) = row else {
                     return self.edit_dm_message(app, user, op, &message_id, &str_field("content")).await;
                 };
                 let is_author = author == user.id;
@@ -718,15 +780,106 @@ impl Hub {
                     {
                         return err("Erro ao editar");
                     }
-                    self.to_guild(&guild_id, "message:updated", json!({ "id": message_id, "channelId": channel_id, "content": content, "editedAt": edited_at }));
+                    self.to_channel(&guild_id, &channel_id, "message:updated", json!({ "id": message_id, "channelId": channel_id, "content": content, "editedAt": edited_at }));
                 } else {
-                    if !is_author && owner != user.id {
+                    let admin = owner == user.id
+                        || crate::api::member_perms(app, &guild_id, &user.id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .is_some_and(|p| crate::api::perm::has(p, crate::api::perm::ADMIN));
+                    if !is_author && !admin {
                         return err("Sem permissão");
                     }
                     if app.db.execute("DELETE FROM messages WHERE id = ?1", [message_id.as_str()]).await.is_err() {
                         return err("Erro ao excluir");
                     }
-                    self.to_guild(&guild_id, "message:deleted", json!({ "id": message_id, "channelId": channel_id }));
+                    let _ = app.db.execute("DELETE FROM message_reactions WHERE message_id = ?1", [message_id.as_str()]).await;
+                    crate::files::delete_message_file(app, &sealed, &channel_id).await;
+                    self.to_channel(&guild_id, &channel_id, "message:deleted", json!({ "id": message_id, "channelId": channel_id }));
+                }
+                Some(json!({ "ok": true }))
+            }
+
+            // Reagir (ou tirar a reação) com um emoticon.
+            "message:react" => {
+                let message_id = str_field("messageId");
+                let emoji = str_field("emoji").trim().to_string();
+                let on = d.get("on").and_then(Value::as_bool).unwrap_or(true);
+                if emoji.is_empty() || emoji.chars().count() > 32 || emoji.contains('\n') {
+                    return err("Emoticon inválido");
+                }
+                // Onde está a mensagem: canal de servidor ou conversa direta (e se eu tenho acesso).
+                let guild_place = app
+                    .db
+                    .query_one("SELECT channel_id FROM messages WHERE id = ?1", [message_id.as_str()], |r| r.get::<String>(0))
+                    .await
+                    .ok()
+                    .flatten();
+                let (channel_id, audience) = match guild_place {
+                    Some(ch_id) => match channel_with_access(app, &ch_id, &user.id).await {
+                        Some(ch) => (ch.id, Err(ch.guild_id)),
+                        None => return err("Sem acesso ao canal"),
+                    },
+                    None => {
+                        let dm_id = app
+                            .db
+                            .query_one("SELECT dm_id FROM dm_messages WHERE id = ?1", [message_id.as_str()], |r| r.get::<String>(0))
+                            .await
+                            .ok()
+                            .flatten();
+                        match dm_id {
+                            Some(id) => match crate::social::dm_with_access(app, &id, &user.id).await {
+                                Some(dm) => (dm.id.clone(), Ok(dm.users())),
+                                None => return err("Mensagem não encontrada"),
+                            },
+                            None => return err("Mensagem não encontrada"),
+                        }
+                    }
+                };
+                if on {
+                    let kinds = app
+                        .db
+                        .query_one("SELECT COUNT(DISTINCT emoji) FROM message_reactions WHERE message_id = ?1", [message_id.as_str()], |r| {
+                            r.get::<i64>(0)
+                        })
+                        .await
+                        .ok()
+                        .flatten()
+                        .unwrap_or(0);
+                    if kinds >= 20 {
+                        return err("Esta mensagem já tem reações demais");
+                    }
+                    let _ = app
+                        .db
+                        .execute(
+                            "INSERT OR IGNORE INTO message_reactions (message_id, channel_id, user_id, emoji, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                            libsql::params![message_id.as_str(), channel_id.as_str(), user.id.as_str(), emoji.as_str(), crate::now_ms()],
+                        )
+                        .await;
+                } else {
+                    let _ = app
+                        .db
+                        .execute(
+                            "DELETE FROM message_reactions WHERE message_id = ?1 AND user_id = ?2 AND emoji = ?3",
+                            [message_id.as_str(), user.id.as_str(), emoji.as_str()],
+                        )
+                        .await;
+                }
+                let rows = app
+                    .db
+                    .query_all(
+                        "SELECT message_id, emoji, user_id FROM message_reactions WHERE message_id = ?1 ORDER BY created_at",
+                        [message_id.as_str()],
+                        |r| Ok((r.get::<String>(0)?, r.get::<String>(1)?, r.get::<String>(2)?)),
+                    )
+                    .await
+                    .unwrap_or_default();
+                let reactions: Vec<Reaction> = group_reactions(rows).remove(&message_id).unwrap_or_default();
+                let payload = json!({ "channelId": channel_id, "messageId": message_id, "reactions": reactions });
+                match audience {
+                    Err(guild_id) => self.to_channel(&guild_id, &channel_id, "message:reactions", payload),
+                    Ok(users) => self.to_users(&users, "message:reactions", payload),
                 }
                 Some(json!({ "ok": true }))
             }
@@ -736,7 +889,7 @@ impl Hub {
                 if let Some(ch) = channel_with_access(app, &channel_id, &user.id).await {
                     let s = self.state.lock().unwrap();
                     let msg = event("typing", json!({ "channelId": ch.id, "user": user }));
-                    Self::send_to_guild(&s, &ch.guild_id, &msg, Some(conn_id));
+                    Self::send_to_channel(&s, &ch.guild_id, &ch.id, &msg, Some(conn_id));
                 } else if let Some(dm) = crate::social::dm_with_access(app, &channel_id, &user.id).await {
                     self.to_user(dm.other(&user.id), "typing", json!({ "channelId": dm.id, "user": user }));
                 }
@@ -887,6 +1040,26 @@ impl Hub {
                 }
                 Self::broadcast_voice_channel(&s, &me, &channel_id);
                 None
+            }
+
+            // Favoritas (de cada pessoa) e "Mais tocadas" (do servidor, últimas 2 semanas).
+            "music:library" => {
+                let guild_id = str_field("guildId");
+                let top = if guild_id.is_empty() || !crate::api::is_member(app, &guild_id, &user.id).await.unwrap_or(false) {
+                    Vec::new()
+                } else {
+                    crate::music::library::top(&app.db, &guild_id).await.unwrap_or_default()
+                };
+                let favorites = crate::music::library::favorites(&app.db, &user.id).await.unwrap_or_default();
+                Some(json!({ "favorites": favorites, "top": top }))
+            }
+            "music:favorite" => {
+                let on = d.get("on").and_then(Value::as_bool).unwrap_or(true);
+                let track = d.get("track").cloned().unwrap_or(Value::Null);
+                Some(match crate::music::library::set_favorite(&app.db, &user.id, &track, on).await {
+                    Ok(()) => json!({ "favorites": crate::music::library::favorites(&app.db, &user.id).await.unwrap_or_default() }),
+                    Err(e) => json!({ "error": e }),
+                })
             }
 
             "music:pause" | "music:resume" | "music:skip" | "music:previous" | "music:restart" | "music:remove" | "music:clear" => {

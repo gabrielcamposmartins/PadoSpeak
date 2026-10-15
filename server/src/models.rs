@@ -150,11 +150,20 @@ pub struct Channel {
     #[serde(rename = "type")]
     pub kind: String,
     pub position: i64,
+    /// Só quem tem acesso (e o dono/admins) vê o canal.
+    pub private: bool,
 }
 
-pub const CHANNEL_COLS: &str = "c.id, c.guild_id, c.name, c.type, c.position";
+pub const CHANNEL_COLS: &str = "c.id, c.guild_id, c.name, c.type, c.position, c.private";
 pub fn channel_from_row(r: &Row) -> DbResult<Channel> {
-    Ok(Channel { id: r.get(0)?, guild_id: r.get(1)?, name: r.get(2)?, kind: r.get(3)?, position: r.get(4)? })
+    Ok(Channel {
+        id: r.get(0)?,
+        guild_id: r.get(1)?,
+        name: r.get(2)?,
+        kind: r.get(3)?,
+        position: r.get(4)?,
+        private: r.get::<i64>(5)? != 0,
+    })
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -172,6 +181,51 @@ pub struct Message {
     /// Trecho da mensagem respondida, para mostrar acima da resposta.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reply: Option<ReplyRef>,
+    /// Reações (emoticon e quem reagiu), na ordem em que apareceram.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reactions: Vec<Reaction>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Reaction {
+    pub emoji: String,
+    pub users: Vec<String>,
+}
+
+/// Agrupa linhas (mensagem, emoticon, usuário) já em ordem de chegada.
+pub fn group_reactions(rows: Vec<(String, String, String)>) -> std::collections::HashMap<String, Vec<Reaction>> {
+    let mut out: std::collections::HashMap<String, Vec<Reaction>> = std::collections::HashMap::new();
+    for (message_id, emoji, user_id) in rows {
+        let list = out.entry(message_id).or_default();
+        match list.iter_mut().find(|r| r.emoji == emoji) {
+            Some(r) => r.users.push(user_id),
+            None => list.push(Reaction { emoji, users: vec![user_id] }),
+        }
+    }
+    out
+}
+
+/// Preenche as reações de uma lista de mensagens (uma consulta só).
+pub async fn attach_reactions(db: &crate::db::Db, list: &mut [Message]) -> crate::db::DbResult<()> {
+    if list.is_empty() {
+        return Ok(());
+    }
+    let marks = (1..=list.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(", ");
+    let sql = format!(
+        "SELECT message_id, emoji, user_id FROM message_reactions WHERE message_id IN ({marks}) ORDER BY created_at"
+    );
+    let ids: Vec<String> = list.iter().map(|m| m.id.clone()).collect();
+    let rows = db
+        .query_all(&sql, libsql::params_from_iter(ids), |r| {
+            Ok((r.get::<String>(0)?, r.get::<String>(1)?, r.get::<String>(2)?))
+        })
+        .await?;
+    let mut grouped = group_reactions(rows);
+    for m in list.iter_mut() {
+        m.reactions = grouped.remove(&m.id).unwrap_or_default();
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -231,6 +285,7 @@ pub fn message_from_row(r: &Row) -> DbResult<Message> {
             }),
             None => None,
         },
+        reactions: Vec::new(),
     })
 }
 
@@ -250,6 +305,11 @@ pub struct GuildFull {
     pub guild: Guild,
     pub channels: Vec<Channel>,
     pub members: Vec<User>,
+    /// Permissões de quem tem alguma (id → bits de `crate::api::perm`); o dono não aparece (tem todas).
+    pub perms: std::collections::HashMap<String, i64>,
+    /// Canal privado → quem tem acesso (só para administradores).
+    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub channel_access: std::collections::HashMap<String, Vec<String>>,
 }
 
 #[cfg(test)]

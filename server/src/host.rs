@@ -172,6 +172,7 @@ impl HostManager {
         let (hub, voice_empty) = Hub::new();
         let music = crate::music::MusicManager::new(
             hub.clone(),
+            self.db.clone(),
             self.logs.clone(),
             self.data_dir.clone(),
             (cfg.music_cookies_file.clone(), cfg.music_cookies_browser.clone()),
@@ -208,6 +209,10 @@ impl HostManager {
         if let Some(lan) = &lan {
             app.hub.set_lan_mode();
             lan.spawn(app.clone());
+        }
+        // Canais privados: o hub precisa saber quem vê cada um antes da primeira conexão.
+        if crate::api::refresh_audiences(&app, None).await.is_err() {
+            self.logs.warn("Não foi possível carregar os canais privados");
         }
         let router = Router::new()
             .merge(crate::api::router())

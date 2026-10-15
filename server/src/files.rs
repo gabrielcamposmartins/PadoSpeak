@@ -3,6 +3,11 @@
 //! O conteúdo fica no disco do servidor (`<dados>/arquivos/<id>`), cifrado como as mensagens, em
 //! pedaços de 64 KiB: dá para abrir só o trecho pedido (avançar no vídeo sem decifrar o arquivo todo).
 //! Só baixa quem tem acesso à conversa ou ao canal onde o arquivo foi enviado.
+//!
+//! Compressão: o app já manda texto, documentos e afins comprimidos em gzip (`encoding=gzip`); o que
+//! chegar sem compressão e valer a pena é comprimido aqui. O disco guarda o gzip, e o download vai com
+//! `Content-Encoding: gzip` — o navegador descomprime sozinho ao receber. Imagens, vídeos, áudios e
+//! compactados já vêm comprimidos e ficam como estão (e mantêm o avanço por trechos).
 use crate::api::{channel_with_access, ApiError, AuthUser};
 use crate::auth::user_from_token;
 use crate::host::App;
@@ -121,6 +126,42 @@ pub fn router() -> Router<Arc<App>> {
 struct UploadQuery {
     channel: String,
     name: String,
+    /// `gzip`: o corpo vem comprimido pelo app.
+    #[serde(default)]
+    encoding: Option<String>,
+}
+
+/// Formatos que já são comprimidos: comprimir de novo só gasta CPU.
+fn compressible(mime: &str, name: &str) -> bool {
+    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    let packed = [
+        "zip", "rar", "7z", "gz", "tgz", "bz2", "xz", "zst", "docx", "xlsx", "pptx", "odt", "ods", "odp", "epub", "jar",
+        "apk", "png", "jpg", "jpeg", "gif", "webp", "avif", "heic", "mp3", "mp4", "m4a", "aac", "ogg", "opus", "webm",
+        "mkv", "mov", "avi", "flac", "woff", "woff2",
+    ];
+    !(mime.starts_with("image/") || mime.starts_with("video/") || mime.starts_with("audio/") || mime == "application/zip")
+        && !packed.contains(&ext.as_str())
+}
+
+/// Descomprime um gzip sem deixar passar de `limit` bytes (proteção contra "bomba" de compressão).
+fn gunzip_limited(data: &[u8], limit: usize) -> Result<Vec<u8>, &'static str> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(data)
+        .take(limit as u64 + 1)
+        .read_to_end(&mut out)
+        .map_err(|_| "Arquivo comprimido inválido")?;
+    if out.len() > limit {
+        return Err("too_big");
+    }
+    Ok(out)
+}
+
+fn gzip(data: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut enc = flate2::write::GzEncoder::new(Vec::with_capacity(data.len() / 3), flate2::Compression::new(6));
+    let _ = enc.write_all(data);
+    enc.finish().unwrap_or_default()
 }
 
 /// Onde o arquivo foi enviado: canal de servidor (com a guild) ou conversa direta.
@@ -137,8 +178,28 @@ async fn upload(State(app): AppState, AuthUser(me, _): AuthUser, Query(q): Query
     if name.is_empty() || body.is_empty() {
         return Err(bad("Arquivo vazio"));
     }
+    let too_big = || bad(&format!("O arquivo passa de {} MB", max_bytes() / 1024 / 1024));
+    // Veio comprimido: abre para conferir o conteúdo e o tamanho de verdade.
+    let sent_gzip = q.encoding.as_deref() == Some("gzip");
+    let packed_body = body.clone();
+    let body: Bytes = if sent_gzip {
+        let packed = body.clone();
+        let raw = tokio::task::spawn_blocking(move || gunzip_limited(&packed, max_bytes()))
+            .await
+            .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        match raw {
+            Ok(raw) => Bytes::from(raw),
+            Err("too_big") => return Err(too_big()),
+            Err(e) => return Err(bad(e)),
+        }
+    } else {
+        body
+    };
+    if body.is_empty() {
+        return Err(bad("Arquivo vazio"));
+    }
     if body.len() > max_bytes() {
-        return Err(bad(&format!("O arquivo passa de {} MB", max_bytes() / 1024 / 1024)));
+        return Err(too_big());
     }
     if is_executable(&name, &body[..body.len().min(16)]) {
         return Err(bad("Programas e scripts não podem ser enviados. Coloque dentro de um .zip para mandar."));
@@ -146,9 +207,23 @@ async fn upload(State(app): AppState, AuthUser(me, _): AuthUser, Query(q): Query
     let (channel_id, guild_id) = place(&app, &q.channel, &me.id).await.ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "Conversa não encontrada".into()))?;
     let mime = sniff(&name, &body);
     let id = uuid::Uuid::new_v4().simple().to_string();
+    // Guarda comprimido quando economiza pelo menos 10%.
+    let stored: Option<Bytes> = if compressible(mime, &name) {
+        let packed = if sent_gzip {
+            Some(packed_body)
+        } else {
+            let raw = body.clone();
+            tokio::task::spawn_blocking(move || Bytes::from(gzip(&raw))).await.ok()
+        };
+        packed.filter(|p| p.len() * 10 < body.len() * 9)
+    } else {
+        None
+    };
+    let encoding = stored.as_ref().map(|_| "gzip");
+    let content = stored.as_ref().unwrap_or(&body);
     // Cifra em pedaços e grava no disco.
-    let mut sealed = Vec::with_capacity(body.len() + body.len() / CHUNK * 28 + 28);
-    for chunk in body.chunks(CHUNK) {
+    let mut sealed = Vec::with_capacity(content.len() + content.len() / CHUNK * 28 + 28);
+    for chunk in content.chunks(CHUNK) {
         sealed.extend_from_slice(&app.db.cipher.seal_bytes(chunk));
     }
     let folder = dir(&app);
@@ -156,8 +231,20 @@ async fn upload(State(app): AppState, AuthUser(me, _): AuthUser, Query(q): Query
     tokio::fs::write(folder.join(&id), sealed).await.map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     app.db
         .execute(
-            "INSERT INTO files (id, owner_id, guild_id, channel_id, name, mime, size, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            libsql::params![id.as_str(), me.id.as_str(), guild_id, channel_id.as_str(), name.as_str(), mime, body.len() as i64, crate::now_ms()],
+            "INSERT INTO files (id, owner_id, guild_id, channel_id, name, mime, size, created_at, encoding, stored) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            libsql::params![
+                id.as_str(),
+                me.id.as_str(),
+                guild_id,
+                channel_id.as_str(),
+                name.as_str(),
+                mime,
+                body.len() as i64,
+                crate::now_ms(),
+                encoding,
+                content.len() as i64
+            ],
         )
         .await?;
     Ok(Json(FileInfo { id, name, mime: mime.into(), size: body.len() as i64 }))
@@ -179,12 +266,21 @@ struct FileRow {
     name: String,
     mime: String,
     size: i64,
+    encoding: Option<String>,
 }
 
 async fn file_row(app: &App, id: &str) -> Option<FileRow> {
     app.db
-        .query_one("SELECT owner_id, guild_id, channel_id, name, mime, size FROM files WHERE id = ?1", [id], |r| {
-            Ok(FileRow { owner_id: r.get(0)?, guild_id: r.get(1)?, channel_id: r.get(2)?, name: r.get(3)?, mime: r.get(4)?, size: r.get(5)? })
+        .query_one("SELECT owner_id, guild_id, channel_id, name, mime, size, encoding FROM files WHERE id = ?1", [id], |r| {
+            Ok(FileRow {
+                owner_id: r.get(0)?,
+                guild_id: r.get(1)?,
+                channel_id: r.get(2)?,
+                name: r.get(3)?,
+                mime: r.get(4)?,
+                size: r.get(5)?,
+                encoding: r.get(6)?,
+            })
         })
         .await
         .ok()
@@ -207,6 +303,9 @@ async fn download(State(app): AppState, Path(id): Path<String>, Query(q): Query<
         return not_found();
     }
     let Ok(sealed) = tokio::fs::read(dir(&app).join(&id)).await else { return not_found() };
+    if f.encoding.as_deref() == Some("gzip") {
+        return download_gzip(&app, &f, &sealed, &q, &headers);
+    }
     let size = f.size as usize;
     // Trecho pedido (vídeo/áudio pedem aos pedaços para avançar e voltar).
     let range = headers
@@ -240,14 +339,9 @@ async fn download(State(app): AppState, Path(id): Path<String>, Query(q): Query<
             out.extend_from_slice(&plain[from..to]);
         }
     }
-    let show = inline(&f.mime) && q.download.is_none();
-    let encoded: String = f.name.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect();
-    let disposition = format!("{}; filename*=UTF-8''{encoded}", if show { "inline" } else { "attachment" });
-    let mime = if f.mime == "text/plain" { "text/plain; charset=utf-8".to_string() } else if show { f.mime.clone() } else { "application/octet-stream".into() };
     let mut res = Response::new(Body::from(out));
+    file_headers(&mut res, &f, &q);
     let h = res.headers_mut();
-    h.insert(header::CONTENT_TYPE, HeaderValue::from_str(&mime).unwrap_or(HeaderValue::from_static("application/octet-stream")));
-    h.insert(header::CONTENT_DISPOSITION, HeaderValue::from_str(&disposition).unwrap_or(HeaderValue::from_static("attachment")));
     h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=86400"));
     h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
@@ -260,15 +354,71 @@ async fn download(State(app): AppState, Path(id): Path<String>, Query(q): Query<
     res
 }
 
+/// Tipo e nome do arquivo (abrir na conversa ou baixar).
+fn file_headers(res: &mut Response, f: &FileRow, q: &TokenQuery) {
+    let show = inline(&f.mime) && q.download.is_none();
+    let encoded: String = f
+        .name
+        .bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"-_.".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect();
+    let disposition = format!("{}; filename*=UTF-8''{encoded}", if show { "inline" } else { "attachment" });
+    let mime = if f.mime == "text/plain" {
+        "text/plain; charset=utf-8".to_string()
+    } else if show {
+        f.mime.clone()
+    } else {
+        "application/octet-stream".into()
+    };
+    let h = res.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_str(&mime).unwrap_or(HeaderValue::from_static("application/octet-stream")));
+    h.insert(header::CONTENT_DISPOSITION, HeaderValue::from_str(&disposition).unwrap_or(HeaderValue::from_static("attachment")));
+}
+
+/// Arquivo guardado em gzip: vai comprimido (`Content-Encoding`) e o navegador descomprime ao receber.
+/// Quem não aceita gzip recebe descomprimido. Sem trechos (Range): sempre o arquivo inteiro.
+fn download_gzip(app: &App, f: &FileRow, sealed: &[u8], q: &TokenQuery, headers: &HeaderMap) -> Response {
+    let mut packed = Vec::with_capacity(sealed.len());
+    for piece in sealed.chunks(SEALED_CHUNK) {
+        let Some(plain) = app.db.cipher.open_bytes(piece) else {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "Arquivo protegido com outra chave" }))).into_response();
+        };
+        packed.extend_from_slice(&plain);
+    }
+    let accepts = headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.split(',').any(|e| e.trim().split(';').next() == Some("gzip")));
+    let body = if accepts {
+        packed
+    } else {
+        match gunzip_limited(&packed, f.size.max(0) as usize) {
+            Ok(raw) => raw,
+            Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "Arquivo corrompido" }))).into_response(),
+        }
+    };
+    let mut res = Response::new(Body::from(body));
+    file_headers(&mut res, f, q);
+    let h = res.headers_mut();
+    if accepts {
+        h.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+    }
+    h.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
+    h.insert(header::ACCEPT_RANGES, HeaderValue::from_static("none"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=86400"));
+    h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    res
+}
+
 /// Apaga um arquivo: quem enviou ou o dono do servidor onde ele está.
 async fn remove(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): Path<String>) -> ApiResult<StatusCode> {
     let f = file_row(&app, &id).await.ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "Arquivo não encontrado".into()))?;
-    let guild_owner = match &f.guild_id {
-        Some(g) => app.db.query_one("SELECT owner_id FROM guilds WHERE id = ?1", [g.as_str()], |r| r.get::<String>(0)).await?,
-        None => None,
+    let admin = match &f.guild_id {
+        Some(g) => crate::api::member_perms(&app, g, &me.id).await?.is_some_and(|p| crate::api::perm::has(p, crate::api::perm::ADMIN)),
+        None => false,
     };
-    if f.owner_id != me.id && guild_owner.as_deref() != Some(me.id.as_str()) {
-        return Err(ApiError(StatusCode::FORBIDDEN, "Só quem enviou ou o dono do servidor pode apagar".into()));
+    if f.owner_id != me.id && !admin {
+        return Err(ApiError(StatusCode::FORBIDDEN, "Só quem enviou ou um administrador do servidor pode apagar".into()));
     }
     delete_files(&app, "SELECT id FROM files WHERE id = ?1", &id).await?;
     if let Some(g) = &f.guild_id {
@@ -287,17 +437,26 @@ pub async fn delete_files(app: &App, select_ids: &str, param: &str) -> Result<()
     Ok(())
 }
 
-/// Arquivos de um servidor (tela de configuração, só o dono).
+/// A mensagem apagada era um arquivo enviado naquela conversa/canal: o arquivo vai junto.
+pub async fn delete_message_file(app: &App, sealed_content: &str, channel_id: &str) {
+    let content = app.db.cipher.reveal(sealed_content);
+    let Some(id) = content.strip_prefix("[arquivo:").and_then(|r| r.split(':').next()) else { return };
+    if file_row(app, id).await.is_some_and(|f| f.channel_id == channel_id) {
+        let _ = delete_files(app, "SELECT id FROM files WHERE id = ?1", id).await;
+    }
+}
+
+/// Arquivos de um servidor (tela de configuração, administradores).
 async fn guild_files(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): Path<String>) -> ApiResult<Json<Value>> {
-    let owner = app.db.query_one("SELECT owner_id FROM guilds WHERE id = ?1", [id.as_str()], |r| r.get::<String>(0)).await?;
-    if owner.as_deref() != Some(me.id.as_str()) {
+    let perms = crate::api::member_perms(&app, &id, &me.id).await?;
+    if !perms.is_some_and(|p| crate::api::perm::has(p, crate::api::perm::ADMIN)) {
         return Err(ApiError(StatusCode::NOT_FOUND, "Servidor não encontrado".into()));
     }
     let list = app
         .db
         .query_all(
-            "SELECT f.id, f.name, f.mime, f.size, f.created_at, f.channel_id, COALESCE(c.name, ''), u.display_name, u.username \
-             FROM files f LEFT JOIN channels c ON c.id = f.channel_id JOIN users u ON u.id = f.owner_id \
+            "SELECT f.id, f.name, f.mime, f.size, f.created_at, f.channel_id, COALESCE(c.name, ''), u.display_name, u.username, \
+             COALESCE(f.stored, f.size) FROM files f LEFT JOIN channels c ON c.id = f.channel_id JOIN users u ON u.id = f.owner_id \
              WHERE f.guild_id = ?1 ORDER BY f.created_at DESC",
             [id.as_str()],
             |r| {
@@ -305,12 +464,14 @@ async fn guild_files(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): 
                     "id": r.get::<String>(0)?, "name": r.get::<String>(1)?, "mime": r.get::<String>(2)?,
                     "size": r.get::<i64>(3)?, "createdAt": r.get::<i64>(4)?, "channelId": r.get::<String>(5)?,
                     "channelName": r.get::<String>(6)?, "by": r.get::<String>(7)?, "byUsername": r.get::<String>(8)?,
+                    "stored": r.get::<i64>(9)?,
                 }))
             },
         )
         .await?;
     let total: i64 = list.iter().filter_map(|f| f["size"].as_i64()).sum();
-    Ok(Json(json!({ "files": list, "total": total, "maxFile": max_bytes() })))
+    let stored: i64 = list.iter().filter_map(|f| f["stored"].as_i64()).sum();
+    Ok(Json(json!({ "files": list, "total": total, "stored": stored, "maxFile": max_bytes() })))
 }
 
 #[cfg(test)]
@@ -330,5 +491,19 @@ mod tests {
         assert_eq!(sniff("v.mp4", b"\x00\x00\x00\x18ftypmp42\x00\x00"), "video/mp4");
         assert_eq!(sniff("x.bin", &[0u8, 1, 2, 3]), "application/octet-stream");
         assert!(!inline("application/zip"));
+    }
+
+    #[test]
+    fn comprime_e_barra_bomba() {
+        let texto = "linha de log repetida
+".repeat(5000);
+        let gz = gzip(texto.as_bytes());
+        assert!(gz.len() * 10 < texto.len(), "texto repetido deve comprimir bem");
+        assert_eq!(gunzip_limited(&gz, texto.len()).unwrap(), texto.as_bytes());
+        assert_eq!(gunzip_limited(&gz, texto.len() - 1), Err("too_big"));
+        assert!(gunzip_limited(b"nao e gzip", 1000).is_err());
+        assert!(compressible("text/plain", "notas.txt"));
+        assert!(!compressible("image/png", "foto.png"));
+        assert!(!compressible("application/octet-stream", "planilha.xlsx"));
     }
 }

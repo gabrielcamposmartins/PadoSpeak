@@ -34,6 +34,8 @@ sudo docker image inspect "$IMG" --format 'imagem {{.Id}} criada {{.Created}}'
 
 echo "=== subindo ==="
 sudo docker compose up -d
+# Nenhuma imagem sem uso fica guardada na VM (o disco é pequeno e dividido com outros projetos).
+sudo docker image prune -a -f
 
 echo "=== esperando o servidor ==="
 for i in $(seq 40); do

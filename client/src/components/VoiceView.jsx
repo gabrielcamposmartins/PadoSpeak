@@ -17,6 +17,7 @@ import {
   VolumeX,
   X,
   SwitchCamera,
+  EyeOff,
 } from 'lucide-react';
 import { useStore } from '../store.js';
 import { useConn } from './conn.jsx';
@@ -26,6 +27,7 @@ import Avatar from './Avatar.jsx';
 import { useServerPing } from './hooks.js';
 import { useLayout, isTouch } from '../lib/layout.js';
 import { MobileBack } from './Mobile.jsx';
+import VolumeSlider from './Volume.jsx';
 
 /**
  * Celular e tablet não compartilham tela (o navegador não oferece). No computador o botão fica sempre:
@@ -110,10 +112,29 @@ function videoProblem(tile, rendered) {
   return null;
 }
 
+/** Lado menor do card (para a foto crescer quando o card é grande). */
+function useShortSide(ref) {
+  const [side, setSide] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(([e]) => setSide(Math.round(Math.min(e.contentRect.width, e.contentRect.height))));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return side;
+}
+
 function Tile({ tile, focused, onFocus }) {
   const [rendered, setRendered] = useState(null);
   const ref = useRef(null);
-  const { setPeerVolume, setStreamAudio, setScreenAudioMuted } = useConn().getState();
+  // Card grande (coluna da grade ou foco): foto 2,5× maior, sem passar de 55% do lado menor.
+  const side = useShortSide(ref);
+  const baseSize = focused ? 96 : 54;
+  const avatarSize = side >= 280 ? Math.round(Math.min(baseSize * 2.5, side * 0.55)) : baseSize;
+  const { setPeerVolume, setStreamAudio, setScreenAudioMuted, watchPeer } = useConn().getState();
+  const name = plain(tile.user?.displayName) || 'alguém';
+  const kind = tile.kind === 'screen' ? 'screen' : 'camera';
   const isScreen = tile.kind === 'screen';
   const problem = videoProblem(tile, rendered);
   const badge = tile.stats?.w
@@ -136,18 +157,50 @@ function Tile({ tile, focused, onFocus }) {
         />
       ) : tile.pending ? (
         <span className="waiting">Aguardando transmissão…</span>
+      ) : tile.offer === 'screen' ? (
+        <div className="tile-offer">
+          <Avatar user={tile.user} size={focused ? 72 : 40} status="live" />
+          <span>{name} está transmitindo</span>
+          <button
+            className="btn green"
+            onClick={(e) => {
+              e.stopPropagation();
+              watchPeer(tile.peerId, 'screen', true);
+              if (!focused) onFocus?.();
+            }}
+          >
+            <MonitorUp size={15} /> Assistir transmissão
+          </button>
+        </div>
       ) : (
+        <>
         <Avatar
           user={tile.user}
-          size={focused ? 96 : 54}
+          size={avatarSize}
           status={tile.live ? 'live' : 'voice'}
           speaking={tile.speaking}
         />
+        {tile.offer === 'camera' && (
+          <button
+            className="gloss tile-cam-offer"
+            title={`Ver a câmera de ${name}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              watchPeer(tile.peerId, 'camera', true);
+            }}
+          >
+            <Video size={14} /> Ver câmera
+          </button>
+        )}
+        </>
       )}
       {problem && <div className="tile-problem">{problem}</div>}
       {isScreen && (
         <div className="tile-badges">
           <span className="live">AO VIVO</span>
+          {tile.self && tile.viewers != null && (
+            <span className="res">{tile.viewers === 1 ? '1 assistindo' : `${tile.viewers} assistindo`}</span>
+          )}
           {badge && <span className="res">{badge}</span>}
         </div>
       )}
@@ -173,14 +226,10 @@ function Tile({ tile, focused, onFocus }) {
         {!tile.self && !isScreen && (
           <label className="tool-pill" title="Volume deste usuário">
             <Volume2 size={14} />
-            <span className="sr-only">Volume de {plain(tile.user?.displayName)}</span>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
+            <VolumeSlider
+              label={`Volume de ${plain(tile.user?.displayName) || 'alguém'}`}
               value={tile.volume}
-              onChange={(e) => setPeerVolume(tile.peerId, Number(e.target.value))}
+              onChange={(v) => setPeerVolume(tile.peerId, v)}
             />
           </label>
         )}
@@ -192,15 +241,10 @@ function Tile({ tile, focused, onFocus }) {
             >
               {tile.audioMuted ? <VolumeX size={14} /> : <Volume2 size={14} />}
             </button>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              aria-label="Volume da transmissão"
+            <VolumeSlider
+              label="Volume da transmissão"
               value={tile.audioMuted ? 0 : tile.streamVolume}
-              onChange={(e) => setStreamAudio(tile.peerId, { volume: Number(e.target.value), muted: false })}
-              title="Volume da transmissão"
+              onChange={(v) => setStreamAudio(tile.peerId, { volume: v, muted: false })}
             />
           </span>
         )}
@@ -211,6 +255,16 @@ function Tile({ tile, focused, onFocus }) {
             onClick={() => setScreenAudioMuted(!tile.audioMuted)}
           >
             {tile.audioMuted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+          </button>
+        )}
+        {!tile.self && tile.watching && (tile.stream || tile.pending) && (
+          <button
+            className="tool-btn"
+            title={kind === 'screen' ? 'Parar de assistir a transmissão' : `Parar de ver a câmera de ${name}`}
+            aria-label={kind === 'screen' ? 'Parar de assistir' : 'Parar de ver a câmera'}
+            onClick={() => watchPeer(tile.peerId, kind, false)}
+          >
+            {kind === 'screen' ? <EyeOff size={14} /> : <VideoOff size={14} />}
           </button>
         )}
         {tile.stream && (
@@ -291,6 +345,8 @@ export default function VoiceView({ channel }) {
   // No celular a chamada já abre destacando quem fala com você (sua câmera vai para o canto).
   const [focusId, setFocusId] = useState(phone ? 'auto' : null);
   const stripDrag = useDraggable(phone);
+  // Pedido de "assistir a transmissão" (clique em quem está ao vivo): destaca a tela da pessoa assim que chegar.
+  const focusRequest = useStore((s) => s.focusRequest);
   const [preset, setPreset] = useState('1080p30');
   const [showDiag, setShowDiag] = useState(false);
   const seenScreens = useRef(new Set());
@@ -322,6 +378,7 @@ export default function VoiceView({ channel }) {
         stats: voice.localScreenStats,
         hasAudio: voice.screenHasAudio,
         audioMuted: voice.screenAudioMuted,
+        viewers: voice.screenViewers,
       });
     for (const p of voice.peers) {
       tiles.push({
@@ -331,6 +388,9 @@ export default function VoiceView({ channel }) {
         stream: p.cameraStream,
         stats: p.cameraStats,
         connection: p.connectionState,
+        // Câmera ligada, mas você ainda não pediu para ver.
+        offer: p.cameraAnnounced && !p.watchingCamera && !p.cameraStream ? 'camera' : null,
+        watching: p.watchingCamera,
         speaking: voice.speaking[p.peerId],
         muted: p.muted || p.deafened,
         volume: p.volume,
@@ -348,16 +408,28 @@ export default function VoiceView({ channel }) {
           audioMuted: p.streamMuted,
           streamVolume: p.streamVolume,
           connection: p.connectionState,
-          pending: !p.screenStream,
+          pending: p.watchingScreen && !p.screenStream,
+          offer: !p.watchingScreen && !p.screenStream ? 'screen' : null,
+          watching: p.watchingScreen,
         });
       }
     }
   }
 
+  useEffect(() => {
+    if (!focusRequest) return;
+    const tile = tiles.find((t) => t.kind === 'screen' && t.user?.id === focusRequest.userId);
+    if (tile) {
+      if (!tile.watching) store.watchPeer(tile.peerId, 'screen', true);
+      setFocusId(tile.id);
+      useStore.setState({ focusRequest: null });
+    } else if (Date.now() - focusRequest.at > 20000) useStore.setState({ focusRequest: null });
+  });
+
   // Destaca automaticamente uma tela compartilhada nova.
   useEffect(() => {
     for (const t of tiles) {
-      if (t.kind === 'screen' && !seenScreens.current.has(t.id)) {
+      if (t.kind === 'screen' && !t.offer && !seenScreens.current.has(t.id)) {
         seenScreens.current.add(t.id);
         if (!t.self) setFocusId(t.id);
       }

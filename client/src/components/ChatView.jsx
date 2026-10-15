@@ -10,14 +10,15 @@ import {
   CornerUpLeft,
   Paperclip,
   X,
+  SmilePlus,
 } from 'lucide-react';
-import { useStore, sendSticker, sendFile } from '../store.js';
+import { useStore, sendSticker, sendFile, usePerms } from '../store.js';
 import { FileView, UploadList, parseFile, isBlockedFile } from './Files.jsx';
 import { StickerPicker, StickerView, parseSticker } from './Stickers.jsx';
 import FormatTools from './FormatTools.jsx';
 import { useConn, useConnKey } from './conn.jsx';
 import Avatar, { UserName, Orb, usePresence, useUser, colorClass, colorStyle } from './Avatar.jsx';
-import { RichText, FormattedText, plain } from './Emotes.jsx';
+import { RichText, FormattedText, plain, EmojiText, EmojiPicker } from './Emotes.jsx';
 import { useLayout, isTouch } from '../lib/layout.js';
 
 /** Abre o perfil de alguém desta conexão (servidor ou PC da rede). */
@@ -149,7 +150,56 @@ function ReplyQuote({ m }) {
   );
 }
 
-function Message({ m, head, canEdit: canEditText, canDelete, onReply }) {
+/** Reações embaixo da mensagem: clicar numa soma/tira a sua; o "+" escolhe outra. */
+function Reactions({ m, me, onPick }) {
+  const useC = useConn();
+  const users = useC((s) => s.users);
+  const friends = useC((s) => s.friends);
+  const members = useC((s) => s.guildData[s.currentGuildId]?.members);
+  const addBtn = useRef(null);
+  const [open, setOpen] = useState(false);
+  if (!m.reactions?.length) return null;
+  const nameOf = (id) => {
+    if (id === me.id) return 'Você';
+    const u = users[id] || friends[id]?.user || members?.find((x) => x.id === id) || (m.author.id === id ? m.author : null);
+    return u ? plain(u.displayName) || u.username : 'alguém';
+  };
+  return (
+    <div className="reactions">
+      {m.reactions.map((r) => {
+        const mine = r.users.includes(me.id);
+        return (
+          <button
+            key={r.emoji}
+            type="button"
+            className={`reaction${mine ? ' mine' : ''}`}
+            aria-pressed={mine}
+            title={`${r.users.map(nameOf).join(', ')} reagiu com ${r.emoji}`}
+            onClick={() => useC.getState().reactMessage(m.id, r.emoji, !mine)}
+          >
+            <EmojiText text={r.emoji} size={16} />
+            <span>{r.users.length}</span>
+          </button>
+        );
+      })}
+      <button ref={addBtn} type="button" className="reaction add" title="Reagir" aria-label="Reagir" onClick={() => setOpen(!open)}>
+        <SmilePlus size={14} />
+      </button>
+      {open && (
+        <EmojiPicker
+          anchorRef={addBtn}
+          onClose={() => setOpen(false)}
+          onPick={(code) => {
+            setOpen(false);
+            onPick(code);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function Message({ m, head, canEdit: canEditText, canDelete, onReply, me }) {
   const sticker = parseSticker(m.content);
   const file = !sticker && parseFile(m.content);
   const canEdit = canEditText && !sticker && !file;
@@ -160,6 +210,12 @@ function Message({ m, head, canEdit: canEditText, canDelete, onReply }) {
   const { editMessage, deleteMessage } = useC.getState();
   const { openModal } = useStore.getState();
   const [toolsOpen, setToolsOpen] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const reactBtn = useRef(null);
+  const react = (code) => {
+    const mine = m.reactions?.find((r) => r.emoji === code)?.users.includes(me.id);
+    useC.getState().reactMessage(m.id, code, !mine);
+  };
   const rowRef = useRef(null);
   const press = useRef(null);
   const hasTools = true; // responder vale para todas as mensagens
@@ -234,9 +290,31 @@ function Message({ m, head, canEdit: canEditText, canDelete, onReply }) {
             {m.editedAt && <span className="edited">(editado)</span>}
           </p>
         )}
+        <Reactions m={m} me={me} onPick={react} />
       </div>
       {!editing && (
         <div className="tools">
+          <button
+            ref={reactBtn}
+            className="icon-btn"
+            title="Reagir"
+            aria-label="Reagir"
+            onClick={() => setPicking((v) => !v)}
+          >
+            <SmilePlus size={14} />
+          </button>
+          {picking && (
+            <EmojiPicker
+              anchorRef={reactBtn}
+              align="right"
+              onClose={() => setPicking(false)}
+              onPick={(code) => {
+                setPicking(false);
+                setToolsOpen(false);
+                react(code);
+              }}
+            />
+          )}
           <button
             className="icon-btn"
             title="Responder"
@@ -327,7 +405,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
   const hasMore = useC((s) => s.hasMore[channel.id]);
   const typing = useC((s) => s.typing[channel.id]);
   const me = useC((s) => s.me) || NOBODY;
-  const isOwner = useC((s) => s.guilds.find((g) => g.id === channel.guildId)?.ownerId === s.me?.id);
+  const isAdmin = usePerms(useC, channel.guildId).admin;
   const users = useC((s) => s.users);
   const [text, setText] = useState('');
   const [reply, setReply] = useState(null); // mensagem sendo respondida
@@ -492,8 +570,9 @@ export default function ChatView({ channel, variant = 'channel' }) {
               m={m}
               head={head || Boolean(m.replyTo)}
               canEdit={m.author.id === me.id}
-              canDelete={m.author.id === me.id || isOwner}
+              canDelete={m.author.id === me.id || isAdmin}
               onReply={startReply}
+              me={me}
             />
           </Fragment>
         );

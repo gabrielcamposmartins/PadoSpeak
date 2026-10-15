@@ -23,6 +23,84 @@ struct Local(Arc<HostManager>);
 /// Arquivo que marca que a pessoa já viu o aviso "continua aberto na bandeja".
 struct TrayHint(PathBuf);
 
+/// Iniciar com o Windows: arquivo com a escolha ("on"/"off") e se vale neste executável.
+struct Autostart {
+    choice: PathBuf,
+    /// Só o app instalado de verdade mexe na inicialização (builds de teste/dev não).
+    available: bool,
+}
+
+/// Argumento usado na entrada de inicialização: abre direto na bandeja, sem mostrar a janela.
+const AUTOSTART_ARG: &str = "--autostart";
+
+#[cfg(windows)]
+mod startup {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+
+    const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+    const NAME: &str = "PadoSpeak";
+
+    pub fn enabled() -> bool {
+        RegKey::predef(HKEY_CURRENT_USER).open_subkey(RUN).and_then(|k| k.get_value::<String, _>(NAME)).is_ok()
+    }
+
+    /// Liga (com o caminho atual do executável, que muda se o app for reinstalado) ou desliga.
+    pub fn set(on: bool) -> std::io::Result<()> {
+        let (key, _) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(RUN)?;
+        if on {
+            let exe = std::env::current_exe()?;
+            key.set_value(NAME, &format!("\"{}\" {}", exe.display(), super::AUTOSTART_ARG))
+        } else {
+            match key.delete_value(NAME) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                r => r,
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod startup {
+    pub fn enabled() -> bool {
+        false
+    }
+    pub fn set(_on: bool) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Na primeira abertura liga o "iniciar com o Windows"; depois só reaplica a escolha (o caminho do
+/// executável pode ter mudado numa atualização).
+fn apply_autostart(cfg: &Autostart) {
+    if !cfg.available {
+        return;
+    }
+    let choice = std::fs::read_to_string(&cfg.choice).unwrap_or_default();
+    let on = choice.trim() != "off";
+    if choice.is_empty() {
+        let _ = std::fs::write(&cfg.choice, "on");
+    }
+    if let Err(e) = startup::set(on) {
+        eprintln!("iniciar com o Windows: {e}");
+    }
+}
+
+#[tauri::command]
+fn autostart_get(cfg: State<'_, Autostart>) -> Value {
+    json!({ "available": cfg.available, "enabled": cfg.available && startup::enabled() })
+}
+
+#[tauri::command]
+fn autostart_set(cfg: State<'_, Autostart>, on: bool) -> Result<bool, String> {
+    if !cfg.available {
+        return Err("Disponível só no app instalado".into());
+    }
+    startup::set(on).map_err(|e| e.to_string())?;
+    std::fs::write(&cfg.choice, if on { "on" } else { "off" }).map_err(|e| e.to_string())?;
+    Ok(startup::enabled())
+}
+
 /// Portas tentadas para o nó local (a primeira livre vale).
 const LOCAL_PORTS: std::ops::RangeInclusive<u16> = 47821..=47830;
 
@@ -191,7 +269,17 @@ fn main() {
             app.manage(host);
             app.manage(Local(local));
             app.manage(TrayHint(data_dir.join("aviso-bandeja")));
+            let autostart = Autostart {
+                choice: data_dir.join("iniciar-com-windows"),
+                available: !cfg!(debug_assertions) && app.config().identifier == "dev.padospeak.desktop",
+            };
+            apply_autostart(&autostart);
+            app.manage(autostart);
             build_tray(app)?;
+            // Aberto pela inicialização do Windows: fica só na bandeja; senão mostra a janela.
+            if !std::env::args().any(|a| a == AUTOSTART_ARG) {
+                show_main(app.handle());
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -204,7 +292,7 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, local_node, notify_windows])
+        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, local_node, notify_windows, autostart_get, autostart_set])
         .build(tauri::generate_context!())
         .expect("erro ao iniciar o PadoSpeak");
 

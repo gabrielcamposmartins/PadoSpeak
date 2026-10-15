@@ -20,3 +20,5 @@ tauri-plugin-single-instance = "2"
 [target.'cfg(windows)'.dependencies]
 # Notificações nativas do Windows com clique (abre a conversa da notificação)
 tauri-winrt-notification = "0.8"
+# Iniciar com o Windows (chave Run do usuário)
+winreg = "0.55"
