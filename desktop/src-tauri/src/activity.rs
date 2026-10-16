@@ -2,8 +2,10 @@
 //! jogo pelo executável — lista de jogos conhecidos, ou pela pasta de instalação (Steam, Epic, Riot,
 //! Xbox, GOG, Ubisoft, EA). O jogo continua valendo enquanto o processo existir (voltar para o PadoSpeak
 //! no meio da partida não apaga o status); outro jogo em foco toma o lugar.
+//! Também vale qualquer programa que a pessoa escolheu em Configurações (`activity_custom_set`).
 //! Só o nome do jogo sai daqui: nada de títulos de janela ou outros programas.
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 
@@ -14,12 +16,49 @@ pub struct Activity {
     pub since: i64,
     #[serde(skip)]
     pid: u32,
+    #[serde(skip)]
+    title: String,
 }
 
-pub type Current = Arc<Mutex<Option<Activity>>>;
+/// Programa escolhido pela pessoa: o executável ("jogo.exe") e o nome que aparece no status.
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
+pub struct Custom {
+    pub exe: String,
+    pub name: String,
+}
+
+#[derive(Default)]
+pub struct Watcher {
+    pub current: Mutex<Option<Activity>>,
+    custom: Mutex<Vec<Custom>>,
+    /// A lista mudou: reavalia o jogo atual e a janela em foco.
+    reload: AtomicBool,
+}
+
+pub type Shared = Arc<Watcher>;
+
+impl Watcher {
+    pub fn set_custom(&self, list: Vec<Custom>) {
+        let list = list
+            .into_iter()
+            .filter_map(|c| {
+                let exe = file_name(&c.exe.to_lowercase().replace('/', "\\")).trim().to_string();
+                let name: String = c.name.trim().chars().take(80).collect();
+                (!exe.is_empty() && !name.is_empty()).then_some(Custom { exe, name })
+            })
+            .collect();
+        *self.custom.lock().unwrap() = list;
+        self.reload.store(true, Ordering::Relaxed);
+    }
+}
 
 /// Executável → nome do jogo (em minúsculas). Jogos fora daqui ainda são reconhecidos pela pasta.
 const KNOWN: &[(&str, &str)] = &[
+    // Os jogos da casa: sempre reconhecidos (o teste `reconhece_jogos` garante).
+    ("pokeru.exe", "Pokeru"),
+    ("pokersoul.exe", "Pokeru"),
+    ("speedoru.exe", "Speedoru"),
+    ("speedoru.console.exe", "Speedoru"),
     ("cs2.exe", "Counter-Strike 2"),
     ("csgo.exe", "Counter-Strike: Global Offensive"),
     ("hl2.exe", "Half-Life 2"),
@@ -129,9 +168,9 @@ const NOT_GAMES: &[&str] = &[
     "ubisoft connect",
 ];
 
-pub fn spawn(app: AppHandle) -> Current {
-    let current: Current = Arc::new(Mutex::new(None));
-    let shared = current.clone();
+pub fn spawn(app: AppHandle) -> Shared {
+    let watcher: Shared = Arc::default();
+    let shared = watcher.clone();
     std::thread::Builder::new()
         .name("atividade".into())
         .spawn(move || {
@@ -140,36 +179,54 @@ pub fn spawn(app: AppHandle) -> Current {
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(3));
                 let mut changed = false;
-                let mut cur = shared.lock().unwrap().clone();
+                let mut cur = shared.current.lock().unwrap().clone();
+                let custom = shared.custom.lock().unwrap().clone();
                 // O jogo fechou: some do status.
                 if cur.as_ref().is_some_and(|a| !win::alive(a.pid)) {
                     cur = None;
                     changed = true;
+                }
+                // A lista da pessoa mudou: o programa tirado da lista sai do status; o renomeado muda de nome.
+                if shared.reload.swap(false, Ordering::Relaxed) {
+                    last_fg = None;
+                    if let Some(a) = cur.as_mut() {
+                        match win::exe_of(a.pid).and_then(|exe| identify_with(&custom, &exe, &a.title)) {
+                            None => {
+                                cur = None;
+                                changed = true;
+                            }
+                            Some(name) if name != a.name => {
+                                a.name = name;
+                                changed = true;
+                            }
+                            _ => {}
+                        }
+                    }
                 }
                 if let Some((pid, exe, title)) = win::foreground() {
                     if pid != me {
                         // Só reavalia quando a janela em foco muda de processo.
                         let game = match &last_fg {
                             Some((p, g)) if *p == pid => g.clone(),
-                            _ => identify(&exe, &title),
+                            _ => identify_with(&custom, &exe, &title),
                         };
                         last_fg = Some((pid, game.clone()));
                         if let Some(name) = game {
                             if cur.as_ref().is_none_or(|a| a.pid != pid) {
-                                cur = Some(Activity { name, since: now_ms(), pid });
+                                cur = Some(Activity { name, since: now_ms(), pid, title });
                                 changed = true;
                             }
                         }
                     }
                 }
                 if changed {
-                    *shared.lock().unwrap() = cur.clone();
+                    *shared.current.lock().unwrap() = cur.clone();
                     let _ = app.emit("activity", cur);
                 }
             }
         })
         .expect("thread da atividade");
-    current
+    watcher
 }
 
 /// Caminho do executável de um processo.
@@ -177,14 +234,72 @@ pub fn exe_of(pid: u32) -> Option<String> {
     win::exe_of(pid)
 }
 
+/// Programa com janela aberta, para a pessoa escolher em Configurações.
+#[derive(Serialize, Debug)]
+pub struct Program {
+    pub exe: String,
+    pub path: String,
+    pub title: String,
+}
+
+/// Programas com janela visível agora (um por executável, sem o PadoSpeak — nem outra cópia dele aberta).
+pub fn programs() -> Vec<Program> {
+    let me = std::process::id();
+    let my_exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|f| f.to_string_lossy().to_lowercase()))
+        .unwrap_or_default();
+    let mut out: Vec<Program> = Vec::new();
+    for (pid, title) in win::windows() {
+        if pid == me || title.trim().is_empty() {
+            continue;
+        }
+        let Some(path) = win::exe_of(pid) else { continue };
+        let exe = file_name(&path.replace('/', "\\")).to_string();
+        let lower = exe.to_lowercase();
+        if lower == my_exe || SYSTEM_EXES.contains(&lower.as_str()) || out.iter().any(|p| p.exe.eq_ignore_ascii_case(&exe)) {
+            continue;
+        }
+        out.push(Program { exe, path, title });
+    }
+    out.sort_by_key(|p| p.exe.to_lowercase());
+    out
+}
+
+/// Janelas do próprio Windows que não fazem sentido na lista.
+const SYSTEM_EXES: &[&str] = &[
+    "explorer.exe",
+    "applicationframehost.exe",
+    "textinputhost.exe",
+    "shellexperiencehost.exe",
+    "startmenuexperiencehost.exe",
+    "searchhost.exe",
+    "systemsettings.exe",
+    "lockapp.exe",
+    "msedgewebview2.exe",
+];
+
+fn file_name(path: &str) -> &str {
+    path.rsplit('\\').next().unwrap_or_default()
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+/// Como `identify`, mas os programas escolhidos pela pessoa vêm antes de tudo.
+pub fn identify_with(custom: &[Custom], exe: &str, title: &str) -> Option<String> {
+    let path = exe.to_lowercase().replace('/', "\\");
+    if let Some(c) = custom.iter().find(|c| c.exe == file_name(&path)) {
+        return Some(c.name.clone());
+    }
+    identify(exe, title)
 }
 
 /// Nome do jogo a partir do caminho do executável (e do título, para o Minecraft Java).
 pub fn identify(exe: &str, title: &str) -> Option<String> {
     let path = exe.to_lowercase().replace('/', "\\");
-    let file = path.rsplit('\\').next().unwrap_or_default();
+    let file = file_name(&path);
     if (file == "javaw.exe" || file == "java.exe") && title.starts_with("Minecraft") {
         return Some("Minecraft".into());
     }
@@ -270,7 +385,33 @@ mod win {
     use windows::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId};
+    use windows::core::BOOL;
+    use windows::Win32::Foundation::{HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetForegroundWindow, GetWindow, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, GW_OWNER,
+    };
+
+    /// Janelas principais visíveis: (processo, título).
+    pub fn windows() -> Vec<(u32, String)> {
+        unsafe extern "system" fn each(hwnd: HWND, l: LPARAM) -> BOOL {
+            let out = &mut *(l.0 as *mut Vec<(u32, String)>);
+            if IsWindowVisible(hwnd).as_bool() && GetWindow(hwnd, GW_OWNER).is_err() {
+                let mut pid = 0u32;
+                GetWindowThreadProcessId(hwnd, Some(&mut pid));
+                let mut title = [0u16; 256];
+                let n = GetWindowTextW(hwnd, &mut title).max(0) as usize;
+                if pid != 0 && n > 0 {
+                    out.push((pid, String::from_utf16_lossy(&title[..n])));
+                }
+            }
+            true.into()
+        }
+        let mut out: Vec<(u32, String)> = Vec::new();
+        unsafe {
+            let _ = EnumWindows(Some(each), LPARAM(&mut out as *mut _ as isize));
+        }
+        out
+    }
 
     /// Processo, executável e título da janela em foco.
     pub fn foreground() -> Option<(u32, String, String)> {
@@ -314,6 +455,9 @@ mod win {
 
 #[cfg(not(windows))]
 mod win {
+    pub fn windows() -> Vec<(u32, String)> {
+        Vec::new()
+    }
     pub fn foreground() -> Option<(u32, String, String)> {
         None
     }
@@ -339,11 +483,37 @@ mod tests {
         assert_eq!(id(r"E:\SteamLibrary\steamapps\common\Some_Indie Game\game.exe").as_deref(), Some("Some Indie Game"));
         assert_eq!(id(r"C:\XboxGames\Forza Motorsport\Content\fm.exe").as_deref(), Some("Forza Motorsport"));
         assert_eq!(identify(r"C:\Program Files\Java\bin\javaw.exe", "Minecraft 1.21.4").as_deref(), Some("Minecraft"));
+        // Os jogos da casa, em qualquer pasta.
+        assert_eq!(id(r"C:\Users\ana\AppData\Local\Pokeru\pokeru.exe").as_deref(), Some("Pokeru"));
+        assert_eq!(id(r"D:\Jogos\PokerSoul\pokersoul.exe").as_deref(), Some("Pokeru"));
+        assert_eq!(id(r"C:\Users\ana\AppData\Local\Programs\Speedoru\Speedoru.exe").as_deref(), Some("Speedoru"));
+        assert_eq!(id(r"C:\Users\ana\AppData\Local\Programs\Speedoru\Speedoru.console.exe").as_deref(), Some("Speedoru"));
         // Não são jogos.
         assert_eq!(id(r"C:\Program Files\Google\Chrome\Application\chrome.exe"), None);
         assert_eq!(id(r"C:\Riot Games\Riot Client\RiotClientUx.exe"), None);
         assert_eq!(id(r"C:\Program Files (x86)\Steam\steamapps\common\wallpaper_engine\wallpaper64.exe"), None);
         assert_eq!(id(r"C:\Program Files\MU\main.exe"), None);
+    }
+
+    #[test]
+    fn programas_escolhidos() {
+        let w = Watcher::default();
+        w.set_custom(vec![
+            Custom { exe: r"C:\Ferramentas\Aseprite.EXE".into(), name: "  Aseprite ".into() },
+            Custom { exe: "chrome.exe".into(), name: "Navegando".into() },
+            Custom { exe: "".into(), name: "sem exe".into() },
+            Custom { exe: "x.exe".into(), name: "  ".into() },
+        ]);
+        let custom = w.custom.lock().unwrap().clone();
+        assert_eq!(custom.len(), 2);
+        assert_eq!(custom[0], Custom { exe: "aseprite.exe".into(), name: "Aseprite".into() });
+        assert!(w.reload.load(Ordering::Relaxed));
+        let id = |p: &str| identify_with(&custom, p, "");
+        assert_eq!(id(r"C:\Ferramentas\aseprite.exe").as_deref(), Some("Aseprite"));
+        // Vale mesmo para o que não seria jogo, e passa na frente da lista conhecida.
+        assert_eq!(id(r"C:\Program Files\Google\Chrome\Application\chrome.exe").as_deref(), Some("Navegando"));
+        assert_eq!(id(r"C:\Riot Games\League of Legends\Game\League of Legends.exe").as_deref(), Some("League of Legends"));
+        assert_eq!(id(r"C:\Windows\notepad.exe"), None);
     }
 
     #[test]

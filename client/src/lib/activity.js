@@ -1,6 +1,7 @@
 // Jogo em foco ("Jogando Counter-Strike 2"): o app do Windows olha a janela em foco e reconhece o jogo
 // (lista de jogos conhecidos + pastas da Steam, Epic, Riot, Xbox…; veja desktop/src-tauri/src/activity.rs).
 // O jogo continua no status enquanto estiver aberto, mesmo voltando para o PadoSpeak.
+// Programas escolhidos pela pessoa (Configurações → Atividade) também contam, com o nome que ela deu.
 // No navegador e no celular não há como saber: nada é mandado.
 import { isTauri } from './env.js';
 
@@ -8,6 +9,22 @@ let current = null;
 
 /** O jogo detectado agora ({ type: 'playing', name, since } ou null). */
 export const currentActivity = () => current;
+
+/** Programas que entram no status além dos jogos: [{ exe: 'programa.exe', name: 'Nome no status' }]. */
+export async function setCustomPrograms(list) {
+  if (!isTauri) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('activity_custom_set', { list: (list || []).map(({ exe, name }) => ({ exe, name })) }).catch((e) =>
+    console.warn('[atividade]', e),
+  );
+}
+
+/** Programas com janela aberta agora ({ exe, path, title }), para escolher qual entra no status. */
+export async function listPrograms() {
+  if (!isTauri) return [];
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke('activity_programs');
+}
 
 /** Começa a ouvir o app do Windows; `onChange` recebe a atividade a cada troca. */
 export async function watchActivity(onChange) {

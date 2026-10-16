@@ -195,7 +195,9 @@ Valores definidos por variável de ambiente prevalecem sobre o painel (lá apare
 - **Jogando …**: o app do Windows olha a janela em foco a cada 3 s e reconhece o jogo (lista de executáveis
   conhecidos e as pastas da Steam — com o nome do `appmanifest` —, Epic, Riot, Xbox, GOG, Ubisoft e EA). O
   status mostra “Jogando X” enquanto o jogo estiver aberto; só o nome do jogo sai do PC, e dá para desligar
-  em Configurações → Funcionalidade → Atividade.
+  em Configurações → Funcionalidade → Atividade. Pokeru e Speedoru são sempre reconhecidos; outro programa
+  qualquer entra pelo “Adicione-o” da mesma tela (lista dos programas abertos, com o nome escolhido). Quem
+  está num canal privado não tem o canal no status.
 
 ## Música
 

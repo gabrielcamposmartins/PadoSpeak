@@ -48,6 +48,7 @@ import {
   SquarePlus,
   CircleCheck,
   Gamepad2,
+  Plus,
 } from 'lucide-react';
 import {
   useStore,
@@ -63,7 +64,7 @@ import {
   DEFAULT_NOTIFY,
   setMyActivity,
 } from '../store.js';
-import { currentActivity } from '../lib/activity.js';
+import { currentActivity, listPrograms, setCustomPrograms } from '../lib/activity.js';
 import { isDesktop, isTauri, DOWNLOAD_URL, DEFAULT_SERVER, openExternal } from '../lib/env.js';
 import { usePwa, installState, install } from '../lib/pwa.js';
 import { ConnProvider, useConn } from './conn.jsx';
@@ -754,6 +755,122 @@ function VoiceHotkeys() {
   );
 }
 
+/**
+ * Programas que também aparecem no status (“Jogando …”) além dos jogos reconhecidos sozinhos. Vale na hora:
+ * a lista fica neste PC e vai para o app do Windows, que olha a janela em foco.
+ */
+function CustomPrograms() {
+  const list = useStore((s) => s.prefs.customGames) || [];
+  const [programs, setPrograms] = useState(null);
+  const [pick, setPick] = useState('');
+  const [name, setName] = useState('');
+  const save = (next) => {
+    useStore.getState().setAppearance({ customGames: next });
+    setCustomPrograms(next);
+  };
+  const open = () => {
+    setPick('');
+    setName('');
+    listPrograms()
+      .then(setPrograms)
+      .catch((e) => {
+        setPrograms([]);
+        useStore.getState().notify(`Não deu para listar os programas: ${e}`);
+      });
+  };
+  const choose = (exe) => {
+    setPick(exe);
+    if (exe) setName(exe.replace(/\.exe$/i, ''));
+  };
+  const add = () => {
+    const nm = name.trim();
+    if (!pick || !nm) return;
+    save([...list.filter((c) => c.exe.toLowerCase() !== pick.toLowerCase()), { exe: pick, name: nm }]);
+    setPrograms(null);
+  };
+  return (
+    <>
+      {list.length > 0 && (
+        <div className="block-list">
+          <div className="block-title">Adicionados por você ({list.length})</div>
+          {list.map((c) => (
+            <div className="block-row" key={c.exe}>
+              <Gamepad2 size={15} aria-hidden="true" />
+              <span className="nm">
+                Jogando {c.name} <small>{c.exe}</small>
+              </span>
+              <button
+                type="button"
+                className="gloss mini"
+                title="Tirar da lista"
+                aria-label={`Tirar ${c.name} da lista`}
+                onClick={() => save(list.filter((x) => x !== c))}
+              >
+                <X size={13} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      {programs ? (
+        <div className="block-list custom-program-add">
+          <div className="block-title">Escolha o programa aberto no computador</div>
+          <div className="custom-program-list" role="listbox" aria-label="Programas abertos">
+            {programs.length ? (
+              programs.map((p) => (
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={pick === p.exe}
+                  key={p.exe}
+                  className={pick === p.exe ? 'on' : ''}
+                  title={p.path}
+                  onClick={() => choose(p.exe)}
+                >
+                  <b>{p.title}</b>
+                  <small>{p.exe}</small>
+                </button>
+              ))
+            ) : (
+              <p className="kv">Nenhum programa com janela aberta. Abra o jogo e clique em Atualizar.</p>
+            )}
+          </div>
+          {pick && (
+            <input
+              type="text"
+              value={name}
+              maxLength={80}
+              autoFocus
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && add()}
+              placeholder="Nome no status"
+              aria-label="Nome no status (Jogando …)"
+            />
+          )}
+          <div className="custom-program-actions">
+            <button type="button" className="btn" disabled={!pick || !name.trim()} onClick={add}>
+              <Plus size={14} /> Adicionar
+            </button>
+            <button type="button" className="btn ghost" onClick={open} title="Abriu o jogo agora? Atualize a lista">
+              <RotateCcw size={14} /> Atualizar
+            </button>
+            <button type="button" className="btn ghost" onClick={() => setPrograms(null)}>
+              Cancelar
+            </button>
+          </div>
+        </div>
+      ) : (
+        <p className="kv custom-program-hint">
+          Não está achando seu jogo?{' '}
+          <button type="button" className="link-inline" onClick={open}>
+            Adicione-o
+          </button>
+        </p>
+      )}
+    </>
+  );
+}
+
 function SettingsModal({ close }) {
   const prim = primaryConn();
   const me = prim((s) => s.me);
@@ -957,6 +1074,7 @@ function SettingsModal({ close }) {
                 </small>
               </span>
             </label>
+            {shareActivity && <CustomPrograms />}
           </>
         )}
         <div className="settings-sec">Vistos nas mensagens</div>

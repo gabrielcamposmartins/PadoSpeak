@@ -4532,6 +4532,85 @@ fieldset.plain {
 .block-row small {
   color: var(--muted);
 }
+/* Configurações → Atividade: programas que também aparecem no status */
+.custom-program-add {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+.custom-program-add input {
+  width: 100%;
+  min-width: 0;
+}
+.custom-program-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 210px;
+  overflow-y: auto;
+  border-radius: 6px;
+  border: 1px solid var(--row-hover-border);
+  background: var(--panel, transparent);
+}
+.custom-program-list > button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 5px 8px;
+  border: 0;
+  border-bottom: 1px solid var(--row-hover-border);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.custom-program-list > button:last-child {
+  border-bottom: 0;
+}
+.custom-program-list > button b {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.custom-program-list > button small {
+  color: var(--muted);
+  font-size: 11px;
+}
+.custom-program-list > button:hover {
+  background: var(--row-hover);
+}
+.custom-program-list > button.on {
+  background: var(--row-active, var(--row-hover));
+  box-shadow: inset 3px 0 0 var(--link);
+}
+.custom-program-list .kv {
+  margin: 8px;
+}
+.custom-program-hint {
+  margin: -4px 0 12px 24px;
+}
+.link-inline {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.link-inline:hover {
+  color: var(--link-hover);
+}
+.custom-program-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
 /* Nome e mensagem pessoal: a barra de formatação fica logo acima do campo */
 .profile-field .composer-tools {
   padding-bottom: 4px;

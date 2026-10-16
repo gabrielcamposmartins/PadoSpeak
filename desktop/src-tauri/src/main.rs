@@ -127,8 +127,20 @@ fn autostart_set(cfg: State<'_, Autostart>, on: bool) -> Result<bool, String> {
 
 /// Jogo em foco agora (o mesmo que vai no evento "activity").
 #[tauri::command]
-fn activity_get(current: State<'_, activity::Current>) -> Option<activity::Activity> {
-    current.lock().unwrap().clone()
+fn activity_get(watcher: State<'_, activity::Shared>) -> Option<activity::Activity> {
+    watcher.current.lock().unwrap().clone()
+}
+
+/// Programas que a pessoa quer no status além dos jogos (Configurações → Atividade).
+#[tauri::command]
+fn activity_custom_set(watcher: State<'_, activity::Shared>, list: Vec<activity::Custom>) {
+    watcher.set_custom(list);
+}
+
+/// Programas com janela aberta agora, para escolher qual entra no status.
+#[tauri::command]
+async fn activity_programs() -> Vec<activity::Program> {
+    tauri::async_runtime::spawn_blocking(activity::programs).await.unwrap_or_default()
 }
 
 /// Portas tentadas para o nó local (a primeira livre vale).
@@ -325,7 +337,7 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, local_node, notify_windows, autostart_get, autostart_set, open_url, activity_get, screen_audio::screen_audio_start, screen_audio::screen_audio_stop])
+        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, local_node, notify_windows, autostart_get, autostart_set, open_url, activity_get, activity_custom_set, activity_programs, screen_audio::screen_audio_start, screen_audio::screen_audio_stop])
         .build(tauri::generate_context!())
         .expect("erro ao iniciar o PadoSpeak");
 

@@ -155,8 +155,8 @@ export function ProfileBar({ onMenu }) {
       : 'Reconectando ao servidor…'
     : dm
       ? `${statusLabel} · em chamada com ${plain(dm.recipient.displayName)}`
-      : channel
-        ? `${voice.screen ? `${statusLabel} · ao vivo` : statusLabel} · ${channel.private ? 'em um canal privado' : `em ${channel.name}`}`
+      : channel && !channel.private
+        ? `${voice.screen ? `${statusLabel} · ao vivo` : statusLabel} · em ${channel.name}`
         : game
           ? `${statusLabel} · ${game}`
           : statusLabel;

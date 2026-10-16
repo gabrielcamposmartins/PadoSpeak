@@ -49,8 +49,8 @@ export function useGame(userId) {
 }
 
 /**
- * Onde a pessoa está na voz ("em Sala de Estar · Servidor"). Canal privado não diz o nome: quem vê o
- * status pode não ter acesso a ele.
+ * Onde a pessoa está na voz ("em Sala de Estar · Servidor"). Canal privado não aparece no status: quem vê
+ * pode não ter acesso a ele.
  */
 export function voicePlace(s, userId) {
   for (const [channelId, list] of Object.entries(s.voiceStates)) {
@@ -59,7 +59,7 @@ export function voicePlace(s, userId) {
       const ch = g.channels.find((c) => c.id === channelId);
       if (!ch) continue;
       const guild = s.guilds.find((x) => x.id === guildId)?.name || '';
-      return ch.private ? `em um canal privado · ${guild}` : `em ${ch.name} · ${guild}`;
+      return ch.private ? null : `em ${ch.name} · ${guild}`;
     }
     return s.dms.some((d) => d.id === channelId) ? 'em uma chamada' : 'em um canal de voz';
   }
