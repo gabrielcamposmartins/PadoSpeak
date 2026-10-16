@@ -15,8 +15,9 @@ static-auth-secret=__SECRET__
 max-bps=187500
 # no máximo 20 Mbps somando todo mundo
 bps-capacity=2500000
-user-quota=12
-total-quota=100
+user-quota=30
+# cada conexão de chamada (um par de pessoas) reserva uma vaga, mesmo indo direto
+total-quota=400
 stale-nonce=600
 no-cli
 no-multicast-peers

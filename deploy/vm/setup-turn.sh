@@ -41,6 +41,8 @@ if ! sudo test -f $NG/nginx.conf || ! sudo grep -q 'stream {' $NG/nginx.conf; th
 else
   sudo cp $NG/nginx.conf $NG/nginx.conf.new
 fi
+# Cada conexão TURN ocupa 4 conexões no nginx (cliente → 443 → 5349 → coturn).
+sudo sed -i -E 's/worker_connections[[:space:]]+1024;/worker_connections  4096;/' $NG/nginx.conf.new
 sudo mkdir -p $NG/stream.d.new $NG/conf.d.new
 sudo cp "$SRC/edge/stream.d/443.conf" $NG/stream.d.new/443.conf
 sudo cp -a $NG/conf.d/. $NG/conf.d.new/
