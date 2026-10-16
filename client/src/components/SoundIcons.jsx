@@ -27,7 +27,7 @@ export const SOUND_TONES = [
 ];
 
 export function SoundIcon({ icon, className = 'snd-ico' }) {
-  const id = icon === 'plus' || icon === 'orb' || SOUND_ICONS.some(([k]) => k === icon) ? icon : 'horn';
+  const id = ['plus', 'orb', 'speaker', 'speaker-off'].includes(icon) || SOUND_ICONS.some(([k]) => k === icon) ? icon : 'horn';
   return (
     <svg className={className} viewBox="0 0 32 32" aria-hidden="true">
       <use href={`#snd-${id}`} />
@@ -100,6 +100,24 @@ export function SoundSprite() {
           <path d="M11.5 12.5h3l4-3.5v14l-4-3.5h-3z" fill="#fff" />
           <path d="M21 12.5q2.4 3.5 0 7" fill="none" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" />
           <ellipse cx="16" cy="8.5" rx="9" ry="4.2" fill="#fff" opacity=".55" />
+        </symbol>
+        <symbol id="snd-speaker-box" viewBox="0 0 32 32">
+          <rect x="3.5" y="4.5" width="15" height="23" rx="3.5" fill="url(#sg-silver)" stroke="#6f8aa3" strokeWidth="1" />
+          <circle cx="11" cy="19.5" r="5.2" fill="url(#sg-orb)" stroke="#0a5f99" strokeWidth="1" />
+          <circle cx="11" cy="19.5" r="1.9" fill="#0a5f99" opacity=".75" />
+          <circle cx="11" cy="10" r="2.5" fill="url(#sg-orb)" stroke="#0a5f99" strokeWidth=".8" />
+          <path d="M6 7h10" stroke="#fff" strokeWidth="1.6" strokeLinecap="round" opacity=".9" />
+          <ellipse cx="9.4" cy="17.6" rx="2.2" ry="1.2" fill="#fff" opacity=".6" />
+        </symbol>
+        <symbol id="snd-speaker" viewBox="0 0 32 32">
+          <use href="#snd-speaker-box" />
+          <path d="M22 12.5q2.4 3.5 0 7" fill="none" stroke="#1e90e0" strokeWidth="2" strokeLinecap="round" />
+          <path d="M25.2 9.5q4.6 6.5 0 13" fill="none" stroke="#1e90e0" strokeWidth="2" strokeLinecap="round" opacity=".8" />
+        </symbol>
+        <symbol id="snd-speaker-off" viewBox="0 0 32 32">
+          <use href="#snd-speaker-box" />
+          <circle cx="25" cy="16" r="5.6" fill="url(#sg-red)" stroke="#8e0f07" strokeWidth="1" />
+          <path d="M22.8 13.8l4.4 4.4M27.2 13.8l-4.4 4.4" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" />
         </symbol>
         <symbol id="snd-horn" viewBox="0 0 32 32">
           <path d="M12 13 L24 6.5 Q29.5 4.5 29.5 16 Q29.5 27.5 24 25.5 L12 19 Z" fill="url(#sg-gold)" stroke="#a86a00" strokeWidth="1" />

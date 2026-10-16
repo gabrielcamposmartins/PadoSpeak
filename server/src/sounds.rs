@@ -111,7 +111,8 @@ async fn mine(app: &App, user_id: &str) -> Result<Vec<Sound>, ApiError> {
         .await?)
 }
 
-/// Atalho salvo: os ids de cada botão (null = vazio) e quantas linhas. Ids que não existem mais saem.
+/// Atalho salvo: os ids de cada botão (os sons primeiro, na ordem; o resto vazio) e quantas linhas,
+/// que seguem a quantidade de sons (1 linha a cada 3, de 1 a 3). Ids que não existem mais saem.
 async fn board(app: &App, user_id: &str, sounds: &[Sound]) -> Result<(Vec<Option<String>>, i64), ApiError> {
     let saved = app
         .db
@@ -119,16 +120,26 @@ async fn board(app: &App, user_id: &str, sounds: &[Sound]) -> Result<(Vec<Option
             Ok((r.get::<String>(0)?, r.get::<i64>(1)?))
         })
         .await?;
-    let (slots, rows) = match saved {
-        Some((slots, rows)) => (serde_json::from_str::<Vec<Option<String>>>(&slots).unwrap_or_default(), rows.clamp(MIN_ROWS, MAX_ROWS)),
-        // Ainda sem atalho: começa com 1 linha, com os primeiros sons da biblioteca.
-        None => (sounds.iter().take(3).map(|s| Some(s.id.clone())).collect(), MIN_ROWS),
+    let slots = match saved {
+        Some((slots, _)) => serde_json::from_str::<Vec<Option<String>>>(&slots).unwrap_or_default(),
+        // Ainda sem atalho: começa com os primeiros sons da biblioteca.
+        None => sounds.iter().take(3).map(|s| Some(s.id.clone())).collect(),
     };
+    Ok(compact(slots, sounds))
+}
+
+/// Os sons do atalho em sequência (sem buracos nem repetidos), e as linhas que eles ocupam.
+fn compact(slots: Vec<Option<String>>, sounds: &[Sound]) -> (Vec<Option<String>>, i64) {
     let size = (MAX_ROWS * 3) as usize;
-    let mut out: Vec<Option<String>> = slots.into_iter().map(|id| id.filter(|id| sounds.iter().any(|s| &s.id == id))).collect();
+    let mut out: Vec<Option<String>> = Vec::new();
+    for id in slots.into_iter().flatten() {
+        if sounds.iter().any(|s| s.id == id) && !out.contains(&Some(id.clone())) && out.len() < size {
+            out.push(Some(id));
+        }
+    }
+    let rows = (out.len() as i64 + 2) / 3;
     out.resize(size, None);
-    out.truncate(size);
-    Ok((out, rows))
+    (out, rows.clamp(MIN_ROWS, MAX_ROWS))
 }
 
 async fn library(State(app): AppState, AuthUser(me, _): AuthUser) -> ApiResult<Json<Value>> {
@@ -161,12 +172,13 @@ async fn count(app: &App, user_id: &str) -> Result<i64, ApiError> {
 /// Põe o som novo no primeiro botão vazio do atalho (se houver).
 async fn add_to_board(app: &App, user_id: &str, sound_id: &str) -> Result<(), ApiError> {
     let sounds = mine(app, user_id).await?;
-    let (mut slots, rows) = board(app, user_id, &sounds).await?;
+    let (mut slots, _) = board(app, user_id, &sounds).await?;
     if slots.iter().any(|s| s.as_deref() == Some(sound_id)) {
         return Ok(());
     }
-    if let Some(free) = slots.iter_mut().take((rows * 3) as usize).find(|s| s.is_none()) {
+    if let Some(free) = slots.iter_mut().find(|s| s.is_none()) {
         *free = Some(sound_id.to_string());
+        let (slots, rows) = compact(slots, &sounds);
         save_board(app, user_id, &slots, rows).await?;
     }
     Ok(())
@@ -263,18 +275,12 @@ async fn remove(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): Path<
 #[derive(Deserialize)]
 struct BoardBody {
     slots: Vec<Option<String>>,
-    rows: i64,
 }
 
 async fn set_board(State(app): AppState, AuthUser(me, _): AuthUser, Json(body): Json<BoardBody>) -> ApiResult<Json<Value>> {
     let sounds = mine(&app, &me.id).await?;
-    let rows = body.rows.clamp(MIN_ROWS, MAX_ROWS);
-    let mut slots: Vec<Option<String>> = Vec::new();
-    for id in body.slots.into_iter().take((MAX_ROWS * 3) as usize) {
-        // Só sons da própria biblioteca, cada um uma vez.
-        let ok = id.as_ref().filter(|id| sounds.iter().any(|s| &s.id == *id) && !slots.contains(&Some((*id).clone())));
-        slots.push(ok.cloned());
-    }
+    // Só sons da própria biblioteca, cada um uma vez; as linhas seguem a quantidade.
+    let (slots, rows) = compact(body.slots, &sounds);
     save_board(&app, &me.id, &slots, rows).await?;
     let (slots, rows) = board(&app, &me.id, &sounds).await?;
     Ok(Json(json!({ "slots": slots, "rows": rows })))
@@ -333,6 +339,17 @@ pub async fn owned(app: &App, user_id: &str, sound_id: &str) -> Option<Sound> {
         .flatten()
 }
 
+/// Um administrador silenciou os sons rápidos desta pessoa no servidor?
+pub async fn muted_in_guild(app: &App, guild_id: &str, user_id: &str) -> bool {
+    app.db
+        .query_one("SELECT sound_mutes FROM guilds WHERE id = ?1", [guild_id], |r| r.get::<String>(0))
+        .await
+        .ok()
+        .flatten()
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
+        .is_some_and(|list| list.iter().any(|u| u == user_id))
+}
+
 /// Os sons rápidos estão ligados neste servidor?
 pub async fn guild_allows(app: &App, guild_id: &str) -> bool {
     app.db
@@ -346,6 +363,28 @@ pub async fn guild_allows(app: &App, guild_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn atalho_em_sequencia_e_linhas_automaticas() {
+        let snd = |id: &str| Sound {
+            id: id.into(),
+            owner_id: "u".into(),
+            name: id.into(),
+            icon: "bell".into(),
+            tone: "blue".into(),
+            duration_ms: 1000,
+            url: String::new(),
+        };
+        let lib: Vec<Sound> = ["a", "b", "c", "d"].into_iter().map(snd).collect();
+        let s = |v: &[Option<&str>]| v.iter().map(|x| x.map(String::from)).collect::<Vec<_>>();
+        let (slots, rows) = compact(s(&[None, Some("b"), Some("x"), Some("b"), Some("a")]), &lib);
+        assert_eq!(&slots[..3], &s(&[Some("b"), Some("a"), None])[..]);
+        assert_eq!((slots.len(), rows), (9, 1));
+        let (_, rows) = compact(s(&[Some("a"), Some("b"), Some("c"), Some("d")]), &lib);
+        assert_eq!(rows, 2);
+        let (_, rows) = compact(Vec::new(), &lib);
+        assert_eq!(rows, 1);
+    }
 
     #[test]
     fn reconhece_os_audios() {

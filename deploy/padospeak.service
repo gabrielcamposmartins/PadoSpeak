@@ -1,5 +1,5 @@
 [Unit]
-Description=PadoSpeak - servidor de chat/voz (clone do Discord)
+Description=PadoSpeak - servidor de chat, voz e vídeo
 After=network-online.target
 Wants=network-online.target
 

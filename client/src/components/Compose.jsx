@@ -20,7 +20,7 @@ import {
   Maximize2,
   Minimize2,
 } from 'lucide-react';
-import { useStore } from '../store.js';
+import { useStore, stickerHome } from '../store.js';
 import { TitleBar } from './Aero.jsx';
 import { StickerView } from './Stickers.jsx';
 import { fmtSize, VoiceNote } from './Files.jsx';
@@ -86,7 +86,7 @@ function AttachTile({ item, big, onRemove, onNsfw }) {
       title={file ? `${file.name} · ${fmtSize(file.size)}${item.nsfw ? ' · NSFW' : ''}` : 'Sticker'}
     >
       {item.kind === 'sticker' ? (
-        <StickerView sticker={item.sticker} />
+        <StickerView sticker={item.sticker} base={item.sticker.emote ? undefined : stickerHome().getState().baseUrl} />
       ) : kind === 'image' ? (
         <img src={url} alt={name} />
       ) : kind === 'video' ? (

@@ -2,7 +2,7 @@
 // editar, apagar e escolher quais ficam nos botões do atalho. E a lista dos sons de outra pessoa,
 // com "Copiar" para a sua biblioteca.
 import { useEffect, useRef, useState } from 'react';
-import { Play, Pencil, Trash2, Upload, Check, X, Plus, Minus } from 'lucide-react';
+import { Play, Pencil, Trash2, Upload, Check, X } from 'lucide-react';
 import { useStore, getConn } from '../store.js';
 import { SoundIcon, SOUND_ICONS, SOUND_TONES } from './SoundIcons.jsx';
 import { playSoundboard, audioDuration } from '../lib/soundboard.js';
@@ -10,6 +10,8 @@ import { plain } from '../lib/text.js';
 
 const MAX_BYTES = 1024 * 1024;
 const MAX_SECONDS = 5;
+/** Sons no atalho: 3 linhas de 3. */
+const BOARD_MAX = 9;
 const fmtSec = (ms) => `${(ms / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1, minimumFractionDigits: 1 })} s`;
 
 function useVolume() {
@@ -103,10 +105,10 @@ export function SoundsModal({ slot = null, conn, embedded = false }) {
     if (!lib) st.loadSounds();
   }, []);
   if (!lib) return <div className={embedded ? 'sound-lib' : 'modal-body'}>Carregando…</div>;
-  const { sounds, slots, rows, max } = lib;
-  const size = rows * 3;
-  const inBoard = (id) => slots.slice(0, size).includes(id);
-  const freeSlots = slots.slice(0, size).filter((x) => !x).length;
+  const { sounds, slots, max } = lib;
+  // O atalho cresce sozinho: até 9 sons (3 linhas).
+  const inBoard = (id) => slots.includes(id);
+  const freeSlots = BOARD_MAX - slots.filter(Boolean).length;
 
   const pick = async (e) => {
     const file = e.target.files?.[0];
@@ -132,7 +134,7 @@ export function SoundsModal({ slot = null, conn, embedded = false }) {
       if (slot != null && !inBoard(snd.id)) {
         const next = [...store.getState().sounds.slots.map((x) => (x === snd.id ? null : x))];
         next[slot] = snd.id;
-        await st.setSoundBoard(next, rows);
+        await st.setSoundBoard(next);
       }
       setPending(null);
     } catch (e) {
@@ -145,11 +147,11 @@ export function SoundsModal({ slot = null, conn, embedded = false }) {
     const next = [...slots];
     if (inBoard(id)) next[next.indexOf(id)] = null;
     else {
-      const at = slot != null && !next[slot] ? slot : next.findIndex((x, i) => !x && i < size);
+      const at = slot != null && !next[slot] ? slot : next.findIndex((x) => !x);
       if (at < 0) return;
       next[at] = id;
     }
-    st.setSoundBoard(next, rows).catch((e) => setError(e.message));
+    st.setSoundBoard(next).catch((e) => setError(e.message));
   };
 
   return (
@@ -220,7 +222,7 @@ export function SoundsModal({ slot = null, conn, embedded = false }) {
                 type="button"
                 className={`sl-slot${inBoard(snd.id) ? ' in' : ''}`}
                 disabled={!inBoard(snd.id) && freeSlots === 0}
-                title={!inBoard(snd.id) && freeSlots === 0 ? 'O atalho está cheio: tire um som ou adicione uma linha' : undefined}
+                title={!inBoard(snd.id) && freeSlots === 0 ? `O atalho está cheio (${BOARD_MAX} sons): tire um som dele` : undefined}
                 onClick={() => toggleBoard(snd.id)}
               >
                 {inBoard(snd.id) ? (
@@ -334,8 +336,8 @@ export function UserSoundsModal({ userId, conn }) {
 }
 
 /**
- * Configurações → Sons: o atalho (de 1 a 3 linhas de 3 botões; tocar num botão tira o som dele) e a
- * biblioteca. O painel da barra lateral mostra só os botões com som.
+ * Configurações → Sons: o atalho (tocar num botão tira o som dele) e a biblioteca. As linhas seguem a
+ * quantidade de sons: 1 linha a cada 3, até 3 linhas. O painel da barra lateral mostra só os botões com som.
  */
 export function SoundSettings() {
   const lib = useStore((s) => s.sounds);
@@ -345,36 +347,25 @@ export function SoundSettings() {
     if (!lib) st.loadSounds();
   }, []);
   if (!lib) return <p className="kv">Carregando…</p>;
-  const { sounds, slots, rows } = lib;
+  const { sounds, slots } = lib;
   const byId = new Map(sounds.map((x) => [x.id, x]));
-  const size = rows * 3;
-  const board = Array.from({ length: size }, (_, i) => (slots[i] && byId.get(slots[i])) || null);
-  const save = (next, r) => st.setSoundBoard(next, r).catch((e) => setError(e.message));
-  const remove = (i) => {
-    const next = [...slots];
-    next[i] = null;
-    save(next, rows);
-  };
-  const resize = (r) => {
-    // Menos linhas: os sons do atalho sobem para as primeiras casas; os que não couberem saem do atalho
-    // (continuam na biblioteca).
-    const filled = slots.filter((id) => id && byId.has(id));
-    const next = Array.from({ length: 9 }, (_, i) => (i < r * 3 ? filled[i] || null : null));
-    save(next, r);
-  };
-  const dropped = Math.max(0, board.filter(Boolean).length - (rows - 1) * 3);
+  const filled = slots.map((id) => id && byId.get(id)).filter(Boolean);
+  // Completa a última linha com casas vazias (sem nenhum som, uma linha vazia).
+  const size = Math.max(3, Math.ceil(filled.length / 3) * 3);
+  const board = Array.from({ length: size }, (_, i) => filled[i] || null);
+  const remove = (id) => st.setSoundBoard(slots.map((x) => (x === id ? null : x))).catch((e) => setError(e.message));
 
   return (
     <div className="sound-settings">
       <div className="settings-sec">Atalho</div>
       <p className="kv">
         Os sons do atalho aparecem embaixo da lista de canais e na tela de chamada do celular. Clique num botão aqui para tirar o som
-        dele; para pôr, use “Pôr no atalho” na biblioteca.
+        dele; para pôr, use “Pôr no atalho” na biblioteca. As linhas aumentam sozinhas, até {BOARD_MAX} sons.
       </p>
       <div className="sb-edit" role="group" aria-label="Botões do atalho">
         {board.map((snd, i) =>
           snd ? (
-            <button key={snd.id} type="button" className={`snd t-${snd.tone}`} onClick={() => remove(i)} title={`Tirar “${snd.name}” do atalho`}>
+            <button key={snd.id} type="button" className={`snd t-${snd.tone}`} onClick={() => remove(snd.id)} title={`Tirar “${snd.name}” do atalho`}>
               <SoundIcon icon={snd.icon} />
               <span className="n">{snd.name}</span>
               <span className="sb-x" aria-hidden="true">
@@ -387,23 +378,6 @@ export function SoundSettings() {
             </span>
           ),
         )}
-      </div>
-      <div className="sb-rows">
-        <button type="button" className="btn ghost" disabled={rows >= 3} onClick={() => resize(rows + 1)}>
-          <Plus size={14} /> linha
-        </button>
-        <button
-          type="button"
-          className="btn ghost"
-          disabled={rows <= 1}
-          onClick={() => resize(rows - 1)}
-          title={dropped > 0 ? `${dropped} som(s) sairão do atalho (continuam na biblioteca)` : undefined}
-        >
-          <Minus size={14} /> linha
-        </button>
-        <span className="kv">
-          {rows} {rows === 1 ? 'linha' : 'linhas'} (máximo 3) · até {size} sons
-        </span>
       </div>
       {error && <p className="error-text">{error}</p>}
       <div className="settings-sec">Biblioteca</div>

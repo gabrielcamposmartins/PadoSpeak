@@ -1,13 +1,15 @@
 // Sons rápidos: os botões de gel logo abaixo da lista de canais / amigos online, e a folha que abre na
 // tela de chamada do celular. Mostra só os sons que estão no atalho (de 1 a 3 linhas de 3); sem nenhum,
 // só a linha "Sons rápidos — Nenhum". Montar o atalho e a biblioteca fica em Configurações → Sons.
-// Na chamada, um toque toca para todos; fora dela, toca só para você ouvir.
+// Na chamada, um toque toca para todos; fora dela, toca só para você ouvir. À direita do título, a
+// caixa de som dos efeitos sonoros dos outros (ver SoundFx.jsx).
 import { useEffect, useState } from 'react';
 import { useStore } from '../store.js';
 import { useVoiceConn } from './conn.jsx';
 import { SoundIcon } from './SoundIcons.jsx';
 import { plain } from '../lib/text.js';
 import { playSoundboard } from '../lib/soundboard.js';
+import SoundFx from './SoundFx.jsx';
 
 /** Som tocado há pouco por outra pessoa (para oferecer "Copiar"). */
 function useRecentOther(vc, meId) {
@@ -72,6 +74,8 @@ export default function SoundPanel({ variant = 'side' }) {
           {empty && <span className="sp-none">— Nenhum</span>}
         </span>
         {!empty && variant === 'sheet' && <small className="sp-hint">{live ? 'toque para todos ouvirem' : 'entre numa chamada'}</small>}
+        <span className="sp-grow" />
+        <SoundFx />
       </div>
       {guildOff && !empty && <p className="sp-note">Os sons rápidos estão desligados neste servidor.</p>}
       {!empty && (

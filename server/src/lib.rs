@@ -1,4 +1,4 @@
-//! PadoSpeak — servidor de chat estilo Discord (biblioteca).
+//! PadoSpeak — servidor de chat, voz e vídeo (biblioteca).
 //!
 //! Usado pelo binário `padospeak-server` (VM/headless/Docker) e embutido no app desktop
 //! (Tauri), onde o botão "Hostear" chama [`HostManager::start`].

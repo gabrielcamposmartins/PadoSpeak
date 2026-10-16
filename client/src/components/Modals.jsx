@@ -12,6 +12,7 @@ import {
   Trash2,
   Vibrate,
   BellOff,
+  Ban,
   X,
   Download,
   Lock,
@@ -72,9 +73,9 @@ import { SoundsModal, UserSoundsModal, SoundSettings } from './SoundLibrary.jsx'
 import { GoogleButton, useAuthOptions, AccountSettings } from './AccountAuth.jsx';
 import VolumeSlider from './Volume.jsx';
 import { isDesktop, isTauri, DOWNLOAD_URL, DEFAULT_SERVER, openExternal } from '../lib/env.js';
-import { usePwa, installState, install } from '../lib/pwa.js';
+import { usePwa, installState, install, pushStatus, enablePush, disablePush } from '../lib/pwa.js';
 import { ConnProvider, useConn } from './conn.jsx';
-import Avatar, { useUser, UserName, colorClass, colorStyle } from './Avatar.jsx';
+import Avatar, { useUser, UserName, colorClass, colorStyle, Orb } from './Avatar.jsx';
 import LatencyChart from './LatencyChart.jsx';
 import { TitleBar } from './Aero.jsx';
 import { FormattedText, Floating, TEXT_COLORS } from './Emotes.jsx';
@@ -94,6 +95,7 @@ import {
   refreshHotkeys,
   hotkeyProblems,
   onHotkeyProblems,
+  soloRecorder,
 } from '../lib/hotkeys.js';
 import { isTouch as touchDevice } from '../lib/layout.js';
 
@@ -519,11 +521,111 @@ const SCENES = [
 const SETTINGS_TABS = [
   ['aparencia', 'Aparência', Palette],
   ['funcionalidade', 'Funcionalidade', SlidersHorizontal],
+  ['notificacoes', 'Notificações', Bell],
   ['formatacao', 'Formatação de texto', Type],
   ['sons', 'Sons', Music2],
   ['apps', 'Apps', Download],
   ['conta', 'Conta', KeyRound],
 ];
+
+/** Configurações → Conta: quem eu bloqueei (desbloquear daqui). */
+function BlockedUsers() {
+  const prim = primaryConn();
+  const list = prim((s) => s.nudgeSettings?.blocks);
+  if (!list) return null;
+  return (
+    <>
+      <div className="settings-sec">Pessoas bloqueadas</div>
+      <p className="kv">Quem está aqui não é seu amigo e vocês não podem mandar pedido de amizade um ao outro.</p>
+      <div className="block-list">
+        {list.length ? (
+          list.map((u) => (
+            <div className="block-row" key={u.id}>
+              <Avatar user={u} size={22} frame={false} />
+              <span className="nm">
+                <FormattedText text={u.displayName} /> <small>@{u.username}</small>
+              </span>
+              <button type="button" className="btn ghost mini-btn" onClick={() => prim.getState().setBlocked(u.id, false)}>
+                Desbloquear
+              </button>
+            </div>
+          ))
+        ) : (
+          <p className="kv">Ninguém bloqueado. Para bloquear alguém, use o botão direito na pessoa ou o perfil dela.</p>
+        )}
+      </div>
+    </>
+  );
+}
+
+/** Notificações com o PadoSpeak fechado (app instalado / navegador com push). */
+function PushToggle() {
+  usePwa();
+  const status = pushStatus();
+  const [busy, setBusy] = useState(false);
+  if (status === 'unsupported') return null;
+  const toggle = async (on) => {
+    setBusy(true);
+    try {
+      if (on) await enablePush(primaryConn());
+      else await disablePush(primaryConn());
+    } catch (e) {
+      useStore.getState().notify(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <div className="settings-sec">Neste aparelho</div>
+      <label className="checkbox">
+        <input type="checkbox" checked={status === 'on'} disabled={busy || status === 'denied'} onChange={(e) => toggle(e.target.checked)} />
+        <span>
+          Receber notificações com o PadoSpeak fechado
+          <small className="check-hint">
+            {status === 'denied'
+              ? 'Bloqueadas no aparelho: libere as notificações do PadoSpeak nas configurações do sistema.'
+              : 'Mensagens, chamadas e “chamar atenção” aparecem como notificação do aparelho.'}
+          </small>
+        </span>
+      </label>
+    </>
+  );
+}
+
+const NOTIFY_LEVEL = { all: 'Todas as mensagens', mentions: 'Só menções', none: 'Nenhuma mensagem' };
+
+/** Atalhos para as notificações de cada servidor (ficam nas configurações do servidor). */
+function GuildNotifyLinks() {
+  const guilds = useStore((s) => s.guilds);
+  const notify = useStore((s) => s.guildNotify);
+  if (!guilds.length) return null;
+  return (
+    <>
+      <div className="settings-sec">Servidores</div>
+      <p className="kv">Mensagens, menções, entradas na voz e transmissões: cada servidor tem as suas.</p>
+      <div className="block-list">
+        {guilds.map((g) => (
+          <div className="block-row" key={g.id}>
+            <span className="nm">
+              <FormattedText text={g.name} />{' '}
+              <small>{NOTIFY_LEVEL[{ ...DEFAULT_NOTIFY, ...notify[g.id] }.messages] || ''}</small>
+            </span>
+            <button
+              type="button"
+              className="gloss mini"
+              title="Notificações do servidor"
+              aria-label={`Notificações de ${plain(g.name)}`}
+              onClick={() => useStore.getState().openModal({ type: 'guildSettings', guildId: g.id, tab: 'notificacoes' })}
+            >
+              <Bell size={13} />
+            </button>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
 
 /** Instalar o PadoSpeak: o app para Windows e o app instalável (PWA), em qualquer aparelho. */
 function AppsTab() {
@@ -682,9 +784,23 @@ function HotkeyField({ action, label, value, others, onChange }) {
     if (!recording) return;
     // O atalho global engoliria as teclas: fica desligado enquanto grava.
     pauseGlobalHotkeys();
+    const solo = soloRecorder();
+    const accept = (hotkey) => {
+      const taken = others.find((o) => sameHotkey(o.value, hotkey));
+      if (taken) return setMsg(`Esse atalho já é de “${taken.label}”.`);
+      setRecording(false);
+      setMsg('');
+      onChange(hotkey);
+    };
+    // Ctrl, Alt, Shift ou Win sozinho: vale ao soltar sem ter apertado outra tecla.
+    const onUp = (e) => {
+      const hotkey = solo.keyup(e);
+      if (hotkey) accept(hotkey);
+    };
     const onKey = (e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (!e.repeat) solo.keydown(e);
       if (e.key === 'Escape' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
         setRecording(false);
         setMsg('');
@@ -693,14 +809,14 @@ function HotkeyField({ action, label, value, others, onChange }) {
       const r = hotkeyFromEvent(e);
       if (r.waiting) return;
       if (r.error) return setMsg(r.error);
-      const taken = others.find((o) => sameHotkey(o.value, r.hotkey));
-      if (taken) return setMsg(`Esse atalho já é de “${taken.label}”.`);
-      setRecording(false);
-      setMsg('');
-      onChange(r.hotkey);
+      accept(r.hotkey);
     };
     window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
+    window.addEventListener('keyup', onUp, true);
+    return () => {
+      window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('keyup', onUp, true);
+    };
   }, [recording, others, onChange]);
   const stop = () => {
     if (!recording) return;
@@ -719,7 +835,11 @@ function HotkeyField({ action, label, value, others, onChange }) {
           onClick={() => (recording ? stop() : setRecording(true))}
           onBlur={stop}
           aria-label={`Atalho: ${label}`}
-          title={recording ? 'Aperte as teclas do atalho (Esc cancela)' : 'Clique para trocar o atalho'}
+          title={
+            recording
+              ? 'Aperte as teclas do atalho, ou toque Ctrl, Alt, Shift ou Win sozinho (Esc cancela)'
+              : 'Clique para trocar o atalho'
+          }
         >
           {recording ? 'Aperte as teclas…' : formatHotkey(value)}
         </button>
@@ -763,6 +883,10 @@ function VoiceHotkeys() {
           onChange={set(a.id)}
         />
       ))}
+      <p className="kv">
+        Pode ser uma combinação (Ctrl + Shift + M) ou só Ctrl, Alt, Shift ou Win: aí vale o toque, apertar e soltar a tecla
+        sozinha.
+      </p>
       <p className="kv">
         {isTauri
           ? 'Funcionam em qualquer lugar do Windows: com o PadoSpeak minimizado, na bandeja ou atrás de um jogo.'
@@ -1076,13 +1200,6 @@ function SettingsModal({ close }) {
             <small className="check-hint">Remove teclado, ventilador e barulho de fundo do seu microfone.</small>
           </span>
         </label>
-        <label className="checkbox">
-          <input type="checkbox" checked={sounds} onChange={(e) => setSounds(e.target.checked)} />
-          <span>
-            Sons de chamada
-            <small className="check-hint">Entradas e saídas no canal de voz, transmissões, mensagens diretas e toque de chamada.</small>
-          </span>
-        </label>
         {canPickOutput && <DeviceSelect {...props} k="output" kind="audiooutput" label="Saída de áudio" />}
         <DeviceSelect {...props} k="camera" kind="videoinput" label="Câmera" />
         {needsPermission && (
@@ -1106,18 +1223,6 @@ function SettingsModal({ close }) {
         ))}
       </section>
       <section className="settings-col">
-        <div className="settings-sec">Notificações</div>
-        <label className="checkbox">
-          <input type="checkbox" checked={repeatAlerts} onChange={(e) => setRepeatAlerts(e.target.checked)} />
-          <span>
-            Receber notificações repetidas
-            <small className="check-hint">
-              Desligado: se um amigo ficar online várias vezes seguidas (ou alternar entre offline e online), você recebe no
-              máximo um aviso dessa pessoa a cada 10 minutos.
-            </small>
-          </span>
-        </label>
-        <p className="kv">As notificações de cada servidor ficam nas configurações do servidor.</p>
         {isTauri && (
           <>
             <div className="settings-sec">Atividade</div>
@@ -1152,6 +1257,91 @@ function SettingsModal({ close }) {
             </small>
           </span>
         </label>
+        {hasServer && (
+          <>
+            <div className="settings-sec">Rede</div>
+            <label className="checkbox">
+              <input type="checkbox" checked={nearbyVisible} onChange={(e) => setNearbyVisible(e.target.checked)} />
+              <span>
+                Aparecer para quem está na mesma rede
+                <small className="check-hint">
+                  Pessoas com o PadoSpeak aberto no mesmo Wi-Fi veem você em “Na sua rede” (e você vê elas), mesmo sem serem
+                  amigos.
+                </small>
+              </span>
+            </label>
+          </>
+        )}
+        {autostart?.available && (
+          <>
+            <div className="settings-sec">Sistema</div>
+            <label className="checkbox">
+              <input type="checkbox" checked={autostartOn} onChange={(e) => setAutostartOn(e.target.checked)} />
+              <span>
+                Iniciar o PadoSpeak com o Windows
+                <small className="check-hint">Abre minimizado na bandeja, perto do relógio, para receber mensagens e chamadas.</small>
+              </span>
+            </label>
+          </>
+        )}
+      </section>
+    </div>
+  );
+
+  const notifications = (
+    <div className="settings-cols">
+      <section className="settings-col">
+        <PushToggle />
+        <p className="kv busy-hint">
+          <Orb status="busy" />
+          <span>
+            Com o status <b>Ocupado</b>, você não recebe notificações nem sons de aviso, só ligações.
+          </span>
+        </p>
+        <div className="settings-sec">Sons</div>
+        <label className="checkbox">
+          <input type="checkbox" checked={sounds} onChange={(e) => setSounds(e.target.checked)} />
+          <span>
+            Sons de chamada e de avisos
+            <small className="check-hint">Entradas e saídas no canal de voz, transmissões, mensagens diretas e toque de chamada.</small>
+          </span>
+        </label>
+        <div className="settings-sec">Amigos</div>
+        <div className="online-notify" role="group" aria-labelledby="online-notify-label">
+          <span id="online-notify-label">Notificar meus amigos quando eu ficar online no:</span>
+          <span className="online-notify-opts">
+            {[
+              ['onlineNotifyDesktop', 'Desktop'],
+              ['onlineNotifyPhone', 'Smartphone'],
+            ].map(([k, label]) => (
+              <label className="checkbox" key={k}>
+                <input
+                  type="checkbox"
+                  checked={k === 'onlineNotifyDesktop' ? nudge?.[k] !== false : nudge?.[k] === true}
+                  disabled={!nudge}
+                  onChange={(e) => {
+                    for (const c of connRegistry.values()) if (c.getState().me) c.getState().setOnlineNotify({ [k]: e.target.checked });
+                  }}
+                />
+                <span>{label}</span>
+              </label>
+            ))}
+          </span>
+          <small className="check-hint">Smartphone vale também para tablet. Desktop é o app do Windows e o navegador do computador.</small>
+        </div>
+        <label className="checkbox">
+          <input type="checkbox" checked={repeatAlerts} onChange={(e) => setRepeatAlerts(e.target.checked)} />
+          <span>
+            Receber notificações repetidas
+            <small className="check-hint">
+              Desligado: se um amigo ficar online várias vezes seguidas (ou alternar entre offline e online), você recebe no
+              máximo um aviso dessa pessoa a cada 10 minutos.
+            </small>
+          </span>
+        </label>
+        <GuildNotifyLinks />
+      </section>
+      <section className="settings-col">
         <div className="settings-sec">Chamar atenção</div>
         <label className="checkbox">
           <input
@@ -1195,33 +1385,6 @@ function SettingsModal({ close }) {
             )}
           </div>
         )}
-        {hasServer && (
-          <>
-            <div className="settings-sec">Rede</div>
-            <label className="checkbox">
-              <input type="checkbox" checked={nearbyVisible} onChange={(e) => setNearbyVisible(e.target.checked)} />
-              <span>
-                Aparecer para quem está na mesma rede
-                <small className="check-hint">
-                  Pessoas com o PadoSpeak aberto no mesmo Wi-Fi veem você em “Na sua rede” (e você vê elas), mesmo sem serem
-                  amigos.
-                </small>
-              </span>
-            </label>
-          </>
-        )}
-        {autostart?.available && (
-          <>
-            <div className="settings-sec">Sistema</div>
-            <label className="checkbox">
-              <input type="checkbox" checked={autostartOn} onChange={(e) => setAutostartOn(e.target.checked)} />
-              <span>
-                Iniciar o PadoSpeak com o Windows
-                <small className="check-hint">Abre minimizado na bandeja, perto do relógio, para receber mensagens e chamadas.</small>
-              </span>
-            </label>
-          </>
-        )}
       </section>
     </div>
   );
@@ -1239,6 +1402,7 @@ function SettingsModal({ close }) {
         <div className="settings-pane">
           {tab === 'aparencia' && appearance}
           {tab === 'funcionalidade' && features}
+          {tab === 'notificacoes' && notifications}
           {tab === 'formatacao' && <TextFormatting />}
           {tab === 'sons' && (
             <section className="settings-col">
@@ -1250,6 +1414,7 @@ function SettingsModal({ close }) {
           {tab === 'conta' && (
             <section className="settings-col">
               <AccountSettings />
+              <BlockedUsers />
             </section>
           )}
           {tab === 'apps' && <AppsTab />}
@@ -1491,6 +1656,7 @@ function ProfileCard({ close, userId }) {
   const online = useC((s) => Boolean(s.online[userId]));
   const game = useC((s) => (s.online[userId] || userId === s.me?.id ? s.activities?.[userId] : null));
   const nudgeBlocked = useC((s) => Boolean(s.nudgeSettings?.nudgeBlocks.some((u) => u.id === userId)));
+  const blocked = useC((s) => Boolean(s.nudgeSettings?.blocks?.some((u) => u.id === userId)));
   const [profile, setProfile] = useState(null);
   const [error, setError] = useState('');
   const user = useUser(profile?.user);
@@ -1585,7 +1751,7 @@ function ProfileCard({ close, userId }) {
             <button className="btn green" onClick={run(async () => (close(), await callUser(userId)))}>
               <Phone size={16} /> Ligar
             </button>
-            {isServer && !status && (
+            {isServer && !status && !blocked && (
               <button className="btn secondary" onClick={run(() => sendFriendRequest(user.username))}>
                 <UserPlus size={16} /> Adicionar amigo
               </button>
@@ -1608,19 +1774,40 @@ function ProfileCard({ close, userId }) {
             <button
               className="btn ghost"
               title="Ver os sons rápidos desta pessoa (e copiar)"
+              aria-label="Sons rápidos"
               onClick={() => useStore.getState().openModal({ type: 'userSounds', userId, conn: useC.getState().key })}
             >
-              <Music2 size={16} /> Sons
+              <Music2 size={16} />
             </button>
             <button
               className={`btn ghost${nudgeBlocked ? ' pressed' : ''}`}
               title={nudgeBlocked ? 'Voltar a aceitar chamar atenção desta pessoa' : 'Não aceitar chamar atenção desta pessoa'}
+              aria-label={nudgeBlocked ? 'Voltar a aceitar chamar atenção' : 'Não aceitar chamar atenção'}
               aria-pressed={nudgeBlocked}
               onClick={() => useC.getState().setNudgeBlocked(userId, !nudgeBlocked)}
             >
               {nudgeBlocked ? <BellOff size={16} /> : <Vibrate size={16} />}
-              {nudgeBlocked ? 'Bloqueado' : ''}
             </button>
+            {isServer && (
+              <button
+                className={`btn ghost${blocked ? ' pressed' : ' danger-text'}`}
+                title={blocked ? 'Bloqueado: clique para desbloquear' : 'Bloquear: desfaz a amizade e impede pedidos de amizade'}
+                aria-label={blocked ? 'Desbloquear' : 'Bloquear'}
+                aria-pressed={blocked}
+                onClick={() =>
+                  blocked
+                    ? useC.getState().setBlocked(userId, false)
+                    : openModal({
+                        type: 'confirm',
+                        title: `Bloquear ${plain(user.displayName)}?`,
+                        text: 'A amizade é desfeita e vocês não podem mais mandar pedido de amizade um ao outro. Dá para desbloquear depois em Configurações → Conta.',
+                        action: () => useC.getState().setBlocked(userId, true),
+                      })
+                }
+              >
+                <Ban size={16} />
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -2958,11 +3145,11 @@ const GS_TABS = [
   ['registro', 'Registro', ScrollText, true],
 ];
 
-function GuildSettingsModal({ guildId }) {
+function GuildSettingsModal({ guildId, tab: startTab }) {
   const guild = useStore((s) => s.guilds.find((g) => g.id === guildId));
   const base = useStore((s) => s.baseUrl);
   const perms = usePerms(useStore, guildId);
-  const [tab, setTab] = useState('geral');
+  const [tab, setTab] = useState(startTab || 'geral');
   const [name, setName] = useState(guild?.name || '');
   const [busy, setBusy] = useState(false);
   const iconInput = useRef(null);

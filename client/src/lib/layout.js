@@ -35,6 +35,11 @@ export const useNarrow = () =>
 /** Toque (celular/tablet): sem "passar o mouse", botões maiores. */
 export const isTouch = Boolean(media('(pointer: coarse)')?.matches);
 
+/** iPhone e iPad (o iPad novo se apresenta como Mac, mas tem toque). */
+export const isIOS =
+  typeof navigator !== 'undefined' &&
+  (/iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1));
+
 /** Instalado na tela de início (PWA) ou aberto pelo app. */
 export const isStandalone =
   Boolean(media('(display-mode: standalone)')?.matches) ||
@@ -47,13 +52,28 @@ export const isStandalone =
 export function watchViewport() {
   const root = document.documentElement;
   const vv = window.visualViewport;
+  // Maior altura vista nesta orientação: bem menor que ela = teclado aberto.
+  let full = 0;
+  let wide = window.innerWidth > window.innerHeight;
   const update = () => {
     root.dataset.layout = currentLayout();
-    root.style.setProperty('--app-h', `${Math.round(vv ? vv.height : window.innerHeight)}px`);
+    const h = vv ? vv.height : window.innerHeight;
+    const nowWide = window.innerWidth > window.innerHeight;
+    if (nowWide !== wide) {
+      wide = nowWide;
+      full = 0;
+    }
+    full = Math.max(full, h);
+    // Teclado aberto: a margem do indicador de início do iPhone (safe-area) fica escondida atrás dele,
+    // então a caixa de escrever não reserva esse espaço (ficava um vão entre ela e o teclado).
+    if (isTouch && h < full - 120) root.dataset.kb = '1';
+    else delete root.dataset.kb;
+    root.style.setProperty('--app-h', `${Math.round(h)}px`);
     // O iOS rola a página para mostrar o campo; o app já se ajustou à altura, então volta ao topo.
     if (vv && currentLayout() !== 'desktop' && window.scrollY) window.scrollTo(0, 0);
   };
   if (isTouch) root.dataset.touch = '1';
+  if (isIOS) root.dataset.ios = '1';
   if (isStandalone) root.dataset.standalone = '1';
   update();
   vv?.addEventListener('resize', update);

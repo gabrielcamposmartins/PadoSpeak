@@ -3,7 +3,7 @@ name = "padospeak-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Servidor do PadoSpeak (clone do Discord): API REST, WebSocket, sinalização WebRTC e banco Turso/libSQL."
+description = "Servidor do PadoSpeak: API REST, WebSocket, sinalização WebRTC e banco Turso/libSQL."
 
 [lib]
 name = "padospeak_server"

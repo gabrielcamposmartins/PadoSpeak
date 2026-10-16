@@ -36,6 +36,9 @@ struct Conn {
     /// Aceitou aparecer para quem está na mesma rede (`lan:hello`), e como o aparelho se descreve.
     nearby: bool,
     device: String,
+    /// Conexão de um celular ou tablet (o app avisa ao abrir o WebSocket): quem recebe a presença
+    /// pode escolher não ser avisado de quem entra e sai pelo celular.
+    mobile: bool,
     /// Sessão do app (painel do administrador): conta quanto tempo ficou aberto.
     session: Option<i64>,
 }
@@ -136,9 +139,17 @@ struct HubState {
     /// (para o aviso atrasado saber se ainda vale), os servidores e os amigos que vão saber.
     leaving: HashMap<String, (u64, HashSet<String>, HashSet<String>)>,
     leaving_seq: u64,
+    /// A última conexão de quem está saindo era de celular (vale até o aviso de offline).
+    left_mobile: HashMap<String, bool>,
+    /// Quem está conectado quer que os amigos sejam avisados quando fica online (`ONLINE_NOTIFY_*`).
+    online_notify: HashMap<String, i64>,
 }
 
 pub const STATUSES: [&str; 4] = ["online", "away", "busy", "invisible"];
+/// `users.online_notify`: avisar os amigos quando a pessoa fica online pelo computador / pelo celular.
+pub const ONLINE_NOTIFY_DESKTOP: i64 = 1;
+pub const ONLINE_NOTIFY_PHONE: i64 = 2;
+pub const ONLINE_NOTIFY_DEFAULT: i64 = ONLINE_NOTIFY_DESKTOP;
 /// O celular com o app em segundo plano perde a conexão (o sistema congela a página), e ela volta
 /// quando o app vem para a frente. Nesse intervalo a pessoa continua online: sem isso, os amigos
 /// recebiam "ficou online" toda vez que ela abria o app.
@@ -346,12 +357,37 @@ impl Hub {
         if Self::visible(s, about) {
             let status = s.statuses.get(about).cloned().unwrap_or_else(|| "online".into());
             let activity = Self::activity_of(s, about);
+            let (mobile, notify) = (Self::on_mobile(s, about), Self::announces_online(s, about));
             Self::send_to_user(
                 s,
                 to,
-                &event("presence:update", json!({ "userId": about, "online": true, "status": status, "activity": activity })),
+                &event(
+                    "presence:update",
+                    json!({ "userId": about, "online": true, "status": status, "activity": activity, "mobile": mobile, "notify": notify }),
+                ),
             );
         }
+    }
+
+    /// Está só pelo celular (todas as conexões são de celular ou tablet)? Sem conexão (saindo), vale
+    /// a última que caiu.
+    fn on_mobile(s: &HubState, user_id: &str) -> bool {
+        match s.user_conns.get(user_id).filter(|set| !set.is_empty()) {
+            Some(set) => set.iter().all(|id| s.conns.get(id).is_some_and(|c| c.mobile)),
+            None => s.left_mobile.get(user_id).copied().unwrap_or(false),
+        }
+    }
+
+    /// Os amigos devem ser avisados de que a pessoa ficou online (pelo aparelho em que ela está)?
+    fn announces_online(s: &HubState, user_id: &str) -> bool {
+        let bits = s.online_notify.get(user_id).copied().unwrap_or(ONLINE_NOTIFY_DEFAULT);
+        let device = if Self::on_mobile(s, user_id) { ONLINE_NOTIFY_PHONE } else { ONLINE_NOTIFY_DESKTOP };
+        bits & device != 0
+    }
+
+    /// A pessoa mudou "Notificar meus amigos quando eu ficar online".
+    pub fn set_online_notify(&self, user_id: &str, bits: i64) {
+        self.state.lock().unwrap().online_notify.insert(user_id.to_string(), bits);
     }
 
     fn activity_of(s: &HubState, user_id: &str) -> Value {
@@ -471,7 +507,11 @@ impl Hub {
     fn presence(s: &HubState, user_id: &str, online: bool, guilds: impl IntoIterator<Item = String>, friends: &HashSet<String>) {
         let status = online.then(|| s.statuses.get(user_id).cloned().unwrap_or_else(|| "online".into()));
         let activity = if online { Self::activity_of(s, user_id) } else { Value::Null };
-        let msg = event("presence:update", json!({ "userId": user_id, "online": online, "status": status, "activity": activity }));
+        let (mobile, notify) = (Self::on_mobile(s, user_id), online && Self::announces_online(s, user_id));
+        let msg = event(
+            "presence:update",
+            json!({ "userId": user_id, "online": online, "status": status, "activity": activity, "mobile": mobile, "notify": notify }),
+        );
         if s.lan_mode {
             for c in s.conns.values() {
                 let _ = c.tx.send(msg.clone());
@@ -608,7 +648,7 @@ impl Hub {
 
     // ---------- Ciclo de vida da conexão ----------
 
-    async fn run(self: Arc<Self>, app: Arc<App>, socket: WebSocket, user: User, net: Net) {
+    async fn run(self: Arc<Self>, app: Arc<App>, socket: WebSocket, user: User, net: Net, mobile: bool) {
         let (mut sink, mut stream) = socket.split();
         let (tx, mut rx) = unbounded_channel::<String>();
         let conn_id: ConnId = uuid::Uuid::new_v4().simple().to_string();
@@ -620,22 +660,26 @@ impl Hub {
         if let Some(turn) = &app.turn {
             ice_servers.push(turn.ice_server(&user.id, crate::now_ms()));
         }
-        let my_status = app
+        let (my_status, online_notify) = app
             .db
-            .query_one("SELECT status FROM users WHERE id = ?1", [user.id.as_str()], |r| r.get::<String>(0))
+            .query_one("SELECT status, online_notify FROM users WHERE id = ?1", [user.id.as_str()], |r| {
+                Ok((r.get::<String>(0)?, r.get::<i64>(1)?))
+            })
             .await
             .ok()
             .flatten()
-            .filter(|st| STATUSES.contains(&st.as_str()))
-            .unwrap_or_else(|| "online".into());
+            .unwrap_or_else(|| ("online".into(), ONLINE_NOTIFY_DEFAULT));
+        let my_status = if STATUSES.contains(&my_status.as_str()) { my_status } else { "online".into() };
 
         {
             let mut s = self.state.lock().unwrap();
             // Voltou dentro da folga: continua online, sem avisar ninguém de novo.
             s.leaving.remove(&user.id);
+            s.left_mobile.remove(&user.id);
             let first = !s.user_conns.contains_key(&user.id);
             s.user_conns.entry(user.id.clone()).or_default().insert(conn_id.clone());
             s.statuses.insert(user.id.clone(), my_status.clone());
+            s.online_notify.insert(user.id.clone(), online_notify);
             // Estado inicial: usuários online e participantes de voz dos servidores deste usuário.
             let voice: HashMap<&String, &Vec<Participant>> = s
                 .voice
@@ -682,6 +726,7 @@ impl Hub {
                     net,
                     nearby: false,
                     device: String::new(),
+                    mobile,
                     session: None,
                 },
             );
@@ -768,6 +813,7 @@ impl Hub {
                     s.leaving_seq += 1;
                     let seq = s.leaving_seq;
                     s.leaving.insert(user.id.clone(), (seq, c.guilds.clone(), c.friends.clone()));
+                    s.left_mobile.insert(user.id.clone(), c.mobile);
                     leaving = Some((seq, if c.visible { OFFLINE_GRACE_VISIBLE } else { OFFLINE_GRACE_HIDDEN }));
                 }
                 if c.nearby {
@@ -806,6 +852,8 @@ impl Hub {
         if was_visible {
             Self::presence(&s, user_id, false, guilds, &friends);
         }
+        s.left_mobile.remove(user_id);
+        s.online_notify.remove(user_id);
         s.users.remove(user_id);
     }
 
@@ -1613,6 +1661,9 @@ impl Hub {
                 if !dm && !crate::sounds::guild_allows(app, &guild_id).await {
                     return err("Os sons rápidos estão desligados neste servidor");
                 }
+                if !dm && crate::sounds::muted_in_guild(app, &guild_id, &user.id).await {
+                    return err("Um administrador silenciou os seus sons rápidos neste servidor");
+                }
                 let Some(sound) = crate::sounds::owned(app, &user.id, &sound_id).await else {
                     return err("Som não encontrado");
                 };
@@ -1654,6 +1705,9 @@ struct Request {
 #[derive(Deserialize)]
 pub struct WsQuery {
     token: String,
+    /// "celular", "tablet" ou "computador" (apps antigos não mandam).
+    #[serde(default)]
+    device: String,
 }
 
 pub async fn ws_handler(
@@ -1668,7 +1722,8 @@ pub async fn ws_handler(
     };
     let hub = app.hub.clone();
     let net = Net::from_ip(client_ip(addr, &headers));
-    ws.max_message_size(256 * 1024).on_upgrade(move |socket| hub.run(app, socket, user, net))
+    let mobile = matches!(q.device.as_str(), "celular" | "tablet");
+    ws.max_message_size(256 * 1024).on_upgrade(move |socket| hub.run(app, socket, user, net, mobile))
 }
 
 /// O canal de voz avisa os membros quando alguém entra?
@@ -1792,6 +1847,7 @@ mod tests {
             net: Net::from_ip("10.0.0.1".parse().unwrap()),
             nearby: false,
             device: String::new(),
+            mobile: false,
             session: None,
         };
         {
@@ -1815,6 +1871,44 @@ mod tests {
         assert_eq!(msg["d"]["activity"], Value::Null);
         hub.set_activity("ana", "c1", None);
         assert!(bia.try_recv().is_err());
+    }
+
+    #[test]
+    fn presenca_diz_se_e_pelo_celular() {
+        let (hub, _rx) = Hub::new();
+        let conn = |mobile: bool| Conn {
+            tx: unbounded_channel().0,
+            user_id: "ana".into(),
+            guilds: HashSet::new(),
+            friends: HashSet::new(),
+            visible: true,
+            net: Net::from_ip("10.0.0.1".parse().unwrap()),
+            nearby: false,
+            device: String::new(),
+            mobile,
+            session: None,
+        };
+        let mut s = hub.state.lock().unwrap();
+        s.user_conns.entry("ana".into()).or_default().insert("cel".into());
+        s.conns.insert("cel".into(), conn(true));
+        assert!(Hub::on_mobile(&s, "ana"));
+        // Padrão: avisa os amigos só pelo computador.
+        assert!(!Hub::announces_online(&s, "ana"));
+        s.online_notify.insert("ana".into(), ONLINE_NOTIFY_DESKTOP | ONLINE_NOTIFY_PHONE);
+        assert!(Hub::announces_online(&s, "ana"));
+        s.online_notify.insert("ana".into(), 0);
+        assert!(!Hub::announces_online(&s, "ana"));
+        s.online_notify.remove("ana");
+        // Com o computador também aberto, não é "pelo celular".
+        s.user_conns.entry("ana".into()).or_default().insert("pc".into());
+        s.conns.insert("pc".into(), conn(false));
+        assert!(!Hub::on_mobile(&s, "ana"));
+        assert!(Hub::announces_online(&s, "ana"));
+        // Saindo (sem conexão): vale a última que caiu.
+        s.user_conns.get_mut("ana").unwrap().clear();
+        s.left_mobile.insert("ana".into(), true);
+        assert!(Hub::on_mobile(&s, "ana"));
+        assert!(!Hub::on_mobile(&s, "bia"));
     }
 }
 

@@ -15,9 +15,13 @@ export function parseSticker(content) {
   return m[1] ? { emote: m[2], caption: m[3] || '' } : { id: m[2], caption: m[3] || '' };
 }
 
-/** Sticker dentro da conversa (a imagem é do servidor da conversa). */
-export function StickerView({ sticker }) {
-  const base = useConn()((s) => s.baseUrl);
+/**
+ * Sticker dentro da conversa (a imagem é do servidor da conversa). `base`: outro endereço — a prévia de um
+ * sticker da minha coleção antes de enviar, que mora onde a coleção mora (no app do Windows, o perfil local).
+ */
+export function StickerView({ sticker, base: fromBase }) {
+  const connBase = useConn()((s) => s.baseUrl);
+  const base = fromBase || connBase;
   const [broken, setBroken] = useState(false);
   if (sticker.emote) {
     return (

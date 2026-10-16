@@ -1,8 +1,8 @@
 {
   "name": "padospeak",
   "private": true,
-  "version": "1.8.1",
-  "description": "Clone do Discord self-hosted em Rust: chat, voz, vídeo e tela em 1080p, com Turso (libSQL) como banco.",
+  "version": "1.8.2",
+  "description": "PadoSpeak: chat, voz, vídeo e tela em 1080p self-hosted em Rust, com Turso (libSQL) como banco.",
   "workspaces": [
     "client"
   ],

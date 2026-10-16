@@ -1,4 +1,4 @@
-# PadoSpeak — clone do Discord self-hosted (Rust + Turso)
+# PadoSpeak — chat, voz e vídeo self-hosted no visual do Messenger (Rust + Turso)
 
 Chat em tempo real, servidores com convites, canais de texto e de voz, **chamadas de voz e vídeo** e
 **compartilhamento de tela em 1080p** (30 ou 60 fps). O servidor é escrito em **Rust** e usa **Turso/libSQL**

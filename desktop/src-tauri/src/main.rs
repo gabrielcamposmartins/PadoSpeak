@@ -7,6 +7,7 @@
 
 mod activity;
 mod screen_audio;
+mod solo_keys;
 
 use padospeak_server::lan::Hosting;
 use padospeak_server::logs::LogLine;
@@ -135,6 +136,12 @@ fn activity_get(watcher: State<'_, activity::Shared>) -> Option<activity::Activi
 #[tauri::command]
 fn activity_custom_set(watcher: State<'_, activity::Shared>, list: Vec<activity::Custom>) {
     watcher.set_custom(list);
+}
+
+/// Atalhos de voz que são uma tecla modificadora sozinha ("ControlRight"…): avisa a janela a cada toque.
+#[tauri::command]
+fn solo_keys_set(keys: State<'_, solo_keys::Shared>, codes: Vec<String>) {
+    keys.set(codes);
 }
 
 /// Programas com janela aberta agora, para escolher qual entra no status.
@@ -319,6 +326,7 @@ fn main() {
             apply_autostart(&autostart);
             app.manage(autostart);
             app.manage(activity::spawn(app.handle().clone()));
+            app.manage(solo_keys::spawn(app.handle().clone()));
             app.manage(screen_audio::ScreenAudio::default());
             build_tray(app)?;
             // Aberto pela inicialização do Windows: fica só na bandeja; senão mostra a janela.
@@ -337,7 +345,7 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, local_node, notify_windows, autostart_get, autostart_set, open_url, activity_get, activity_custom_set, activity_programs, screen_audio::screen_audio_start, screen_audio::screen_audio_stop])
+        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, local_node, notify_windows, autostart_get, autostart_set, open_url, activity_get, activity_custom_set, activity_programs, solo_keys_set, screen_audio::screen_audio_start, screen_audio::screen_audio_stop])
         .build(tauri::generate_context!())
         .expect("erro ao iniciar o PadoSpeak");
 

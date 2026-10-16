@@ -143,12 +143,14 @@ pub struct Guild {
     pub move_sound: bool,
     /// Sons rápidos ligados nos canais de voz do servidor.
     pub sounds: bool,
+    /// Pessoas cujos sons rápidos ninguém ouve neste servidor (decidido por um administrador).
+    pub sound_mutes: Vec<String>,
 }
 
 pub const GUILD_COLS: &str = "g.id, g.name, g.icon_color, g.owner_id, g.invite_code, g.icon_at, g.default_perms, g.file_ttl_ms, \
-     g.voice_ttl_ms, g.background_at, g.msg_color, g.msg_color_mode, g.move_sound, g.sounds";
+     g.voice_ttl_ms, g.background_at, g.msg_color, g.msg_color_mode, g.move_sound, g.sounds, g.sound_mutes";
 /// Quantas colunas `GUILD_COLS` ocupa (as seguintes começam neste índice).
-pub const GUILD_COLS_LEN: i32 = 14;
+pub const GUILD_COLS_LEN: i32 = 15;
 pub fn guild_from_row(r: &Row) -> DbResult<Guild> {
     let id: String = r.get(0)?;
     let icon_at: Option<i64> = r.get(5)?;
@@ -167,6 +169,7 @@ pub fn guild_from_row(r: &Row) -> DbResult<Guild> {
         msg_color_mode: r.get(11)?,
         move_sound: r.get::<i64>(12)? != 0,
         sounds: r.get::<i64>(13)? != 0,
+        sound_mutes: serde_json::from_str(&r.get::<String>(14)?).unwrap_or_default(),
     })
 }
 

@@ -682,6 +682,8 @@ export default function ChatView({ channel, variant = 'channel' }) {
   const listRef = useRef(null);
   const stickToBottom = useRef(true);
   const prevHeight = useRef(0);
+  const lastId = useRef(null);
+  const firstId = useRef(null);
   const lastTyping = useRef(0);
   const inputRef = useRef(null);
   const dm = variant === 'dm';
@@ -797,10 +799,15 @@ export default function ChatView({ channel, variant = 'channel' }) {
   useLayoutEffect(() => {
     const el = listRef.current;
     if (!el) return;
-    // Mensagem (ou sticker) que eu mesmo mandei: sempre leva ao fim.
-    if (messages[messages.length - 1]?.author?.id === me?.id) stickToBottom.current = true;
+    // Mensagem (ou sticker) nova que eu mesmo mandei: leva ao fim. Reação, edição ou visto numa
+    // mensagem que já estava ali não mexe na posição.
+    const last = messages[messages.length - 1];
+    if (last?.id !== lastId.current && last?.author?.id === me?.id) stickToBottom.current = true;
+    lastId.current = last?.id ?? null;
+    const olderLoaded = messages[0]?.id !== firstId.current;
+    firstId.current = messages[0]?.id ?? null;
     if (stickToBottom.current) el.scrollTop = el.scrollHeight;
-    else if (prevHeight.current && el.scrollTop < 50) el.scrollTop += el.scrollHeight - prevHeight.current;
+    else if (olderLoaded && prevHeight.current && el.scrollTop < 50) el.scrollTop += el.scrollHeight - prevHeight.current;
     prevHeight.current = el.scrollHeight;
   }, [messages]);
 

@@ -97,6 +97,18 @@ impl Push {
         let me = self.clone();
         let user_id = user_id.to_string();
         tokio::spawn(async move {
+            // Ocupado: só as ligações chegam.
+            if note.kind != "call" {
+                let status = me
+                    .db
+                    .query_one("SELECT status FROM users WHERE id = ?1", [user_id.as_str()], |r| r.get::<String>(0))
+                    .await
+                    .ok()
+                    .flatten();
+                if status.as_deref() == Some("busy") {
+                    return;
+                }
+            }
             let subs = me
                 .db
                 .query_all(

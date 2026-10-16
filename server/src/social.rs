@@ -42,6 +42,8 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/friends/{id}", axum::routing::delete(remove_friend))
         .route("/api/friends/{id}/accept", post(accept_friend))
         .route("/api/dms", get(list_dms).post(open_dm))
+        .route("/api/dms/{id}", axum::routing::delete(hide_dm))
+        .route("/api/me/blocks/{id}", put(block_user).delete(unblock_user))
         .route("/api/me/settings", get(get_settings).patch(update_settings))
         .route("/api/me/nudge-blocks/{id}", put(block_nudges).delete(unblock_nudges))
         .route("/api/me/marks", get(list_marks))
@@ -360,6 +362,11 @@ async fn request_friend(State(app): AppState, AuthUser(me, _): AuthUser, Json(bo
     if other.id == me.id {
         return Err(bad("Você não pode adicionar a si mesmo"));
     }
+    match block_between(&app, &me.id, &other.id).await? {
+        Some(true) => return Err(bad("Você bloqueou essa pessoa. Desbloqueie para mandar um pedido de amizade.")),
+        Some(false) => return Err(ApiError::new(StatusCode::FORBIDDEN, "Não foi possível mandar o pedido de amizade")),
+        None => {}
+    }
     let status = match friend_status(&app, &me.id, &other.id).await? {
         Some("friend") => return Err(bad("Vocês já são amigos")),
         Some("outgoing") => return Err(bad("Pedido de amizade já enviado")),
@@ -487,7 +494,9 @@ async fn list_dms(State(app): AppState, AuthUser(me, _): AuthUser) -> ApiResult<
     let sql = format!(
         "SELECT d.id, d.last_message_at, {USER_COLS} FROM dm_channels d \
          JOIN users u ON u.id = CASE WHEN d.user_a = ?1 THEN d.user_b ELSE d.user_a END \
-         WHERE d.user_a = ?1 OR d.user_b = ?1 ORDER BY d.last_message_at DESC"
+         LEFT JOIN dm_hidden h ON h.dm_id = d.id AND h.user_id = ?1 \
+         WHERE (d.user_a = ?1 OR d.user_b = ?1) AND (h.hidden_at IS NULL OR d.last_message_at > h.hidden_at) \
+         ORDER BY d.last_message_at DESC"
     );
     Ok(Json(
         app.db
@@ -547,7 +556,22 @@ async fn open_dm(State(app): AppState, AuthUser(me, _): AuthUser, Json(body): Js
         .query_one("SELECT id FROM dm_channels WHERE user_a = ?1 AND user_b = ?2", [a, b], |r| r.get::<String>(0))
         .await?
         .ok_or_else(|| not_found("Conversa não encontrada"))?;
+    // Abrir de novo traz de volta uma conversa tirada da lista.
+    app.db.execute("DELETE FROM dm_hidden WHERE user_id = ?1 AND dm_id = ?2", [me.id.as_str(), id.as_str()]).await?;
     Ok(Json(dm_entry(&app, &id, &me.id).await?.ok_or_else(|| not_found("Conversa não encontrada"))?))
+}
+
+/// Tira a conversa da minha lista (o histórico continua). Volta ao abrir de novo ou com mensagem nova.
+async fn hide_dm(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): Path<String>) -> ApiResult<StatusCode> {
+    dm_with_access(&app, &id, &me.id).await.ok_or_else(|| not_found("Conversa não encontrada"))?;
+    app.db
+        .execute(
+            "INSERT INTO dm_hidden (user_id, dm_id, hidden_at) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(user_id, dm_id) DO UPDATE SET hidden_at = excluded.hidden_at",
+            libsql::params![me.id.as_str(), id.as_str(), crate::now_ms()],
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Histórico de uma DM (chamado pela rota de mensagens quando o id não é de um canal de servidor).
@@ -612,20 +636,71 @@ struct Settings {
     nudge_blocks: Vec<User>,
     /// Imagem de fundo da tela de início.
     background_url: Option<String>,
+    /// Avisar os amigos quando fico online pelo computador / pelo celular.
+    online_notify_desktop: bool,
+    online_notify_phone: bool,
+    /// Pessoas que eu bloqueei.
+    blocks: Vec<User>,
 }
 
 async fn load_settings(app: &App, user_id: &str) -> ApiResult<Settings> {
-    let allow = app
+    let (allow, online) = app
         .db
-        .query_one("SELECT allow_nudges FROM users WHERE id = ?1", [user_id], |r| r.get::<i64>(0))
+        .query_one("SELECT allow_nudges, online_notify FROM users WHERE id = ?1", [user_id], |r| Ok((r.get::<i64>(0)?, r.get::<i64>(1)?)))
         .await?
-        .unwrap_or(1);
+        .unwrap_or((1, crate::hub::ONLINE_NOTIFY_DEFAULT));
     let sql = format!(
         "SELECT {USER_COLS} FROM nudge_blocks b JOIN users u ON u.id = b.blocked_id \
          WHERE b.user_id = ?1 ORDER BY u.display_name COLLATE NOCASE"
     );
+    let nudge_blocks = app.db.query_all(&sql, [user_id], user_from_row).await?;
+    let sql = format!(
+        "SELECT {USER_COLS} FROM user_blocks b JOIN users u ON u.id = b.blocked_id \
+         WHERE b.user_id = ?1 ORDER BY u.display_name COLLATE NOCASE"
+    );
     let blocks = app.db.query_all(&sql, [user_id], user_from_row).await?;
-    Ok(Settings { allow_nudges: allow != 0, nudge_blocks: blocks, background_url: crate::backgrounds::my_background_url(app, user_id).await })
+    Ok(Settings {
+        allow_nudges: allow != 0,
+        nudge_blocks,
+        blocks,
+        background_url: crate::backgrounds::my_background_url(app, user_id).await,
+        online_notify_desktop: online & crate::hub::ONLINE_NOTIFY_DESKTOP != 0,
+        online_notify_phone: online & crate::hub::ONLINE_NOTIFY_PHONE != 0,
+    })
+}
+
+/// Algum dos dois bloqueou o outro? `Some(true)`: fui eu que bloqueei.
+pub async fn block_between(app: &App, me: &str, other: &str) -> ApiResult<Option<bool>> {
+    let mine = app
+        .db
+        .query_one("SELECT user_id FROM user_blocks WHERE (user_id = ?1 AND blocked_id = ?2) OR (user_id = ?2 AND blocked_id = ?1)", [me, other], |r| {
+            r.get::<String>(0)
+        })
+        .await?;
+    Ok(mine.map(|by| by == me))
+}
+
+/// Bloqueia alguém: desfaz a amizade (ou o pedido) e impede novos pedidos dos dois lados.
+async fn block_user(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): Path<String>) -> ApiResult<Json<Settings>> {
+    if id == me.id {
+        return Err(bad("Você não pode bloquear a si mesmo"));
+    }
+    let other = user_by_id(&app, &id).await?.ok_or_else(|| not_found("Usuário não encontrado"))?;
+    app.db
+        .execute(
+            "INSERT OR IGNORE INTO user_blocks (user_id, blocked_id, created_at) VALUES (?1, ?2, ?3)",
+            libsql::params![me.id.as_str(), id.as_str(), crate::now_ms()],
+        )
+        .await?;
+    let (a, b) = pair(&me.id, &id);
+    app.db.execute("DELETE FROM friendships WHERE user_a = ?1 AND user_b = ?2", [a, b]).await?;
+    notify_friendship(&app, &me, &other).await?;
+    Ok(Json(load_settings(&app, &me.id).await?))
+}
+
+async fn unblock_user(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): Path<String>) -> ApiResult<Json<Settings>> {
+    app.db.execute("DELETE FROM user_blocks WHERE user_id = ?1 AND blocked_id = ?2", [me.id.as_str(), id.as_str()]).await?;
+    Ok(Json(load_settings(&app, &me.id).await?))
 }
 
 async fn get_settings(State(app): AppState, AuthUser(me, _): AuthUser) -> ApiResult<Json<Settings>> {
@@ -636,6 +711,8 @@ async fn get_settings(State(app): AppState, AuthUser(me, _): AuthUser) -> ApiRes
 #[serde(rename_all = "camelCase")]
 struct SettingsBody {
     allow_nudges: Option<bool>,
+    online_notify_desktop: Option<bool>,
+    online_notify_phone: Option<bool>,
 }
 
 async fn update_settings(State(app): AppState, AuthUser(me, _): AuthUser, Json(body): Json<SettingsBody>) -> ApiResult<Json<Settings>> {
@@ -643,6 +720,14 @@ async fn update_settings(State(app): AppState, AuthUser(me, _): AuthUser, Json(b
         app.db
             .execute("UPDATE users SET allow_nudges = ?1 WHERE id = ?2", libsql::params![allow as i64, me.id.as_str()])
             .await?;
+    }
+    if body.online_notify_desktop.is_some() || body.online_notify_phone.is_some() {
+        let cur = load_settings(&app, &me.id).await?;
+        let bit = |on: bool, b: i64| if on { b } else { 0 };
+        let bits = bit(body.online_notify_desktop.unwrap_or(cur.online_notify_desktop), crate::hub::ONLINE_NOTIFY_DESKTOP)
+            | bit(body.online_notify_phone.unwrap_or(cur.online_notify_phone), crate::hub::ONLINE_NOTIFY_PHONE);
+        app.db.execute("UPDATE users SET online_notify = ?1 WHERE id = ?2", libsql::params![bits, me.id.as_str()]).await?;
+        app.hub.set_online_notify(&me.id, bits);
     }
     Ok(Json(load_settings(&app, &me.id).await?))
 }

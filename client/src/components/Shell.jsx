@@ -41,6 +41,7 @@ import { createPortal } from 'react-dom';
 import { useLayout, useNarrow, isTouch } from '../lib/layout.js';
 import MobileShell, { MobileBack } from './Mobile.jsx';
 import Avatar, { UserName, Orb, useActivity, useGame, gameText, STATUS_INFO, colorClass, colorStyle } from './Avatar.jsx';
+import { useUserMenu, GuildMenu, ChannelMenu } from './ContextMenus.jsx';
 import { SceneArt, BuddiesIcon } from './Aero.jsx';
 import { HomeSidebar, FriendsPage, DmView } from './Home.jsx';
 import ChatView from './ChatView.jsx';
@@ -309,6 +310,7 @@ export function GuildRail() {
   });
   const guildAlerts = JSON.parse(alertsJson);
   const [tip, setTip] = useState(null); // { guild, anchor }
+  const [menu, setMenu] = useState(null); // { guild, x, y }: notificações do servidor (botão direito)
   return (
     <nav className="guild-rail glass" aria-label="Servidores">
       <div className={`gel-slot${current == null ? ' active' : ''}`}>
@@ -333,6 +335,11 @@ export function GuildRail() {
               setTip(null);
               selectGuild(g.id);
             }}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setTip(null);
+              setMenu({ guild: g, x: e.clientX, y: e.clientY });
+            }}
             onMouseEnter={(e) => !isTouch && setTip({ guild: g, anchor: e.currentTarget })}
             onMouseLeave={() => setTip(null)}
             onFocus={(e) => !isTouch && setTip({ guild: g, anchor: e.currentTarget })}
@@ -354,6 +361,7 @@ export function GuildRail() {
         </div>
       ))}
       {tip && <GuildTip guild={guilds.find((g) => g.id === tip.guild.id) || tip.guild} anchor={tip.anchor} />}
+      {menu && <GuildMenu x={menu.x} y={menu.y} guild={menu.guild} onClose={() => setMenu(null)} />}
       <button
         className="gel add"
         title="Criar ou entrar em um servidor"
@@ -463,8 +471,10 @@ function VoiceChannelRow({ c, active, children }) {
 function ChannelGroup({ title, type, list, canManage, guildId, activeId }) {
   const { selectTextChannel, joinVoice, openModal, deleteChannel } = useStore.getState();
   const alerts = useStore((s) => s.alerts);
+  const [menu, setMenu] = useState(null); // { channel, x, y }: notificações do canal (botão direito)
   return (
     <>
+      {menu && <ChannelMenu x={menu.x} y={menu.y} channel={menu.channel} guildId={guildId} onClose={() => setMenu(null)} />}
       <div className="grp">
         <ChevronDown size={12} />
         <span className="grp-title">
@@ -488,6 +498,14 @@ function ChannelGroup({ title, type, list, canManage, guildId, activeId }) {
           <button
             className={`row channel${activeId === c.id ? ' sel active' : ''}`}
             onClick={() => (type === 'text' ? selectTextChannel(c.id) : joinVoice(c.id))}
+            onContextMenu={
+              type === 'text'
+                ? (e) => {
+                    e.preventDefault();
+                    setMenu({ channel: c, x: e.clientX, y: e.clientY });
+                  }
+                : undefined
+            }
           >
             {type === 'text' ? <Hash size={16} /> : <Volume2 size={16} />}
             <span className="label-text">{c.name}</span>
@@ -698,11 +716,15 @@ function MemberRow({ m, isOn, ownerId, admin }) {
   const live = Boolean(liveIn);
   const fresh = useStore((s) => s.users[m.id]) || m;
   const meId = useStore((s) => s.me?.id);
+  const userMenu = useUserMenu(fresh);
   return (
+    <>
+    {userMenu.menu}
     <button
       className={`row member${isOn ? '' : ' offline'}`}
       title={live && m.id !== meId ? 'Assistir a transmissão' : undefined}
       onClick={() => (live && m.id !== meId ? useStore.getState().watchStream(liveIn, m.id) : openProfile(m.id))}
+      onContextMenu={userMenu.onContextMenu}
     >
       <Avatar user={m} size={30} />
       <span className="member-text">
@@ -720,6 +742,7 @@ function MemberRow({ m, isOn, ownerId, admin }) {
         )}
       </span>
     </button>
+    </>
   );
 }
 

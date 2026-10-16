@@ -113,7 +113,18 @@ export function messageNotice(author, content) {
 }
 
 /** Notificações de cada servidor (iguais às do servidor quando ainda não foram mudadas). */
-export const DEFAULT_NOTIFY = { messages: 'mentions', mutedChannels: [], voiceJoin: false, streams: false, members: false };
+export const DEFAULT_NOTIFY = { messages: 'mentions', mutedChannels: [], channels: {}, voiceJoin: false, streams: false, members: false };
+
+/**
+ * O que um canal avisa (`all`, `mentions` ou `none`): a escolha própria do canal, ou a do servidor. Canal
+ * silenciado do jeito antigo (lista `mutedChannels`, com o servidor em "todas") avisa só menções.
+ */
+export function channelNotifyLevel(n, channelId) {
+  const own = n.channels?.[channelId];
+  if (own) return own;
+  if (n.messages === 'all' && n.mutedChannels?.includes(channelId)) return 'mentions';
+  return n.messages;
+}
 
 /** Todas as conexões abertas (chave → store). A lista de chaves vive em `useStore.connKeys`. */
 export const connRegistry = new Map();
@@ -181,7 +192,13 @@ export function createConnStore({ key, kind, base, primary = false }) {
   /** Store da interface (este mesmo, se for o principal). */
   const ui = () => (primary ? store : useStore);
   const prefs = () => ui().getState().prefs;
-  const notify = (text, kind2, user, url) => ui().getState().notify(text, kind2, user, baseUrl, url);
+  /** Status "Ocupado": nenhum aviso (notificação, som, tremida), só as ligações. */
+  const busy = () => store.getState().myStatus === 'busy';
+  const notify = (text, kind2, user, url) => {
+    if (kind2 === 'presence' && busy()) return;
+    ui().getState().notify(text, kind2, user, baseUrl, url);
+  };
+  const alertSound = (kind2) => !busy() && ding(kind2);
   /** A tela aberta é da interface; nos stores secundários ela leva a chave da conexão. */
   const setView = (patch) => {
     if (primary) return store.setState(patch);
@@ -227,7 +244,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
     activities: {}, // userId -> { type: "playing", name, since } (jogo em foco, contado pelo app do Windows)
     iceServers: null, // STUN/TURN do `ready` (com a senha temporária do TURN)
     myStatus: 'online', // online | away | busy | invisible
-    nudgeSettings: null, // { allowNudges, nudgeBlocks: User[] }
+    nudgeSettings: null, // { allowNudges, nudgeBlocks: User[], blocks: User[], onlineNotifyDesktop, onlineNotifyPhone }
     marks: { hidden: {}, nsfw: {} }, // só para mim: mensagens excluídas e fotos marcadas como NSFW (id -> true)
     voiceStates: {}, // channelId -> participantes (visão do servidor)
     typing: {}, // channelId -> { userId: { user, until } }
@@ -453,7 +470,10 @@ export function createConnStore({ key, kind, base, primary = false }) {
 
     connectRealtime() {
       rt?.close();
-      rt = new Realtime(() => `${baseUrl.replace(/^http/i, 'ws')}/ws?token=${encodeURIComponent(token || '')}`);
+      // `device`: o servidor conta aos amigos se a presença vem do celular (ver `presence:update`).
+      rt = new Realtime(
+        () => `${baseUrl.replace(/^http/i, 'ws')}/ws?token=${encodeURIComponent(token || '')}&device=${appPlatform().device}`,
+      );
       let firstReady = true;
       rt.on('status', (rtStatus) => set({ rtStatus }));
       rt.on('ready', (d) => {
@@ -535,19 +555,22 @@ export function createConnStore({ key, kind, base, primary = false }) {
         }
       });
       rt.on('lan:peers', (lanPeers) => kind === 'local' && set({ lanPeers }));
-      rt.on('presence:update', ({ userId, online, status, activity }) => {
+      rt.on('presence:update', ({ userId, online, status, activity, mobile, notify: announce }) => {
         const s = get();
         const friend = s.friends[userId];
         // Ficou online (inclusive quem saiu do "aparecer offline"). Quem desligou as notificações
-        // repetidas recebe no máximo um aviso por pessoa a cada 10 minutos.
-        if (online && !s.online[userId] && friend?.status === 'friend' && userId !== s.me?.id) {
+        // repetidas recebe no máximo um aviso por pessoa a cada 10 minutos. A própria pessoa escolhe
+        // se os amigos são avisados pelo computador e/ou pelo celular (`notify`; servidor antigo: só
+        // o computador avisa).
+        const quiet = announce === false || (announce === undefined && mobile);
+        if (online && !quiet && !s.online[userId] && friend?.status === 'friend' && userId !== s.me?.id) {
           const now = Date.now();
           const repeat = prefs().repeatAlerts !== false;
           if (repeat || now - (lastOnlineAlert.get(userId) || 0) > REPEAT_WINDOW_MS) {
             lastOnlineAlert.set(userId, now);
             const user = s.users[userId] || friend.user;
             notify(`${user.displayName} acabou de ficar online.`, 'presence', user);
-            ding('message');
+            alertSound('message');
           }
         }
         set((st) => {
@@ -568,9 +591,11 @@ export function createConnStore({ key, kind, base, primary = false }) {
           const gid = guildOfChannel(channelId);
           if (gid) bumpAlert(channelId, gid);
         }
-        ding('nudge');
-        shakeWindow();
-        flashTaskbar();
+        if (!busy()) {
+          ding('nudge');
+          shakeWindow();
+          flashTaskbar();
+        }
         notify(`${from.displayName} chamou a sua atenção!`, 'presence', from, dm ? `/?dm=${channelId}` : `/?channel=${channelId}`);
       });
       rt.on('user:updated', (u) =>
@@ -595,7 +620,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
           return { friends, online: { ...s.online, [user.id]: online || undefined }, statuses };
         });
         if (status === 'incoming' && prev !== 'incoming') {
-          ding('message');
+          alertSound('message');
           notify(`${user.displayName} quer ser seu amigo.`, 'presence', user, '/?friends=pending');
         } else if (status === 'friend' && prev === 'outgoing') {
           notify(`${user.displayName} aceitou seu pedido de amizade.`, 'presence', user);
@@ -621,7 +646,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
                 : { ...st.unread, [m.channelId]: (st.unread[m.channelId] || 0) + 1 },
           }));
           if (!viewing && m.author.id !== s.me?.id) {
-            ding('message');
+            alertSound('message');
             notify(messageNotice(m.author, m.content), 'presence', m.author, `/?dm=${m.channelId}`);
           }
         } else if (m.author.id !== s.me?.id && !(isViewing(m.channelId) && appHasFocus())) {
@@ -630,13 +655,13 @@ export function createConnStore({ key, kind, base, primary = false }) {
           const n = { ...DEFAULT_NOTIFY, ...s.guildNotify[guildId] };
           // @meu_usuario ou @everyone: avisa mesmo com "só menções" ou com o canal silenciado.
           const mentioned = mentionsUser(plain(m.content), s.me?.username);
-          const wants =
-            n.messages === 'all' ? mentioned || !n.mutedChannels.includes(m.channelId) : n.messages === 'mentions' && mentioned;
+          const level = channelNotifyLevel(n, m.channelId);
+          const wants = level === 'all' || (level === 'mentions' && mentioned);
           if (wants) {
             const ch = s.guildData[guildId]?.channels.find((c) => c.id === m.channelId);
             const where = ch ? `#${ch.name}` : s.guilds.find((g) => g.id === guildId)?.name || 'um servidor';
             bumpAlert(m.channelId, guildId);
-            ding('message');
+            alertSound('message');
             notify(
               mentioned
                 ? `${plain(m.author.displayName)} mencionou você em ${where}: ${plain(m.content).slice(0, 120)}`
@@ -739,12 +764,14 @@ export function createConnStore({ key, kind, base, primary = false }) {
         }),
       );
       rt.on('music:notice', ({ text }) => notify(text, 'info'));
-      // Som rápido na chamada: toca para quem está nela (menos quem ensurdeceu ou desligou os sons).
+      // Som rápido na chamada: toca para quem está nela (menos quem ensurdeceu, mutou os efeitos ou
+      // mutou os efeitos dessa pessoa).
       rt.on('sound:play', ({ channelId, by, sound, at }) => {
         if (get().voice?.channelId !== channelId) return;
-        set({ soundLast: { by, sound, at: Date.now(), serverAt: at } });
         const p = prefs();
-        if (ui().getState().selfDeafened || p.soundboardOff) return;
+        if (p.soundMutes?.[by.id]) return;
+        set({ soundLast: { by, sound, at: Date.now(), serverAt: at } });
+        if (ui().getState().selfDeafened || (p.soundboardOff && by.id !== get().me?.id)) return;
         playSoundboard(`${baseUrl}${sound.url}`, p.soundboardVolume ?? 0.8).catch((e) => console.warn('[sons]', e));
       });
       rt.on('voice:channel', ({ guildId, channelId, dm, participants }) => {
@@ -912,6 +939,26 @@ export function createConnStore({ key, kind, base, primary = false }) {
     },
     acceptFriend: (id) => api.post(`/api/friends/${id}/accept`).catch((e) => notify(e.message)),
     removeFriend: (id) => api.del(`/api/friends/${id}`).catch((e) => notify(e.message)),
+    /** Bloquear: desfaz a amizade e ninguém dos dois manda pedido de amizade ao outro. */
+    async setBlocked(userId, blocked) {
+      try {
+        const path = `/api/me/blocks/${userId}`;
+        set({ nudgeSettings: blocked ? await api.put(path, {}) : await api.del(path) });
+      } catch (e) {
+        notify(e.message);
+      }
+    },
+
+    /** Tira a conversa da lista (o X). Ela volta ao abrir de novo ("Mensagem") ou com mensagem nova. */
+    async hideDm(dmId) {
+      try {
+        await api.del(`/api/dms/${dmId}`);
+      } catch (e) {
+        return notify(e.message);
+      }
+      set((s) => ({ dms: s.dms.filter((d) => d.id !== dmId), unread: { ...s.unread, [dmId]: 0 } }));
+      if (isViewing(dmId)) ui().getState().goHome();
+    },
 
     /** Abre (ou cria) a conversa direta com alguém. */
     async openDm(userId) {
@@ -1007,11 +1054,14 @@ export function createConnStore({ key, kind, base, primary = false }) {
       await api.del(`/api/sounds/${id}`);
       await get().loadSounds();
     },
-    /** Botões do atalho (ids ou null) e quantas linhas (2 ou 3). */
-    async setSoundBoard(slots, rows) {
+    /** Sons do atalho (ids; null = vazio). Ficam em sequência, e as linhas seguem a quantidade (1 a cada 3). */
+    async setSoundBoard(slots) {
+      const ids = [...new Set(slots.filter(Boolean))].slice(0, 9);
+      const next = Array.from({ length: 9 }, (_, i) => ids[i] || null);
+      const rows = Math.max(1, Math.ceil(ids.length / 3));
       const cur = get().sounds;
-      if (cur) set({ sounds: { ...cur, slots, rows } });
-      const saved = await api.put('/api/sounds/board', { slots, rows });
+      if (cur) set({ sounds: { ...cur, slots: next, rows } });
+      const saved = await api.put('/api/sounds/board', { slots: next, rows });
       set((s) => (s.sounds ? { sounds: { ...s.sounds, ...saved } } : {}));
     },
     /** Copia o som de outra pessoa para a minha biblioteca. */
@@ -1096,6 +1146,14 @@ export function createConnStore({ key, kind, base, primary = false }) {
       }
     },
 
+    /** Avisar os amigos quando fico online pelo computador / pelo celular (`{ onlineNotifyDesktop, onlineNotifyPhone }`). */
+    async setOnlineNotify(patch) {
+      try {
+        set({ nudgeSettings: await api.patch('/api/me/settings', patch) });
+      } catch (e) {
+        notify(e.message);
+      }
+    },
     async setAllowNudges(allowNudges) {
       try {
         set({ nudgeSettings: await api.patch('/api/me/settings', { allowNudges }) });
@@ -1288,6 +1346,18 @@ export function createConnStore({ key, kind, base, primary = false }) {
       const saved = await api.put(`/api/guilds/${guildId}/notify`, settings);
       set((s) => ({ guildNotify: { ...s.guildNotify, [guildId]: saved } }));
     },
+    /** Notificações de um canal: `all`, `mentions`, `none`, ou null para seguir o servidor. */
+    async setChannelNotify(guildId, channelId, level) {
+      const n = { ...DEFAULT_NOTIFY, ...get().guildNotify[guildId] };
+      const channels = { ...(n.channels || {}) };
+      if (level) channels[channelId] = level;
+      else delete channels[channelId];
+      try {
+        await get().setGuildNotify(guildId, { ...n, channels, mutedChannels: n.mutedChannels.filter((c) => c !== channelId) });
+      } catch (e) {
+        notify(e.message);
+      }
+    },
     /** Recebi as mensagens até `at` (vira ✓✓ para quem mandou). */
     markReceived(channelId, at) {
       const mark = (marks.get(channelId) || { delivered: 0, read: 0 });
@@ -1315,6 +1385,21 @@ export function createConnStore({ key, kind, base, primary = false }) {
       if (!res || res.error) notify(res?.error || 'Sem conexão');
     },
     /** Silenciar alguém só para mim (vale em todas as chamadas). */
+    /** Mutar (para mim) os efeitos sonoros de uma pessoa. Guarda o nome para a lista de mutados. */
+    toggleSoundMute(user) {
+      const cur = { ...(prefs().soundMutes || {}) };
+      if (cur[user.id]) delete cur[user.id];
+      else cur[user.id] = { displayName: user.displayName, username: user.username };
+      get().setAppearance({ soundMutes: cur });
+    },
+    /** Administrador: mutar os efeitos sonoros de uma pessoa para todos do servidor. */
+    async setGuildSoundMute(guildId, userId, muted) {
+      try {
+        get().applyGuild(await api.put(`/api/guilds/${guildId}/sound-mutes/${userId}`, { muted }));
+      } catch (e) {
+        notify(e.message);
+      }
+    },
     toggleLocalMute(userId) {
       const cur = { ...(prefs().localMutes || {}) };
       if (cur[userId]) delete cur[userId];

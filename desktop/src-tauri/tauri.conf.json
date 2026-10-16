@@ -1,7 +1,7 @@
 {
   "$schema": "../../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "PadoSpeak",
-  "version": "1.8.1",
+  "version": "1.8.2",
   "identifier": "dev.padospeak.desktop",
   "build": {
     "frontendDist": "../../client/dist",
@@ -39,7 +39,7 @@
     "copyright": "© 2026 PadoSpeak",
     "category": "SocialNetworking",
     "shortDescription": "Chat, voz, vídeo e compartilhamento de tela em 1080p",
-    "longDescription": "PadoSpeak: chat estilo Discord com servidores, canais de texto e voz, chamadas de vídeo e compartilhamento de tela em 1080p. Inclui servidor embutido para hospedar com um clique.",
+    "longDescription": "PadoSpeak: chat no visual do Messenger com servidores, canais de texto e voz, chamadas de vídeo e compartilhamento de tela em 1080p. Inclui servidor embutido para hospedar com um clique.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

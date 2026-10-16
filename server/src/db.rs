@@ -452,6 +452,30 @@ CREATE TABLE IF NOT EXISTS password_resets (
 );
 "#,
     ),
+    (
+        20,
+        r#"
+-- Sons rápidos silenciados para todos no servidor (JSON com os ids das pessoas).
+ALTER TABLE guilds ADD COLUMN sound_mutes TEXT NOT NULL DEFAULT '[]';
+-- Avisar os amigos quando fico online: bit 1 pelo computador, bit 2 pelo celular (padrão: só computador).
+ALTER TABLE users ADD COLUMN online_notify INTEGER NOT NULL DEFAULT 1;
+-- Pessoas bloqueadas: a amizade acaba e nenhum dos dois manda pedido de amizade ao outro.
+CREATE TABLE IF NOT EXISTS user_blocks (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  blocked_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, blocked_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blocks(blocked_id);
+-- Conversa privada tirada da lista (o X): volta ao abrir de novo ou quando chega mensagem nova.
+CREATE TABLE IF NOT EXISTS dm_hidden (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  dm_id TEXT NOT NULL REFERENCES dm_channels(id) ON DELETE CASCADE,
+  hidden_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, dm_id)
+);
+"#,
+    ),
 ];
 
 impl Db {

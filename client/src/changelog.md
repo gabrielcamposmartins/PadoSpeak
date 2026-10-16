@@ -1,5 +1,25 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.8.2 — 16/10/2026
+
+### Novidades
+- **Notificações pelo botão direito**: no ícone de um servidor ou num canal de texto, escolha “Receber notificações” e “Apenas quando mencionado”. O canal pode ter a escolha própria ou seguir o servidor.
+- **Menu de pessoa**: botão direito em membros do servidor, amigos, amigos online e conversas mostra as opções do perfil (mensagem, ligar, amizade, sons rápidos, “chamar atenção” e bloquear).
+- **Bloquear**: desfaz a amizade e nenhum dos dois consegue mais mandar pedido de amizade ao outro. A lista de bloqueados fica em Configurações → Conta.
+- **Tirar conversa da lista**: o X numa conversa privada a tira da lista. O histórico continua guardado e ela volta ao clicar em “Mensagem” para a pessoa (ou quando ela mandar mensagem nova).
+- **Aba Notificações** nas Configurações, com tudo o que é aviso: notificações com o app fechado, sons, amigos, “chamar atenção” e um atalho para as notificações de cada servidor.
+- **“Notificar meus amigos quando eu ficar online no: Desktop / Smartphone”**: você escolhe se os amigos recebem o “ficou online” e de qual aparelho. Começa só com Desktop, então abrir o app no celular não avisa ninguém.
+- **Ocupado**: com o status Ocupado você não recebe notificações nem sons de aviso, só ligações.
+- **Efeitos sonoros**: a caixa de som ao lado de “Sons rápidos” mostra o volume ao passar o mouse e, com um clique, muta os efeitos dos outros para você. Com o botão direito (no celular, toque longo), mute pessoas específicas para você; administradores do servidor podem mutar alguém para todos.
+- **Sons rápidos**: as linhas do atalho acompanham a quantidade de sons (sem os botões “+ linha” e “− linha”).
+- **Atalhos de voz com uma tecla só**: silenciar e ensurdecer podem usar Ctrl, Alt, Shift ou Win sozinhos (vale o toque: apertar e soltar sem outra tecla).
+
+### Correções
+- **Reagir a uma mensagem** não leva mais a conversa para o fim.
+- **iPhone**: saiu a faixa branca embaixo das abas e o espaço entre o teclado e a caixa de texto.
+- **Tela de entrada**: em telas baixas a foto não cobre mais as abas “Entrar / Criar conta”.
+- **Prévia de stickers no app do Windows**: a prévia antes de enviar mostra a imagem em vez de “Sticker indisponível”.
+
 ## 1.8.1 — 16/10/2026
 
 ### Novidades

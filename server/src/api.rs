@@ -328,6 +328,7 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/guilds/{id}/invite", get(get_invite))
         .route("/api/guilds/{id}/members/{user_id}", patch(set_member_perms))
         .route("/api/guilds/{id}/notify", get(get_notify).put(put_notify))
+        .route("/api/guilds/{id}/sound-mutes/{user_id}", axum::routing::put(set_sound_mute))
         .route("/api/me/notify", get(all_notify))
         .route("/api/guilds/{id}/channels", post(create_channel))
         .route("/api/channels/{id}", delete(delete_channel).patch(update_channel))
@@ -895,6 +896,35 @@ async fn update_guild(
     Ok(Json(announce_guild(&app, &id).await?))
 }
 
+#[derive(Deserialize)]
+struct SoundMuteBody {
+    muted: bool,
+}
+
+/// Silencia (ou volta a deixar tocar) os sons rápidos de uma pessoa para todos do servidor.
+async fn set_sound_mute(
+    State(app): AppState,
+    AuthUser(user, _): AuthUser,
+    Path((id, target)): Path<(String, String)>,
+    Json(body): Json<SoundMuteBody>,
+) -> ApiResult<Json<Guild>> {
+    require_perm(&app, &id, &user.id, perm::ADMIN, "Apenas administradores podem silenciar os sons de alguém para todos").await?;
+    let raw = app
+        .db
+        .query_one("SELECT sound_mutes FROM guilds WHERE id = ?1", [id.as_str()], |r| r.get::<String>(0))
+        .await?
+        .ok_or_else(|| not_found("Servidor não encontrado"))?;
+    let mut list: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+    list.retain(|u| u != &target);
+    if body.muted {
+        list.push(target.clone());
+    }
+    let json = serde_json::to_string(&list).unwrap_or_else(|_| "[]".into());
+    app.db.execute("UPDATE guilds SET sound_mutes = ?1 WHERE id = ?2", [json.as_str(), id.as_str()]).await?;
+    app.audit(crate::audit::Entry::new(&id, "settings.guild", &user.id).detail(json!({ "soundMute": target, "muted": body.muted })));
+    Ok(Json(announce_guild(&app, &id).await?))
+}
+
 // ---------- Notificações de cada pessoa em cada servidor ----------
 
 /// O que avisar num servidor. Vale para o app aberto e para as notificações push.
@@ -903,8 +933,10 @@ async fn update_guild(
 pub struct NotifySettings {
     /// Mensagens nos canais de texto: `all`, `mentions` (só quando escrevem @meu_usuario) ou `none`.
     pub messages: String,
-    /// Canais de texto silenciados (quando `messages` é `all`).
+    /// Canais de texto silenciados (quando `messages` é `all`; menções continuam avisando).
     pub muted_channels: Vec<String>,
+    /// Escolha própria de um canal (`all`, `mentions` ou `none`), no lugar da do servidor.
+    pub channels: std::collections::HashMap<String, String>,
     /// Alguém entrou num canal de voz.
     pub voice_join: bool,
     /// Alguém começou a transmitir a tela.
@@ -915,7 +947,14 @@ pub struct NotifySettings {
 
 impl Default for NotifySettings {
     fn default() -> Self {
-        Self { messages: "mentions".into(), muted_channels: Vec::new(), voice_join: false, streams: false, members: false }
+        Self {
+            messages: "mentions".into(),
+            muted_channels: Vec::new(),
+            channels: std::collections::HashMap::new(),
+            voice_join: false,
+            streams: false,
+            members: false,
+        }
     }
 }
 
@@ -925,8 +964,13 @@ impl NotifySettings {
     }
     /// Avisa de uma mensagem neste canal? `mentioned`: escreveram @meu_usuario.
     pub fn wants_message(&self, channel_id: &str, mentioned: bool) -> bool {
-        match self.messages.as_str() {
-            "all" => mentioned || !self.muted_channels.iter().any(|c| c == channel_id),
+        let level = match self.channels.get(channel_id) {
+            Some(level) => level.as_str(),
+            None if self.messages == "all" && self.muted_channels.iter().any(|c| c == channel_id) => "mentions",
+            None => self.messages.as_str(),
+        };
+        match level {
+            "all" => true,
             "mentions" => mentioned,
             _ => false,
         }
@@ -959,6 +1003,10 @@ async fn put_notify(
         return Err(bad("Opção de mensagens inválida"));
     }
     body.muted_channels.truncate(500);
+    body.channels.retain(|_, level| ["all", "mentions", "none"].contains(&level.as_str()));
+    if body.channels.len() > 500 {
+        return Err(bad("Canais demais com notificação própria"));
+    }
     let raw = serde_json::to_string(&body).unwrap_or_default();
     app.db
         .execute(
@@ -1263,4 +1311,29 @@ async fn list_reads(State(app): AppState, AuthUser(user, _): AuthUser, Path(id):
         )
         .await?;
     Ok(Json(Value::Array(rows)))
+}
+
+#[cfg(test)]
+mod notify_tests {
+    use super::NotifySettings;
+
+    #[test]
+    fn canal_com_escolha_propria() {
+        let mut n = NotifySettings { messages: "all".into(), ..Default::default() };
+        assert!(n.wants_message("geral", false));
+        // Canal silenciado do jeito antigo: só menções.
+        n.muted_channels.push("memes".into());
+        assert!(!n.wants_message("memes", false));
+        assert!(n.wants_message("memes", true));
+        // Escolha do canal vale mais que a do servidor.
+        n.channels.insert("memes".into(), "all".into());
+        assert!(n.wants_message("memes", false));
+        n.messages = "none".into();
+        n.channels.insert("avisos".into(), "mentions".into());
+        assert!(!n.wants_message("geral", true));
+        assert!(n.wants_message("avisos", true));
+        assert!(!n.wants_message("avisos", false));
+        n.channels.insert("off".into(), "none".into());
+        assert!(!n.wants_message("off", true));
+    }
 }

@@ -1,8 +1,8 @@
 // Pessoas nos canais de voz: perfil rápido (clique), menu de contexto (botão direito) com silenciar
-// para mim / para todos, mover de canal e desconectar, e arrastar alguém para outro canal de voz.
+// para mim / para todos, mutar os efeitos sonoros, mover de canal e desconectar, e arrastar alguém para outro canal de voz.
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { MessageSquare, UserRound, VolumeX, MicOff, ArrowRightLeft, PhoneOff, Volume2, Check } from 'lucide-react';
+import { MessageSquare, UserRound, VolumeX, MicOff, ArrowRightLeft, PhoneOff, Volume2, Check, Music2 } from 'lucide-react';
 import { useStore, usePerms } from '../store.js';
 import Avatar, { UserName, usePresence, STATUS_INFO } from './Avatar.jsx';
 import { FormattedText, Floating } from './Emotes.jsx';
@@ -37,7 +37,19 @@ export function PointMenu({ x, y, onClose, label, children }) {
     };
   }, [onClose]);
   return createPortal(
-    <div ref={ref} className="popover ctx-menu" role="menu" aria-label={label} style={pos} onContextMenu={(e) => e.preventDefault()}>
+    <div
+      ref={ref}
+      className="popover ctx-menu"
+      role="menu"
+      aria-label={label}
+      style={pos}
+      // O menu fica num portal, mas no React os eventos sobem para quem o abriu (a linha da lista).
+      onClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+    >
       {children}
     </div>,
     document.body,
@@ -69,6 +81,8 @@ export function VoiceMemberMenu({ x, y, p, channelId, guildId, onClose }) {
   const perms = usePerms(useStore, guildId);
   const me = useStore((s) => s.me?.id);
   const localMuted = useStore((s) => Boolean(s.prefs.localMutes?.[p.user.id]));
+  const fxMine = useStore((s) => Boolean(s.prefs.soundMutes?.[p.user.id]));
+  const fxAll = useStore((s) => Boolean(guildId && s.guilds.find((g) => g.id === guildId)?.soundMutes?.includes(p.user.id)));
   const channels = useStore((s) => s.guildData[guildId]?.channels) || [];
   const [moving, setMoving] = useState(false);
   const st = useStore.getState();
@@ -100,6 +114,16 @@ export function VoiceMemberMenu({ x, y, p, channelId, guildId, onClose }) {
       {!self && (
         <Item icon={VolumeX} checked={localMuted} onClick={act(() => st.toggleLocalMute(p.user.id))}>
           Silenciar para mim
+        </Item>
+      )}
+      {!self && (
+        <Item icon={Music2} checked={fxMine} onClick={act(() => st.toggleSoundMute(p.user))}>
+          Mutar efeitos sonoros para mim
+        </Item>
+      )}
+      {!self && guildId && perms.admin && (
+        <Item icon={Music2} checked={fxAll} onClick={act(() => st.setGuildSoundMute(guildId, p.user.id, !fxAll))}>
+          Mutar efeitos sonoros para todos
         </Item>
       )}
       {guildId && perms.mute && (

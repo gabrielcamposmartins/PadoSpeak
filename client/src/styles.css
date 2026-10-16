@@ -3946,6 +3946,8 @@ html.framed .overlay {
     0 0 0 6px rgba(255, 255, 255, 0.25);
 }
 .auth-body {
+  /* Tamanho da foto: acompanha a altura da tela (104px em telas altas, até 48px nas baixas). */
+  --auth-pic: clamp(48px, 13vh, 104px);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -3975,10 +3977,16 @@ html.framed .overlay {
   border-radius: 14px;
 }
 .auth-pic .pic {
-  width: 104px;
-  height: 104px;
+  width: var(--auth-pic);
+  height: var(--auth-pic);
   border-radius: 10px;
   background: linear-gradient(180deg, #e9f6ff, #b9dcf3);
+}
+/* A foto de quem já entrou vem do Avatar com 104px fixos: a moldura e a imagem seguem --auth-pic juntas. */
+.auth-known .avatar .pic {
+  width: var(--auth-pic) !important;
+  height: var(--auth-pic) !important;
+  font-size: calc(var(--auth-pic) * 0.42) !important;
 }
 .auth-pic svg {
   width: 100%;
@@ -9219,6 +9227,8 @@ a.downloading {
   padding: 5px 8px;
   border-radius: 9px;
   font-size: 12px;
+  color: var(--text);
+  text-shadow: none;
   background: var(--bubble-bg);
   border: 1px solid var(--bubble-border);
 }
@@ -10216,14 +10226,6 @@ html[data-touch] .call-screen .tile-tools,
     gap: 9px;
     padding: 14px 26px 16px;
   }
-  .auth-pic .pic {
-    width: 64px;
-    height: 64px;
-  }
-  .auth-known .avatar {
-    width: 72px !important;
-    height: 72px !important;
-  }
   .auth-body .brand {
     font-size: 22px;
   }
@@ -10247,6 +10249,145 @@ html[data-touch] .call-screen .tile-tools,
   font-weight: 600;
   color: var(--muted);
   text-shadow: none;
+}
+/* Caixa de som dos efeitos sonoros: volume ao passar o mouse, clique muta, botão direito abre o menu */
+.sp-fx {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+.sp-fx-btn {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  margin: -4px -2px -4px 0;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+.sp-fx-btn:hover,
+.sp-fx-btn:focus-visible {
+  border-color: var(--panel-border);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.75), rgba(255, 255, 255, 0.2));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+.sp-fx-ico {
+  width: 26px;
+  height: 26px;
+  filter: drop-shadow(0 1px 1px rgba(0, 40, 90, 0.25));
+}
+.sp-fx.off .sp-fx-ico {
+  opacity: 0.9;
+}
+.sp-fx-pop {
+  position: absolute;
+  right: -6px;
+  bottom: calc(100% + 6px);
+  z-index: 30;
+  display: none;
+  width: 190px;
+  padding: 8px 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  box-shadow: 0 8px 22px rgba(10, 60, 110, 0.25);
+}
+/* ponte invisível: o mouse vai do ícone até o volume sem fechar */
+.sp-fx-pop::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  height: 8px;
+}
+.sp-fx-pop .vol {
+  width: 100%;
+}
+.sp-fx:hover .sp-fx-pop,
+.sp-fx-pop:focus-within,
+.sp-fx:has(.sp-fx-btn:focus-visible) .sp-fx-pop {
+  display: flex;
+}
+html[data-touch] .sp-fx-pop {
+  display: none !important;
+}
+.fx-head-ico {
+  width: 20px;
+  height: 20px;
+}
+.ctx-item.fx-all {
+  cursor: pointer;
+}
+.ctx-item.fx-all input {
+  margin: 0;
+}
+.fx-sec {
+  padding: 8px 10px 4px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+}
+.fx-empty {
+  margin: 0;
+  padding: 2px 10px 6px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.fx-person {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.fx-person:hover {
+  background: var(--row-hover);
+}
+.fx-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.fx-chips {
+  display: inline-flex;
+  gap: 4px;
+  flex: none;
+}
+.fx-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.35));
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+}
+.fx-chip:hover {
+  border-color: var(--row-sel-border);
+}
+.fx-chip.on {
+  border-color: #b3150b;
+  background: linear-gradient(180deg, #ffc1b5, #f0503d 55%, #c9271a);
+  color: #fff;
+  text-shadow: 0 1px 1px rgba(90, 0, 0, 0.4);
+}
+.fx-chip.all.on {
+  border-color: #7a2a99;
+  background: linear-gradient(180deg, #f0d0ff, #a24fd0 55%, #7a2a99);
+}
+:root[data-theme='dark'] .fx-chip:not(.on) {
+  background: rgba(255, 255, 255, 0.08);
 }
 .sound-settings {
   display: flex;
@@ -10286,19 +10427,130 @@ html[data-touch] .call-screen .tile-tools,
 html[data-touch] .sb-x {
   opacity: 1;
 }
-.sb-rows {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.sb-rows .kv {
-  margin: 0;
-}
 
 /* Avisos de um canal de servidor ainda não vistos */
 .row.channel .ch-badge {
   position: static;
   margin-left: auto;
   flex: none;
+}
+
+/* Configurações → Notificações: avisar amigos quando fico online, por aparelho; aviso do Ocupado */
+.online-notify {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 14px;
+  color: var(--text);
+}
+.online-notify-opts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+}
+.online-notify-opts .checkbox {
+  margin: 0;
+}
+.busy-hint {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+/* Menus do botão direito: separador, opção liga/desliga com caixinha, nota */
+.ctx-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--line);
+}
+.ctx-check-item {
+  align-items: flex-start;
+}
+.ctx-box {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  background: linear-gradient(180deg, #fff, #e6f0f8);
+  color: #fff;
+}
+.ctx-box.on {
+  border-color: #2a930c;
+  background: linear-gradient(180deg, #a6ec6e, #4fb81e 60%, #2a930c);
+}
+.ctx-check-item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ctx-check-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.ctx-check-text small {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.ctx-inline-ico {
+  vertical-align: -2px;
+  color: var(--ico-blue);
+}
+.ctx-note {
+  margin: 0;
+  padding: 4px 10px 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+:root[data-theme='dark'] .ctx-box:not(.on) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* X para tirar a conversa da lista (aparece ao passar o mouse; no toque, sempre) */
+.dm-row {
+  position: relative;
+}
+.dm-close {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin-left: 4px;
+  border-radius: 6px;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.dm-row:hover .dm-close,
+.dm-row:focus-within .dm-close,
+.dm-close:focus-visible {
+  opacity: 1;
+}
+.dm-close:hover {
+  color: var(--danger-ink);
+  background: var(--row-hover);
+}
+html[data-touch] .dm-close {
+  opacity: 0.8;
+}
+
+/* iPhone/iPad: embaixo das abas fica o indicador de início (parte da página, não uma barra do sistema
+   como no Android): as abas e a caixa de escrever vão até a borda, sem a faixa com a cor da barra. */
+html[data-ios] .mobile-app::after {
+  display: none;
+}
+/* Teclado aberto: a margem do indicador de início fica atrás do teclado — sem vão acima dele. */
+html[data-kb] .mobile-app::after {
+  display: none;
+}
+html[data-kb] .mobile-app .compose-row,
+html[data-kb] .mobile-app .chat.dm .compose-row {
+  padding-bottom: 6px;
+}
+html[data-kb] .m-tabs {
+  padding-bottom: 6px;
 }

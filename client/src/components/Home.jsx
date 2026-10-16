@@ -21,6 +21,7 @@ import {
 import { useStore, connRegistry, openLanDm, changeServer } from '../store.js';
 import { isDesktop } from '../lib/env.js';
 import Avatar, { Orb, useUser, usePresence, useActivity, UserName, STATUS_INFO, colorClass, colorStyle } from './Avatar.jsx';
+import { useUserMenu } from './ContextMenus.jsx';
 import ChatView from './ChatView.jsx';
 import VoiceView from './VoiceView.jsx';
 import { FormattedText } from './Emotes.jsx';
@@ -143,10 +144,15 @@ function DmRow({ dm, active }) {
   const inCall = useC((s) => Boolean(s.voiceStates[dm.id]?.length));
   const activity = useActivity(recipient.id);
   const status = usePresence(recipient.id);
+  const userMenu = useUserMenu(recipient);
+  const name = plain(recipient.displayName) || recipient.username;
   return (
+    <>
+    {userMenu.menu}
     <button
       className={`row dm-row${active ? ' sel active' : ''}${status === 'off' ? ' offline' : ''}`}
       onClick={() => useC.getState().selectDm(dm.id)}
+      onContextMenu={userMenu.onContextMenu}
     >
       <Avatar user={recipient} size={30} />
       <span className="member-text">
@@ -158,7 +164,27 @@ function DmRow({ dm, active }) {
         {activity ? <Bio text={activity} /> : recipient.bio ? <Bio user={recipient} /> : null}
       </span>
       {unread > 0 && <span className="badge">{unread > 99 ? '99+' : unread}</span>}
+      <span
+        className="dm-close"
+        role="button"
+        tabIndex={0}
+        title="Tirar da lista (volta ao abrir a conversa de novo)"
+        aria-label={`Tirar a conversa com ${name} da lista`}
+        onClick={(e) => {
+          e.stopPropagation();
+          useC.getState().hideDm(dm.id);
+        }}
+        onKeyDown={(e) => {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          e.preventDefault();
+          e.stopPropagation();
+          useC.getState().hideDm(dm.id);
+        }}
+      >
+        <X size={14} />
+      </span>
     </button>
+    </>
   );
 }
 
@@ -177,12 +203,21 @@ function FriendOrbRow({ entry }) {
   const user = useUser(entry.user);
   const status = usePresence(user.id);
   const label = { voice: 'em voz', live: 'ao vivo', away: 'ausente', busy: 'ocupado' }[status];
+  const userMenu = useUserMenu(user);
   return (
-    <button className="row orb-row" onClick={() => useStore.getState().openDm(user.id)} title={`Conversar com ${plain(user.displayName)}`}>
+    <>
+    {userMenu.menu}
+    <button
+      className="row orb-row"
+      onClick={() => useStore.getState().openDm(user.id)}
+      onContextMenu={userMenu.onContextMenu}
+      title={`Conversar com ${plain(user.displayName)}`}
+    >
       <Orb status={status} />
       <UserName user={user} className="nm" />
       {label && <span className={`orb-note ${status}`}>{label}</span>}
     </button>
+    </>
   );
 }
 
@@ -396,8 +431,10 @@ function FriendRow({ entry }) {
     e.stopPropagation();
     fn();
   };
+  const userMenu = useUserMenu(user);
   return (
-    <div className="friend-row" onClick={() => openProfile(user.id)}>
+    <div className="friend-row" onClick={() => openProfile(user.id)} onContextMenu={userMenu.onContextMenu}>
+      {userMenu.menu}
       <Avatar user={user} size={36} />
       <div className="friend-text">
         <b>
