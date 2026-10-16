@@ -36,6 +36,9 @@ pub struct App {
     pub audit: crate::audit::Sender,
     /// Relay das chamadas (TURN), com senha temporária por usuário (veja `crate::turn`).
     pub turn: Option<crate::turn::Turn>,
+    /// E-mail (SMTP) e login com o Google (veja `crate::account`); só no servidor de comunidade.
+    pub mail: Option<crate::account::Mailer>,
+    pub google: Option<crate::account::Google>,
 }
 
 struct Running {
@@ -205,7 +208,17 @@ impl HostManager {
         if let Some(t) = &turn {
             self.logs.info(format!("Relay das chamadas (TURN): {}", t.urls().join(", ")));
         }
+        let mail = if self.local_node { None } else { crate::account::Mailer::from_env() };
+        let google = if self.local_node { None } else { crate::account::Google::from_env() };
+        if mail.is_some() {
+            self.logs.info("E-mail ligado (confirmação de e-mail e recuperação de senha)");
+        }
+        if google.is_some() {
+            self.logs.info("Login com o Google ligado");
+        }
         let app = Arc::new(App {
+            mail,
+            google,
             audit: audit_tx,
             db: self.db.clone(),
             hub,
@@ -234,6 +247,8 @@ impl HostManager {
             .merge(crate::social::router())
             .merge(crate::lan::router())
             .merge(crate::stickers::router())
+            .merge(crate::sounds::router())
+            .merge(crate::account::router())
             .merge(crate::push::router())
             .merge(crate::files::router())
             .merge(crate::audit::router())

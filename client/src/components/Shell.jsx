@@ -47,6 +47,7 @@ import ChatView from './ChatView.jsx';
 import VoiceView from './VoiceView.jsx';
 import { useServerPing } from './hooks.js';
 import MusicPanel from './MusicPanel.jsx';
+import SoundPanel from './SoundPanel.jsx';
 import { FormattedText, Floating } from './Emotes.jsx';
 import { plain } from '../lib/text.js';
 import { useVoicePerson, voiceDropProps } from './VoiceMenus.jsx';
@@ -526,13 +527,18 @@ export function ChannelSidebar() {
   const view = useStore((s) => s.view);
   const me = useStore((s) => s.me);
   const sidebarView = useStore((s) => s.sidebarView);
+  const phone = useLayout() === 'phone';
   const { openModal, toggleMusicPanel } = useStore.getState();
   const perms = usePerms(useStore, guildId);
+
+  // Sons rápidos: sempre abaixo da lista (no celular, ficam na tela da chamada).
+  const sounds = !phone && <SoundPanel />;
 
   if (!guild) {
     return (
       <aside className="sidebar glass" aria-label="Amigos e conversas">
         <HomeSidebar />
+        {sounds}
         <VoiceStatus />
       </aside>
     );
@@ -594,6 +600,7 @@ export function ChannelSidebar() {
           activeId={view?.channelId}
         />
       </div>
+      {sounds}
       <VoiceStatus />
     </aside>
   );

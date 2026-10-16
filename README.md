@@ -163,6 +163,10 @@ Valores definidos por variável de ambiente prevalecem sobre o painel (lá apare
 | `ALLOW_REGISTRATION`                             | `true`              | Permite criar contas                                       |
 | `ICE_SERVERS`                                    | STUN do Google      | Lista JSON de `RTCIceServer` (STUN/TURN)                   |
 | `TURN_URLS` / `TURN_SECRET`                      | —                   | Relay das chamadas com senha temporária por usuário (coturn `use-auth-secret`), ex.: `turns:exemplo.org:443?transport=tcp` |
+| `SMTP_URL` / `MAIL_FROM`                         | —                   | E-mail da conta (código de confirmação e de "esqueci a senha"), ex.: `smtps://usuario:senha-de-app@smtp.gmail.com:465` e `PadoSpeak <voce@gmail.com>`. Na VM: `smtp://mail-relay:25` e `PadoSpeak <noreply@padoru.org>` (o relay de `/srv/mail-relay`, que assina o DKIM e entrega pelo Gmail) |
+| `MAIL_DAILY_LIMIT`                               | `100`               | Teto de e-mails por dia (o Gmail aceita uns 500 por dia por conta; passar disso pode suspendê-la). Cada conta pede no máximo 5 códigos de confirmação por dia |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`      | —                   | "Entrar com o Google" (cliente OAuth do tipo *Aplicativo da Web*). Voltando por outro navegador (o do sistema, no app do Windows), a página mostra um código que a pessoa digita no app |
+| `PUBLIC_URL`                                     | o endereço do acesso | Endereço público do servidor; o Google volta para `PUBLIC_URL/api/auth/google/callback` |
 | `AUTO_HOST`                                      | `false`             | Sobe o servidor ao iniciar (igual a `--host`)              |
 | `PANEL` / `PANEL_HOST` / `PANEL_PORT` / `PANEL_PASSWORD` | ligado / `127.0.0.1` / `3001` / — | Painel; fora de loopback exige senha (HTTP Basic) |
 

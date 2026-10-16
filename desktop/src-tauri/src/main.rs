@@ -89,10 +89,10 @@ fn apply_autostart(cfg: &Autostart) {
     }
 }
 
-/// Abre um endereço https no navegador padrão (baixar o instalador, instalar o app pelo navegador).
+/// Abre um endereço http(s) no navegador padrão (links das mensagens, baixar o instalador…).
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
-    if !url.starts_with("https://") || url.chars().any(|c| c.is_whitespace() || c == '"') {
+    if !(url.starts_with("https://") || url.starts_with("http://")) || url.chars().any(|c| c.is_whitespace() || c == '"') {
         return Err("Endereço inválido".into());
     }
     #[cfg(windows)]

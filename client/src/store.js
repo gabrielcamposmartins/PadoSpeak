@@ -5,10 +5,12 @@ import { VoiceClient } from './lib/voice.js';
 import { MusicPlayer } from './lib/music.js';
 import { isPanel, isDesktop, isTauri, localNodeUrl } from './lib/env.js';
 import { playSound, loopSound, setSoundsEnabled } from './lib/sounds.js';
+import { haptic, stopHaptic } from './lib/haptics.js';
+import { playSoundboard, preloadSound, stopSoundboard, setSoundboardOutput } from './lib/soundboard.js';
 import { shakeWindow, flashTaskbar } from './lib/attention.js';
 import { systemNotify, showAppWindow, appHasFocus } from './lib/background.js';
 import { currentLayout, isStandalone, isTouch } from './lib/layout.js';
-import { plain } from './lib/text.js';
+import { plain, mentionsUser } from './lib/text.js';
 import { syncPush, disablePush } from './lib/pwa.js';
 import { applyHotkeys, hotkeysOf } from './lib/hotkeys.js';
 import { NearbyProbe, deviceLabel } from './lib/nearby.js';
@@ -224,6 +226,8 @@ export function createConnStore({ key, kind, base, primary = false }) {
     typing: {}, // channelId -> { userId: { user, until } }
     lanPeers: [], // perfis da rede local (só no nó local)
     stickers: null, // minha coleção de stickers neste servidor (null = ainda não carregada)
+    sounds: null, // sons rápidos: { sounds, slots, rows, max } (null = ainda não carregados)
+    soundLast: null, // último som que tocou na chamada: { by, sound, at }
 
     voice: null, // snapshot do VoiceClient
     selfMuted: false,
@@ -497,6 +501,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
         });
         get()._sendActivity();
         get().loadMarks();
+        get().loadSounds();
         // O que mudou entre o carregamento inicial e a conexão (ou durante uma queda) não chegou por evento.
         if (!firstReady) get().resync();
         else {
@@ -531,7 +536,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
             lastOnlineAlert.set(userId, now);
             const user = s.users[userId] || friend.user;
             notify(`${user.displayName} acabou de ficar online.`, 'presence', user);
-            playSound('message');
+            ding('message');
           }
         }
         set((st) => {
@@ -548,7 +553,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
       rt.on('nudge', ({ channelId, dm, from }) => {
         if (dm && !get().dms.some((d) => d.id === channelId)) get().loadDms();
         get().pushNotice(channelId, { kind: 'nudge-in', author: from });
-        playSound('nudge');
+        ding('nudge');
         shakeWindow();
         flashTaskbar();
         notify(`${from.displayName} chamou a sua atenção!`, 'presence', from, dm ? `/?dm=${channelId}` : `/?channel=${channelId}`);
@@ -575,7 +580,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
           return { friends, online: { ...s.online, [user.id]: online || undefined }, statuses };
         });
         if (status === 'incoming' && prev !== 'incoming') {
-          playSound('message');
+          ding('message');
           notify(`${user.displayName} quer ser seu amigo.`, 'presence', user, '/?friends=pending');
         } else if (status === 'friend' && prev === 'outgoing') {
           notify(`${user.displayName} aceitou seu pedido de amizade.`, 'presence', user);
@@ -600,21 +605,28 @@ export function createConnStore({ key, kind, base, primary = false }) {
                 : { ...st.unread, [m.channelId]: (st.unread[m.channelId] || 0) + 1 },
           }));
           if (!viewing && m.author.id !== s.me?.id) {
-            playSound('message');
+            ding('message');
             notify(messageNotice(m.author, m.content), 'presence', m.author, `/?dm=${m.channelId}`);
           }
         } else if (m.author.id !== s.me?.id && !(isViewing(m.channelId) && appHasFocus())) {
           // Canal de servidor: avisa conforme as notificações escolhidas para o servidor.
           const guildId = Object.entries(s.guildData).find(([, g]) => g.channels.some((c) => c.id === m.channelId))?.[0];
           const n = { ...DEFAULT_NOTIFY, ...s.guildNotify[guildId] };
-          const me = s.me?.username?.toLowerCase();
-          const mentioned = Boolean(me) && new RegExp(`(^|[^\\w.])@${me.replace(/\./g, '\\.')}(?![\\w])`, 'i').test(plain(m.content));
+          // @meu_usuario ou @everyone: avisa mesmo com "só menções" ou com o canal silenciado.
+          const mentioned = mentionsUser(plain(m.content), s.me?.username);
           const wants =
             n.messages === 'all' ? mentioned || !n.mutedChannels.includes(m.channelId) : n.messages === 'mentions' && mentioned;
           if (wants) {
             const ch = s.guildData[guildId].channels.find((c) => c.id === m.channelId);
-            playSound('message');
-            notify(`${messageNotice(m.author, m.content)} (#${ch?.name})`, 'presence', m.author, `/?channel=${m.channelId}`);
+            ding('message');
+            notify(
+              mentioned
+                ? `${plain(m.author.displayName)} mencionou você em #${ch?.name}: ${plain(m.content).slice(0, 120)}`
+                : `${messageNotice(m.author, m.content)} (#${ch?.name})`,
+              'presence',
+              m.author,
+              `/?channel=${m.channelId}`,
+            );
           }
         }
       });
@@ -709,6 +721,14 @@ export function createConnStore({ key, kind, base, primary = false }) {
         }),
       );
       rt.on('music:notice', ({ text }) => notify(text, 'info'));
+      // Som rápido na chamada: toca para quem está nela (menos quem ensurdeceu ou desligou os sons).
+      rt.on('sound:play', ({ channelId, by, sound, at }) => {
+        if (get().voice?.channelId !== channelId) return;
+        set({ soundLast: { by, sound, at: Date.now(), serverAt: at } });
+        const p = prefs();
+        if (ui().getState().selfDeafened || p.soundboardOff) return;
+        playSoundboard(`${baseUrl}${sound.url}`, p.soundboardVolume ?? 0.8).catch((e) => console.warn('[sons]', e));
+      });
       rt.on('voice:channel', ({ guildId, channelId, dm, participants }) => {
         // Notificações do servidor: alguém entrou num canal de voz ou começou a transmitir.
         const s0 = get();
@@ -720,7 +740,8 @@ export function createConnStore({ key, kind, base, primary = false }) {
           for (const p of participants) {
             if (p.user.id === s0.me?.id) continue;
             const was = before.get(p.peerId);
-            if (!was && n.voiceJoin && !participants.some((o) => o !== p && o.user.id === p.user.id))
+            // O canal pode ter o aviso de entrada desligado pelos administradores.
+            if (!was && n.voiceJoin && ch?.announceJoin !== false && !participants.some((o) => o !== p && o.user.id === p.user.id))
               notify(`${p.user.displayName} entrou em 🔊 ${ch?.name || 'um canal de voz'}.`, 'presence', p.user);
             else if (was && !was.screen && p.screen && n.streams)
               notify(`${p.user.displayName} começou a transmitir em 🔊 ${ch?.name || 'um canal de voz'}.`, 'presence', p.user);
@@ -890,16 +911,17 @@ export function createConnStore({ key, kind, base, primary = false }) {
       await get().joinVoice(dm.id);
     },
 
-    async answerCall() {
-      const call = get().incomingCall;
+    /** Atende a chamada que está tocando (ou a da notificação, pelo `dmId`). */
+    async answerCall(dmId) {
+      const call = get().incomingCall || (dmId ? { dmId } : null);
       if (!call) return;
       set({ incomingCall: null });
       get().selectDm(call.dmId);
       await get().joinVoice(call.dmId);
     },
 
-    declineCall() {
-      const call = get().incomingCall;
+    declineCall(dmId) {
+      const call = get().incomingCall || (dmId ? { dmId } : null);
       if (!call) return;
       rt?.send('call:decline', { dmId: call.dmId });
       set({ incomingCall: null });
@@ -924,6 +946,64 @@ export function createConnStore({ key, kind, base, primary = false }) {
       const user = await api.del('/api/me/avatar');
       set((s) => ({ me: user, users: { ...s.users, [user.id]: user } }));
       return user;
+    },
+
+    // ---------- Conta: e-mail e Google ----------
+    getAccount: () => api.get('/api/me/account'),
+    startEmail: (email) => api.post('/api/me/email', { email }),
+    verifyEmail: (code) => api.post('/api/me/email/verify', { code }),
+    removeEmail: () => api.del('/api/me/email'),
+    unlinkGoogle: () => api.del('/api/me/google'),
+    forgotPassword: (email) => api.post('/api/auth/forgot', { email }),
+    sessionToken: () => token,
+
+    // ---------- Sons rápidos ----------
+    async loadSounds() {
+      try {
+        const lib = await api.get('/api/sounds');
+        set({ sounds: lib });
+        for (const id of lib.slots) {
+          const snd = id && lib.sounds.find((x) => x.id === id);
+          if (snd) preloadSound(`${baseUrl}${snd.url}`);
+        }
+      } catch (e) {
+        console.warn('[sons]', e);
+      }
+    },
+    /** Envia um som (até 5 s e 1 MB) com nome, ícone e cor; entra no primeiro botão livre do atalho. */
+    async uploadSound(file, { name, icon, tone, durationMs }) {
+      const q = new URLSearchParams({ name, icon, tone, durationMs: String(Math.round(durationMs)) });
+      const snd = await api.post(`/api/sounds?${q}`, file);
+      await get().loadSounds();
+      return snd;
+    },
+    async editSound(id, patch) {
+      const snd = await api.patch(`/api/sounds/${id}`, patch);
+      set((s) => (s.sounds ? { sounds: { ...s.sounds, sounds: s.sounds.sounds.map((x) => (x.id === id ? snd : x)) } } : {}));
+    },
+    async deleteSound(id) {
+      await api.del(`/api/sounds/${id}`);
+      await get().loadSounds();
+    },
+    /** Botões do atalho (ids ou null) e quantas linhas (2 ou 3). */
+    async setSoundBoard(slots, rows) {
+      const cur = get().sounds;
+      if (cur) set({ sounds: { ...cur, slots, rows } });
+      const saved = await api.put('/api/sounds/board', { slots, rows });
+      set((s) => (s.sounds ? { sounds: { ...s.sounds, ...saved } } : {}));
+    },
+    /** Copia o som de outra pessoa para a minha biblioteca. */
+    async copySound(id) {
+      const snd = await api.post(`/api/sounds/${id}/copy`);
+      await get().loadSounds();
+      return snd;
+    },
+    userSounds: (userId) => api.get(`/api/users/${userId}/sounds`),
+    soundUrl: (snd) => `${baseUrl}${snd.url}`,
+    /** Toca um som da minha biblioteca para todos da chamada. */
+    async playBoardSound(id) {
+      const r = await rt?.request('sound:play', { soundId: id });
+      if (r?.error) notify(r.error, 'info');
     },
 
     // ---------- Stickers ----------
@@ -1138,6 +1218,10 @@ export function createConnStore({ key, kind, base, primary = false }) {
     async updateChannel(channelId, name) {
       get()._upsertChannel(await api.patch(`/api/channels/${channelId}`, { name }));
     },
+    /** Canal de voz: avisa (ou não) os membros quando alguém entra. */
+    async setChannelAnnounce(channelId, announceJoin) {
+      get()._upsertChannel(await api.patch(`/api/channels/${channelId}`, { announceJoin }));
+    },
     /** Canal privado (só `users`, o dono e os admins veem) ou público. */
     async setChannelAccess(channelId, isPrivate, users) {
       await api.put(`/api/channels/${channelId}/access`, { private: isPrivate, users });
@@ -1335,6 +1419,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
 
     leaveVoice() {
       const ch = get().voice?.channelId;
+      stopSoundboard();
       voiceClient?.leave();
       voiceClient = null;
       set({ voice: null });
@@ -1358,6 +1443,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
     },
     toggleDeafen() {
       ui().setState({ selfDeafened: !ui().getState().selfDeafened });
+      if (ui().getState().selfDeafened) stopSoundboard();
       for (const c of connRegistry.values()) c.getState()._applyAudio();
     },
     _applyAudio() {
@@ -1520,6 +1606,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
 
     async setDevices(devices) {
       get().setAppearance({ devices: { ...(prefs().devices || {}), ...devices } });
+      setSoundboardOutput(prefs().devices?.output);
       for (const c of connRegistry.values()) c.getState()._applyDevices();
     },
     async _applyDevices() {
@@ -1622,7 +1709,17 @@ export function createConnStore({ key, kind, base, primary = false }) {
   let ringbackTimer = null;
   store.subscribe((s, prev) => {
     // Chamada recebida: toca até atender, recusar ou quem ligou desistir.
-    if (s.incomingCall && !prev.incomingCall) stopRing = loopSound('ring', 2200);
+    if (s.incomingCall && !prev.incomingCall) {
+      // No celular, vibra junto com o toque.
+      const stopSound = loopSound('ring', 2200);
+      haptic('ring');
+      const vibe = setInterval(() => haptic('ring'), 2200);
+      stopRing = () => {
+        stopSound();
+        clearInterval(vibe);
+        stopHaptic();
+      };
+    }
     if (!s.incomingCall && prev.incomingCall) {
       stopRing?.();
       stopRing = null;
@@ -1687,11 +1784,41 @@ export const lastProfile = (base) => storage.get(`padospeak.lastProfile:${base}`
  * Toque numa notificação: `/?dm=<id>` abre a conversa; `/?friends=pending` abre os pedidos de amizade.
  * Também chamada quando o service worker avisa um app que já estava aberto.
  */
+/** Som do aviso e, no celular, a vibração. */
+function ding(kind) {
+  playSound(kind);
+  haptic(kind);
+}
+
+/**
+ * Tocou em "Atender" ou "Recusar" na notificação da chamada (app fechado ou em segundo plano): espera
+ * a conexão com o servidor e entra na chamada (ou avisa quem ligou que foi recusada).
+ */
+function callFromNotification(store, dmId, action) {
+  const run = () => {
+    const st = store.getState();
+    if (action === 'answer') {
+      if (st.voice?.channelId === dmId) return;
+      st.answerCall(dmId);
+    } else {
+      st.declineCall(dmId);
+    }
+  };
+  if (store.getState().rtStatus === 'connected') return run();
+  const stop = store.subscribe((s) => {
+    if (s.rtStatus !== 'connected') return;
+    stop();
+    run();
+  });
+  setTimeout(stop, 30000);
+}
+
 export function openFromUrl(url = location.href) {
   const q = new URL(url, location.origin).searchParams;
   const dm = q.get('dm');
   const friends = q.get('friends');
   const channel = q.get('channel');
+  const call = q.get('call');
   if (!dm && !friends && !channel) return;
   if (new URL(url, location.origin).href === location.href) history.replaceState(null, '', '/');
   const ui = useStore.getState();
@@ -1704,6 +1831,7 @@ export function openFromUrl(url = location.href) {
         .loadDms?.()
         .then(() => useStore.getState().dms.some((d) => d.id === dm) && useStore.getState().selectDm(dm))
         .catch(() => {});
+    if (call === 'answer' || call === 'decline') callFromNotification(store || useStore, dm, call);
   } else if (friends) {
     ui.setFriendsTab(friends === 'pending' ? 'pending' : 'online');
     ui.goHome();
@@ -1952,6 +2080,8 @@ let serverRetry = null;
  * no servidor de comunidade quando o endereço muda. Abrindo o app pelo token salvo, ela não existe.
  */
 let localPassword = null;
+/** Sessão do servidor já obtida (login com o Google no app do Windows), para o connectServer usar. */
+let pendingServerToken = null;
 
 async function bootDesktop() {
   let url;
@@ -2045,10 +2175,11 @@ export async function localRecover({ username, password, newPassword }) {
     throw e;
   }
   const finalPassword = newPassword || password;
+  // Entrou com o e-mail: o perfil local usa o nome de usuário da conta.
   const done = await createApi(
     () => local.getState().baseUrl,
     () => null,
-  ).post('/api/auth/recover', { username, newPassword: finalPassword, server, token: res.token });
+  ).post('/api/auth/recover', { username: res.user?.username || username, newPassword: finalPassword, server, token: res.token });
   localPassword = finalPassword;
   await enterLocal(local, done.user, finalPassword, done.token);
   return { ok: true };
@@ -2083,6 +2214,10 @@ export async function connectServer({ username, password = localPassword } = {})
     () => url,
     () => loadToken(url, profileScope),
   );
+  if (pendingServerToken) {
+    saveToken(url, pendingServerToken, profileScope);
+    pendingServerToken = null;
+  }
   try {
     if (loadToken(url, profileScope)) {
       try {
@@ -2118,6 +2253,34 @@ export async function connectServer({ username, password = localPassword } = {})
  * Entra no servidor com outra conta (ou cria uma), pela janela de login do servidor. Conta que já
  * existia: o perfil dela vale também neste PC. Conta recém-criada: começa com o perfil deste PC.
  */
+/**
+ * App do Windows: entrou no servidor pelo Google ({ token, user } do servidor). O perfil local deste PC
+ * passa a ser o da conta, com uma senha local sorteada (para entrar de novo, é o Google outra vez) e a
+ * mesma sessão do servidor.
+ */
+export async function localFromServer(res) {
+  const local = connRegistry.get('local');
+  const server = useStore.getState().baseUrl;
+  if (!local || !server) throw new Error('O perfil local ainda não iniciou');
+  const bytes = crypto.getRandomValues(new Uint8Array(18));
+  const password = btoa(String.fromCharCode(...bytes));
+  const done = await createApi(
+    () => local.getState().baseUrl,
+    () => null,
+  ).post('/api/auth/recover', { username: res.user.username, newPassword: password, server, token: res.token });
+  localPassword = password;
+  pendingServerToken = res.token;
+  await enterLocal(local, done.user, password, done.token);
+}
+
+/** Janela "Entrar no servidor" do app do Windows: entrou pelo Google com a sessão já pronta. */
+export async function serverEnterWithToken(res) {
+  clearTimeout(serverRetry);
+  await useStore.getState().enterWithToken(res.token, res.user);
+  if (res.created) await syncProfileTo(useStore);
+  else await pullProfileFrom(useStore);
+}
+
 export async function serverAuthenticate(mode, form) {
   clearTimeout(serverRetry);
   await useStore.getState().authenticate(mode, form);

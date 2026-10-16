@@ -1,5 +1,23 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.8.0 — 16/10/2026
+
+### Novidades
+- **Sons rápidos**: botões de som logo abaixo da lista de canais (ou de amigos online). Na chamada, um toque toca o som para todos do canal ou da chamada privada. Cada pessoa tem uma biblioteca de até 10 sons (até 5 segundos), com ícone e cor, e escolhe 6 ou 9 para os botões. Quando alguém toca um som, aparece “Copiar para mim”; o perfil de cada pessoa também mostra os sons dela. O volume (ou desligar) fica em Configurações → Funcionalidade, e cada servidor pode desligar os sons nos canais dele.
+- **Tela de chamada no celular**: a chamada ganhou uma tela própria, com vídeo, tela compartilhada e os botões ao alcance do polegar. A chamada recebida aparece em tela cheia, com o botão de atender grande, e toca e vibra até você atender. A seta para baixo minimiza: a chamada continua e uma faixa verde no alto leva de volta.
+- **Menções**: escreva @usuario para avisar alguém num canal, ou @everyone para avisar todos que veem o canal. Ao digitar @ aparece a lista de membros. Quem é mencionado recebe o aviso mesmo com “só menções” ou com o canal silenciado, e a mensagem aparece destacada para ela.
+- **Entrar com o e-mail**: em Configurações → Conta, vincule o seu e-mail (confirmado por um código). Depois disso dá para entrar com ele no lugar do usuário, e “Esqueci minha senha” manda um código para você entrar e criar uma senha nova.
+- **Emojis ✔ e ✖**: (V) e (X), também nas reações.
+- **Avisos de entrada por canal de voz**: nas configurações do servidor, escolha quais canais de voz avisam os membros quando alguém entra.
+- **Tema**: a escolha entre Claro, Escuro e Sistema virou três cartões com prévia.
+
+### Correções
+- **Notificações no celular**: agora vibram e tocam (no Android), mostram a foto de quem mandou e, com o app aberto, vibram junto com o som. A chamada recebida com o app fechado fica na tela com Atender e Recusar.
+- **“Ficou online” ao abrir o app no celular**: trocar de app ou bloquear a tela não faz mais você aparecer offline e online de novo para os amigos.
+- **Barras do celular**: a barra das horas e a de navegação ficam com a cor do app, no tema claro e no escuro.
+- **NSFW nos canais**: marcar uma foto como NSFW ao enviar agora funciona também nos canais de servidor.
+- **Links no app do Windows**: abrem no navegador padrão.
+
 ## 1.7.0 — 16/10/2026
 
 ### Novidades

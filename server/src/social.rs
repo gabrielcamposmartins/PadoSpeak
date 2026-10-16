@@ -389,6 +389,8 @@ async fn request_friend(State(app): AppState, AuthUser(me, _): AuthUser, Json(bo
                 body: format!("{} quer ser seu amigo.", plain_text(&me.display_name)),
                 tag: format!("friend:{}", me.id),
                 url: "/?friends=pending".into(),
+                kind: "friend",
+                from: crate::push::Sender::of(&me),
             },
         );
     }

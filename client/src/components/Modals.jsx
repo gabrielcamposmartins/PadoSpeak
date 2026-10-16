@@ -49,6 +49,8 @@ import {
   CircleCheck,
   Gamepad2,
   Plus,
+  Music2,
+  KeyRound,
 } from 'lucide-react';
 import {
   useStore,
@@ -59,12 +61,16 @@ import {
   syncProfileEverywhere,
   localLogout,
   serverAuthenticate,
+  serverEnterWithToken,
   usePerms,
   PERM,
   DEFAULT_NOTIFY,
   setMyActivity,
 } from '../store.js';
 import { currentActivity, listPrograms, setCustomPrograms } from '../lib/activity.js';
+import { SoundsModal, UserSoundsModal } from './SoundLibrary.jsx';
+import { GoogleButton, useAuthOptions, AccountSettings } from './AccountAuth.jsx';
+import VolumeSlider from './Volume.jsx';
 import { isDesktop, isTauri, DOWNLOAD_URL, DEFAULT_SERVER, openExternal } from '../lib/env.js';
 import { usePwa, installState, install } from '../lib/pwa.js';
 import { ConnProvider, useConn } from './conn.jsx';
@@ -105,6 +111,8 @@ const TITLES = {
   guildSettings: 'Configurações do servidor',
   changelog: 'Notas de atualização',
   share: 'Compartilhar',
+  sounds: 'Sons rápidos',
+  userSounds: 'Sons',
 };
 
 /** Fundo do banner do perfil (acima da foto) a partir de uma cor. */
@@ -494,6 +502,13 @@ function DeviceSelect({ k, kind, label, choice, setChoice, devices }) {
 }
 
 /** Nome das cenas: o mesmo índice vale para o claro e o escuro (Céu↔Noite, Aquário↔Abismo). */
+/** Temas: id, nome e a explicação curta embaixo. */
+const THEMES = [
+  ['light', 'Claro', 'Aero (padrão)'],
+  ['dark', 'Escuro', 'Aero noturno'],
+  ['system', 'Sistema', 'Igual ao aparelho'],
+];
+
 const SCENES = [
   ['Céu', 'Céu de dia · Noite no tema escuro'],
   ['Aquário', 'Aquário · Abismo no tema escuro'],
@@ -506,6 +521,7 @@ const SETTINGS_TABS = [
   ['funcionalidade', 'Funcionalidade', SlidersHorizontal],
   ['formatacao', 'Formatação de texto', Type],
   ['apps', 'Apps', Download],
+  ['conta', 'Conta', KeyRound],
 ];
 
 /** Instalar o PadoSpeak: o app para Windows e o app instalável (PWA), em qualquer aparelho. */
@@ -755,6 +771,30 @@ function VoiceHotkeys() {
   );
 }
 
+/** Sons rápidos: ouvir os dos outros e o volume (vale na hora). */
+function SoundboardPrefs() {
+  const off = useStore((s) => Boolean(s.prefs.soundboardOff));
+  const volume = useStore((s) => s.prefs.soundboardVolume ?? 0.8);
+  const set = (patch) => useStore.getState().setAppearance(patch);
+  return (
+    <>
+      <label className="checkbox">
+        <input type="checkbox" checked={!off} onChange={(e) => set({ soundboardOff: !e.target.checked })} />
+        <span>
+          Ouvir os sons rápidos na chamada
+          <small className="check-hint">Os sons que as pessoas tocam pelos botões de sons rápidos.</small>
+        </span>
+      </label>
+      {!off && (
+        <label className="field sound-volume">
+          <span>Volume dos sons rápidos</span>
+          <VolumeSlider label="Volume dos sons rápidos" value={volume} onChange={(v) => set({ soundboardVolume: v })} />
+        </label>
+      )}
+    </>
+  );
+}
+
 /**
  * Programas que também aparecem no status (“Jogando …”) além dos jogos reconhecidos sozinhos. Vale na hora:
  * a lista fica neste PC e vai para o app do Windows, que olha a janela em foco.
@@ -931,20 +971,36 @@ function SettingsModal({ close }) {
   const appearance = (
     <>
       <div className="settings-sec">Tema e cores</div>
-      <label className="field">
-        <span>Tema</span>
-        <select
-          value={theme}
-          onChange={(e) => {
-            setTheme(e.target.value);
-            useStore.getState().setAppearance({ theme: e.target.value });
-          }}
-        >
-          <option value="light">Claro (Aero) — padrão</option>
-          <option value="dark">Escuro (Aero noturno)</option>
-          <option value="system">Igual ao sistema</option>
-        </select>
-      </label>
+      <div className="field">
+        <span id="theme-pick-label">Tema</span>
+        <div className="theme-pick" role="radiogroup" aria-labelledby="theme-pick-label">
+          {THEMES.map(([id, name, hint]) => (
+            <label key={id} className={`theme-opt t-${id}${theme === id ? ' on' : ''}`}>
+              <input
+                type="radio"
+                name="theme"
+                value={id}
+                className="sr-only"
+                checked={theme === id}
+                onChange={() => {
+                  setTheme(id);
+                  useStore.getState().setAppearance({ theme: id });
+                }}
+              />
+              <span className="theme-mini" aria-hidden="true">
+                <i className="tm-sky" />
+                <i className="tm-row" />
+                <i className="tm-row short" />
+              </span>
+              <span className="theme-name">
+                <span className="theme-dot" aria-hidden="true" />
+                {name}
+              </span>
+              <small>{hint}</small>
+            </label>
+          ))}
+        </div>
+      </div>
       <div className="field">
         <span>Cena do perfil</span>
         <div className="scene-pick" role="radiogroup" aria-label="Cena do perfil">
@@ -1026,6 +1082,7 @@ function SettingsModal({ close }) {
             <small className="check-hint">Entradas e saídas no canal de voz, transmissões, mensagens diretas e toque de chamada.</small>
           </span>
         </label>
+        <SoundboardPrefs />
         {canPickOutput && <DeviceSelect {...props} k="output" kind="audiooutput" label="Saída de áudio" />}
         <DeviceSelect {...props} k="camera" kind="videoinput" label="Câmera" />
         {needsPermission && (
@@ -1183,6 +1240,11 @@ function SettingsModal({ close }) {
           {tab === 'aparencia' && appearance}
           {tab === 'funcionalidade' && features}
           {tab === 'formatacao' && <TextFormatting />}
+          {tab === 'conta' && (
+            <section className="settings-col">
+              <AccountSettings />
+            </section>
+          )}
           {tab === 'apps' && <AppsTab />}
         </div>
       </div>
@@ -1536,6 +1598,13 @@ function ProfileCard({ close, userId }) {
                 <UserMinus size={16} />
               </button>
             )}
+            <button
+              className="btn ghost"
+              title="Ver os sons rápidos desta pessoa (e copiar)"
+              onClick={() => useStore.getState().openModal({ type: 'userSounds', userId, conn: useC.getState().key })}
+            >
+              <Music2 size={16} /> Sons
+            </button>
             <button
               className={`btn ghost${nudgeBlocked ? ' pressed' : ''}`}
               title={nudgeBlocked ? 'Voltar a aceitar chamar atenção desta pessoa' : 'Não aceitar chamar atenção desta pessoa'}
@@ -1924,6 +1993,8 @@ function ServerLoginModal({ close }) {
   const localName = connRegistry.get('local')?.getState().me?.username || '';
   const [mode, setMode] = useState('login');
   const [form, setForm] = useState({ username: localName, password: '', newPassword: '', repeat: '' });
+  const options = useAuthOptions(url);
+  const [googleError, setGoogleError] = useState('');
   // Muitas tentativas: aviso com contagem regressiva; perto do bloqueio, quantas tentativas restam.
   const lockout = useLoginLock(form.username);
   const locked = mode !== 'register' && lockout.locked;
@@ -1970,7 +2041,7 @@ function ServerLoginModal({ close }) {
           </button>
         </div>
         <label className="field">
-          <span>Usuário</span>
+          <span>{mode === 'register' ? 'Usuário' : 'Usuário ou e-mail'}</span>
           <input value={form.username} onChange={update('username')} autoComplete="username" required />
         </label>
         {mode === 'reset' ? (
@@ -2006,7 +2077,17 @@ function ServerLoginModal({ close }) {
             />
           </label>
         )}
-        {locked ? <LoginLock left={lockout.left} /> : error && <p className="error-text">{error}</p>}
+        {locked ? <LoginLock left={lockout.left} /> : (error || googleError) && <p className="error-text">{error || googleError}</p>}
+        {mode !== 'reset' && options.google && (
+          <GoogleButton
+            base={url}
+            onDone={async (res) => {
+              await serverEnterWithToken(res);
+              close();
+            }}
+            onError={(e) => setGoogleError(e.message)}
+          />
+        )}
       </div>
       <div className="modal-foot">
         <button
@@ -2419,6 +2500,7 @@ function GuildMembers({ guildId, perms: mine }) {
 function GuildNotify({ guildId }) {
   const saved = useStore((s) => s.guildNotify[guildId]);
   const channels = useStore((s) => s.guildData[guildId]?.channels) || [];
+  const perms = usePerms(useStore, guildId);
   const [n, setN] = useState({ ...DEFAULT_NOTIFY, ...saved });
   const [status, setStatus] = useState('');
   const save = async (next) => {
@@ -2433,6 +2515,14 @@ function GuildNotify({ guildId }) {
     }
   };
   const text = channels.filter((c) => c.type === 'text');
+  const voice = channels.filter((c) => c.type === 'voice');
+  const announce = async (c, on) => {
+    try {
+      await useStore.getState().setChannelAnnounce(c.id, on);
+    } catch (e) {
+      useStore.getState().notify(e.message);
+    }
+  };
   return (
     <div className="gs-notify">
       <section className="gs-box">
@@ -2493,6 +2583,30 @@ function GuildNotify({ guildId }) {
           Os avisos aparecem no app e, com ele fechado ou em segundo plano, como notificação no celular ou no navegador.
         </p>
       </section>
+      {perms.channels && voice.length > 0 && (
+        <section className="gs-box">
+          <div className="gs-box-head">
+            <b>Canais de voz que avisam quem entra</b>
+            <small>vale para todos do servidor</small>
+          </div>
+          <div className="gs-channels" role="group" aria-label="Canais de voz que avisam quando alguém entra">
+            {voice.map((c) => (
+              <label key={c.id} className="perm-chip">
+                <input
+                  type="checkbox"
+                  checked={c.announceJoin !== false}
+                  aria-label={`Avisar quando alguém entrar em ${c.name}`}
+                  onChange={(e) => announce(c, e.target.checked)}
+                />
+                <Volume2 size={13} /> {c.name}
+              </label>
+            ))}
+          </div>
+          <p className="kv">
+            Quem entra num canal desmarcado não gera o aviso “entrou em 🔊 …” para ninguém, mesmo para quem pediu esse aviso.
+          </p>
+        </section>
+      )}
     </div>
   );
 }
@@ -2585,6 +2699,7 @@ const SETTING_LABELS = {
   msgColor: 'cor das mensagens',
   msgColorMode: 'regra da cor das mensagens',
   moveSound: 'som ao mover alguém',
+  sounds: 'sons rápidos',
 };
 const permNames = (bits) =>
   PERM_OPTIONS.filter((o) => (bits & o.bit) !== 0)
@@ -2986,6 +3101,17 @@ function GuildSettingsModal({ guildId }) {
                       <small className="check-hint">Toca para quem está no canal de origem e no de destino.</small>
                     </span>
                   </label>
+                  <label className="checkbox">
+                    <input
+                      type="checkbox"
+                      checked={guild.sounds !== false}
+                      onChange={(e) => run(() => st.updateGuild(guildId, { sounds: e.target.checked }))}
+                    />
+                    <span>
+                      Permitir sons rápidos nos canais de voz
+                      <small className="check-hint">Desligado, ninguém toca sons para os outros nos canais deste servidor.</small>
+                    </span>
+                  </label>
                 </>
               )}
               {!perms.admin && (
@@ -3033,7 +3159,7 @@ function GuildSettingsModal({ guildId }) {
   );
 }
 
-const SIZES = { diagnostics: 'wide', settings: 'settings', guildSettings: 'gs-window', changelog: 'wide' };
+const SIZES = { diagnostics: 'wide', settings: 'settings', guildSettings: 'gs-window', changelog: 'wide', sounds: 'wide' };
 
 const MODALS = {
   serverLogin: ServerLoginModal,
@@ -3049,6 +3175,8 @@ const MODALS = {
   guildSettings: GuildSettingsModal,
   changelog: ChangelogModal,
   share: ShareModal,
+  sounds: SoundsModal,
+  userSounds: UserSoundsModal,
 };
 
 export default function Modals() {

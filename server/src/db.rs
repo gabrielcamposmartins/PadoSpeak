@@ -395,6 +395,63 @@ CREATE TABLE IF NOT EXISTS message_marks (
 );
 "#,
     ),
+    (
+        17,
+        r#"
+-- Canal de voz que avisa os membros quando alguém entra (escolhido nas configurações do servidor).
+ALTER TABLE channels ADD COLUMN announce_join INTEGER NOT NULL DEFAULT 1;
+"#,
+    ),
+    (
+        18,
+        r#"
+-- Sons rápidos: a biblioteca de cada pessoa (até 10) e os botões do atalho; o servidor pode desligar.
+CREATE TABLE IF NOT EXISTS sounds (
+  id TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  icon TEXT NOT NULL,
+  tone TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  data BLOB NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sounds_owner ON sounds(owner_id, created_at);
+CREATE TABLE IF NOT EXISTS sound_boards (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  slots TEXT NOT NULL,
+  rows INTEGER NOT NULL DEFAULT 2
+);
+ALTER TABLE guilds ADD COLUMN sounds INTEGER NOT NULL DEFAULT 1;
+"#,
+    ),
+    (
+        19,
+        r#"
+-- Conta: e-mail confirmado (para entrar e recuperar a senha) e o Google vinculado.
+ALTER TABLE users ADD COLUMN email TEXT;
+ALTER TABLE users ADD COLUMN google_sub TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google ON users(google_sub);
+-- Código mandado para confirmar o e-mail (um por pessoa).
+CREATE TABLE IF NOT EXISTS email_codes (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  email TEXT NOT NULL,
+  code_hash TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  sent_at INTEGER NOT NULL
+);
+-- "Esqueci a senha": código que vale no lugar da senha por um tempo (não troca a senha).
+CREATE TABLE IF NOT EXISTS password_resets (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  code_hash TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0
+);
+"#,
+    ),
 ];
 
 impl Db {

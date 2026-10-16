@@ -9,6 +9,8 @@ import HostPage from './components/HostPage.jsx';
 import Shell from './components/Shell.jsx';
 import Modals from './components/Modals.jsx';
 import IncomingCalls from './components/IncomingCall.jsx';
+import CallScreen from './components/CallScreen.jsx';
+import { SoundSprite } from './components/SoundIcons.jsx';
 import Avatar from './components/Avatar.jsx';
 import { TitleBar } from './components/Aero.jsx';
 import { FormattedText } from './components/Emotes.jsx';
@@ -123,6 +125,8 @@ export default function App() {
           <Shell />
         </div>
       )}
+      <SoundSprite />
+      {loggedIn && !isPanel && <CallScreen />}
       <Modals />
       {loggedIn && <IncomingCalls />}
       {loggedIn && <UnreadBadge />}

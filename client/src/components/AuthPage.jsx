@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Server, Wifi, Download } from 'lucide-react';
-import { useStore, localAuthenticate, localRecover, connRegistry, knownProfiles, lastProfile } from '../store.js';
+import { useStore, localAuthenticate, localRecover, localFromServer, connRegistry, knownProfiles, lastProfile } from '../store.js';
+import { GoogleButton, ForgotForm, useAuthOptions } from './AccountAuth.jsx';
 import Avatar from './Avatar.jsx';
 import { InstallCard } from './Mobile.jsx';
 import { isDesktop, DOWNLOAD_URL } from '../lib/env.js';
@@ -30,7 +31,9 @@ export default function AuthPage() {
   // Como no Messenger: a foto de quem já entrou neste PC aparece ao digitar o usuário.
   const known = mode === 'login' ? knownProfiles(base)[form.username.trim().toLowerCase()] : null;
   const [error, setError] = useState('');
+  const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
+  const options = useAuthOptions(serverUrl);
   const lockout = useLoginLock(form.username);
   const locked = mode !== 'register' && lockout.locked;
 
@@ -89,6 +92,12 @@ export default function AuthPage() {
   const switchTo = (m) => {
     setMode(m);
     setError('');
+    setNote('');
+  };
+  // Google: no navegador entra direto; no app do Windows o perfil local vira o da conta.
+  const google = async (res) => {
+    if (isDesktop) await localFromServer(res);
+    else await useStore.getState().enterWithToken(res.token, res.user);
   };
 
   return (
@@ -140,9 +149,20 @@ export default function AuthPage() {
             </button>
           </div>
 
+          {mode === 'forgot' ? (
+            <ForgotForm
+              base={serverUrl}
+              onBack={() => switchTo('login')}
+              onSent={(email) => {
+                switchTo('login');
+                setForm((f) => ({ ...f, username: email, password: '' }));
+                setNote('Se esse e-mail for de uma conta, o código chega em instantes. Entre com o e-mail e use o código no lugar da senha.');
+              }}
+            />
+          ) : (
           <form onSubmit={submit} className="auth-form">
             <label className="field">
-              <span>Usuário</span>
+              <span>{mode === 'register' ? 'Usuário' : 'Usuário ou e-mail'}</span>
               <input
                 value={form.username}
                 onChange={update('username')}
@@ -219,11 +239,26 @@ export default function AuthPage() {
               </div>
             )}
 
+            {note && !error && <p className="auth-note" role="status">{note}</p>}
             {locked ? <LoginLock left={lockout.left} /> : (error || localError) && <p className="error-text">{error || localError}</p>}
             <button className="go big-go" disabled={busy || locked}>
               {busy ? 'Aguarde…' : mode === 'login' ? 'Entrar' : mode === 'reset' ? 'Salvar e entrar' : isDesktop ? 'Criar perfil' : 'Criar conta'}
             </button>
+            {mode === 'login' && options.email && (
+              <button type="button" className="link-inline auth-forgot" onClick={() => switchTo('forgot')}>
+                Esqueci minha senha
+              </button>
+            )}
+            {mode !== 'reset' && options.google && (
+              <>
+                <div className="auth-or">
+                  <span>ou</span>
+                </div>
+                <GoogleButton base={serverUrl} onDone={google} onError={(e) => setError(e.message)} />
+              </>
+            )}
           </form>
+          )}
 
           {/* No celular/tablet: instalar como app (PWA) — botão ou o passo a passo do iPhone/iPad. */}
           {!isDesktop && <InstallCard />}

@@ -40,5 +40,7 @@ web-push-native = "0.5"
 # Música: proxy do áudio e download das ferramentas (yt-dlp/Deno)
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "stream", "http2"] }
 flate2 = "1"
+# E-mail (confirmar o e-mail da conta e o código de "esqueci a senha"), com o mesmo rustls/ring
+lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1", "tokio1-rustls", "rustls-no-provider", "webpki-roots"] }
 tar = "0.4"
 fs4 = "0.13"

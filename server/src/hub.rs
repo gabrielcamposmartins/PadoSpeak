@@ -122,6 +122,8 @@ struct HubState {
     activities: HashMap<String, (Value, ConnId)>,
     /// Horários dos últimos "chamar atenção" de cada usuário (limite por minuto).
     nudges: HashMap<String, VecDeque<i64>>,
+    /// Último som rápido de cada usuário (um a cada `sounds::COOLDOWN_MS`).
+    sound_last: HashMap<String, i64>,
     /// Nó local: a presença vai para todos os conectados (perfil do PC e convidados da rede).
     lan_mode: bool,
     /// Canais privados → (servidor, quem pode ver). Canal fora daqui é público.
@@ -130,9 +132,19 @@ struct HubState {
     users: HashMap<String, User>,
     /// Registro dos servidores (entradas e saídas da voz).
     audit_tx: Option<crate::audit::Sender>,
+    /// Quem perdeu a última conexão há pouco e ainda aparece online (ver `OFFLINE_GRACE_*`): a vez
+    /// (para o aviso atrasado saber se ainda vale), os servidores e os amigos que vão saber.
+    leaving: HashMap<String, (u64, HashSet<String>, HashSet<String>)>,
+    leaving_seq: u64,
 }
 
 pub const STATUSES: [&str; 4] = ["online", "away", "busy", "invisible"];
+/// O celular com o app em segundo plano perde a conexão (o sistema congela a página), e ela volta
+/// quando o app vem para a frente. Nesse intervalo a pessoa continua online: sem isso, os amigos
+/// recebiam "ficou online" toda vez que ela abria o app.
+const OFFLINE_GRACE_HIDDEN: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+/// Conexão que caiu com o app na tela (internet oscilando, app fechado): espera pouco.
+const OFFLINE_GRACE_VISIBLE: std::time::Duration = std::time::Duration::from_secs(45);
 /// Máximo de "chamar atenção" por usuário a cada minuto.
 const NUDGES_PER_MINUTE: usize = 3;
 /// Aparelhos mostrados por rede (uma rede com muito mais que isso é um IP dividido por muita gente).
@@ -619,6 +631,8 @@ impl Hub {
 
         {
             let mut s = self.state.lock().unwrap();
+            // Voltou dentro da folga: continua online, sem avisar ninguém de novo.
+            s.leaving.remove(&user.id);
             let first = !s.user_conns.contains_key(&user.id);
             s.user_conns.entry(user.id.clone()).or_default().insert(conn_id.clone());
             s.statuses.insert(user.id.clone(), my_status.clone());
@@ -727,6 +741,7 @@ impl Hub {
         if let Some(id) = session {
             crate::admin::touch_session(&app, id).await;
         }
+        let mut leaving = None;
         {
             let mut s = self.state.lock().unwrap();
             Self::leave_voice_locked(&mut s, &conn_id);
@@ -743,27 +758,55 @@ impl Hub {
                 if lost_activity {
                     s.activities.remove(&user.id);
                 }
-                if !now_offline && lost_activity && Self::visible(&s, &user.id) {
+                if lost_activity && Self::visible(&s, &user.id) {
                     let (guilds, friends) = Self::audience(&s, &user.id);
                     Self::presence(&s, &user.id, true, guilds, &friends);
                 }
                 if now_offline {
-                    let was_visible = Self::visible(&s, &user.id);
-                    s.user_conns.remove(&user.id);
-                    s.statuses.remove(&user.id);
-                    s.activities.remove(&user.id);
-                    if was_visible {
-                        Self::presence(&s, &user.id, false, c.guilds.clone(), &c.friends);
-                    }
-                    s.users.remove(&user.id);
+                    // Continua online por um tempo (o conjunto vazio de conexões ainda conta como
+                    // online); se não voltar, `finish_leaving` avisa que saiu.
+                    s.leaving_seq += 1;
+                    let seq = s.leaving_seq;
+                    s.leaving.insert(user.id.clone(), (seq, c.guilds.clone(), c.friends.clone()));
+                    leaving = Some((seq, if c.visible { OFFLINE_GRACE_VISIBLE } else { OFFLINE_GRACE_HIDDEN }));
                 }
                 if c.nearby {
                     Self::send_nearby(&s, &c.net.key);
                 }
             }
         }
+        if let Some((seq, grace)) = leaving {
+            let (hub, user_id) = (self.clone(), user.id.clone());
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = tokio::time::sleep(grace) => {}
+                    _ = hub.shutdown.cancelled() => {}
+                }
+                hub.finish_leaving(&user_id, seq);
+            });
+        }
         drop(tx);
         let _ = writer.await;
+    }
+
+    /// Fim da folga: se a pessoa não voltou, fica offline para os amigos e servidores.
+    fn finish_leaving(&self, user_id: &str, seq: u64) {
+        let mut s = self.state.lock().unwrap();
+        if s.leaving.get(user_id).is_none_or(|(n, _, _)| *n != seq) {
+            return;
+        }
+        let Some((_, guilds, friends)) = s.leaving.remove(user_id) else { return };
+        if s.user_conns.get(user_id).is_some_and(|set| !set.is_empty()) {
+            return;
+        }
+        let was_visible = Self::visible(&s, user_id);
+        s.user_conns.remove(user_id);
+        s.statuses.remove(user_id);
+        s.activities.remove(user_id);
+        if was_visible {
+            Self::presence(&s, user_id, false, guilds, &friends);
+        }
+        s.users.remove(user_id);
     }
 
     /// `music:add`: resolve o link e enfileira no canal de voz de quem enviou.
@@ -878,6 +921,8 @@ impl Hub {
                             body: preview,
                             tag: format!("dm:{}", dm.id),
                             url: format!("/?dm={}", dm.id),
+                            kind: "message",
+                            from: crate::push::Sender::of(user),
                         },
                     );
                     let res = app
@@ -927,8 +972,10 @@ impl Hub {
                     tokio::spawn(async move {
                         let said = crate::api::mentions(&plain_text(&content));
                         let body = format!("{}: {}", plain_text(&author.display_name), reply_preview(&content));
-                        notify_guild(&app, &ch.guild_id, &author.id, Some(&ch.id), &body, &format!("ch:{}", ch.id), &format!("/?channel={}", ch.id), |name, n| {
-                            n.wants_message(&ch.id, said.contains(&name.to_ascii_lowercase()))
+                        // @usuario ou @everyone: avisa mesmo quem pediu "só menções" ou silenciou o canal.
+                        let everyone = said.contains("everyone");
+                        notify_guild(&app, &ch.guild_id, &author, Some(&ch.id), &body, &format!("ch:{}", ch.id), &format!("/?channel={}", ch.id), |name, n| {
+                            n.wants_message(&ch.id, everyone || said.contains(&name.to_ascii_lowercase()))
                         })
                         .await;
                     });
@@ -1172,6 +1219,8 @@ impl Hub {
                             body: format!("{} chamou a sua atenção!", plain_text(&user.display_name)),
                             tag: format!("nudge:{target_id}"),
                             url: if dm { format!("/?dm={target_id}") } else { "/".into() },
+                            kind: "nudge",
+                            from: crate::push::Sender::of(user),
                         },
                     );
                 }
@@ -1235,9 +1284,13 @@ impl Hub {
                 if dm_users.is_none() && app.push.is_some() {
                     let (app, user, ch_id, guild_id) = (app.clone(), user.clone(), ch_id.clone(), guild_id.clone());
                     tokio::spawn(async move {
+                        // Os administradores desligaram o aviso de entrada neste canal.
+                        if !announces_join(&app, &ch_id).await {
+                            return;
+                        }
                         let name = channel_name(&app, &ch_id).await;
                         let body = format!("{} entrou em 🔊 {name}", plain_text(&user.display_name));
-                        notify_guild(&app, &guild_id, &user.id, Some(&ch_id), &body, &format!("voice:{ch_id}"), "/", |_, n| n.voice_join).await;
+                        notify_guild(&app, &guild_id, &user, Some(&ch_id), &body, &format!("voice:{ch_id}"), "/", |_, n| n.voice_join).await;
                     });
                 }
                 if let Some(other) = ringing {
@@ -1248,6 +1301,8 @@ impl Hub {
                             body: "está chamando você".into(),
                             tag: format!("call:{ch_id}"),
                             url: format!("/?dm={ch_id}"),
+                            kind: "call",
+                            from: crate::push::Sender::of(user),
                         },
                     );
                 }
@@ -1289,7 +1344,7 @@ impl Hub {
                     tokio::spawn(async move {
                         let name = channel_name(&app, &channel_id).await;
                         let body = format!("{} começou a transmitir em 🔊 {name}", plain_text(&me.user.display_name));
-                        notify_guild(&app, &me.guild_id, &me.user.id, Some(&channel_id), &body, &format!("stream:{channel_id}"), "/", |_, n| n.streams).await;
+                        notify_guild(&app, &me.guild_id, &me.user, Some(&channel_id), &body, &format!("stream:{channel_id}"), "/", |_, n| n.streams).await;
                     });
                 }
                 None
@@ -1542,6 +1597,35 @@ impl Hub {
                 None
             }
 
+            // Som rápido: todos no canal de voz (ou na chamada) ouvem.
+            "sound:play" => {
+                let sound_id = str_field("soundId");
+                let place = {
+                    let s = self.state.lock().unwrap();
+                    s.conn_voice.get(conn_id).and_then(|ch| s.voice.get(ch).and_then(|l| l.first()).map(|p| (ch.clone(), p.guild_id.clone(), p.dm_users.is_some())))
+                };
+                let Some((channel_id, guild_id, dm)) = place else {
+                    return err("Entre numa chamada para tocar um som");
+                };
+                if !dm && !crate::sounds::guild_allows(app, &guild_id).await {
+                    return err("Os sons rápidos estão desligados neste servidor");
+                }
+                let Some(sound) = crate::sounds::owned(app, &user.id, &sound_id).await else {
+                    return err("Som não encontrado");
+                };
+                let now = crate::now_ms();
+                let s = &mut *self.state.lock().unwrap();
+                if s.sound_last.get(&user.id).is_some_and(|t| now - t < crate::sounds::COOLDOWN_MS) {
+                    return err("Espere um pouquinho para tocar outro som");
+                }
+                s.sound_last.insert(user.id.clone(), now);
+                let msg = event("sound:play", json!({ "channelId": channel_id, "by": user, "sound": sound, "at": now }));
+                for p in s.voice.get(&channel_id).into_iter().flatten() {
+                    Self::send_to(s, &p.peer_id, msg.clone());
+                }
+                Some(json!({ "ok": true }))
+            }
+
             // O app foi para segundo plano (ou voltou): decide se as notificações vão por push.
             "app:visibility" => {
                 let visible = d.get("visible").and_then(Value::as_bool).unwrap_or(true);
@@ -1584,6 +1668,16 @@ pub async fn ws_handler(
     ws.max_message_size(256 * 1024).on_upgrade(move |socket| hub.run(app, socket, user, net))
 }
 
+/// O canal de voz avisa os membros quando alguém entra?
+async fn announces_join(app: &App, channel_id: &str) -> bool {
+    app.db
+        .query_one("SELECT announce_join FROM channels WHERE id = ?1", [channel_id], |r| r.get::<i64>(0))
+        .await
+        .ok()
+        .flatten()
+        .is_none_or(|v| v != 0)
+}
+
 /// Nome de um canal (para os avisos).
 async fn channel_name(app: &App, channel_id: &str) -> String {
     app.db
@@ -1600,7 +1694,7 @@ async fn channel_name(app: &App, channel_id: &str) -> String {
 pub async fn notify_guild(
     app: &Arc<App>,
     guild_id: &str,
-    except: &str,
+    from: &User,
     channel_id: Option<&str>,
     body: &str,
     tag: &str,
@@ -1614,11 +1708,21 @@ pub async fn notify_guild(
         .ok()
         .flatten()
         .unwrap_or_else(|| "PadoSpeak".into());
-    for (user_id, username, settings) in crate::api::notify_audience(app, guild_id, except).await {
+    for (user_id, username, settings) in crate::api::notify_audience(app, guild_id, &from.id).await {
         if channel_id.is_some_and(|c| !app.hub.user_can_see(c, &user_id)) || !wants(&username, &settings) {
             continue;
         }
-        app.push_to(&user_id, crate::push::Note { title: title.clone(), body: body.to_string(), tag: tag.to_string(), url: url.to_string() });
+        app.push_to(
+            &user_id,
+            crate::push::Note {
+                title: title.clone(),
+                body: body.to_string(),
+                tag: tag.to_string(),
+                url: url.to_string(),
+                kind: "guild",
+                from: crate::push::Sender::of(from),
+            },
+        );
     }
 }
 

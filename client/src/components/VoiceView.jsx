@@ -360,7 +360,12 @@ function DiagCard({ onClose }) {
   );
 }
 
-export default function VoiceView({ channel }) {
+/**
+ * Palco da chamada. `variant="call"`: dentro da tela de chamada do celular (CallScreen), que tem o
+ * próprio cabeçalho e os próprios botões.
+ */
+export default function VoiceView({ channel, variant }) {
+  const callScreen = variant === 'call';
   const useC = useConn();
   const voice = useC((s) => s.voice);
   const me = useC((s) => s.me);
@@ -489,7 +494,7 @@ export default function VoiceView({ channel }) {
 
   return (
     <div className="voice-view stage">
-      {!channel.dm && (
+      {!channel.dm && !callScreen && (
         <header className="stage-head">
           {phone && <MobileBack />}
           <Volume2 size={20} />
@@ -535,6 +540,7 @@ export default function VoiceView({ channel }) {
         {showDiag && <DiagCard onClose={() => setShowDiag(false)} />}
       </div>
 
+      {!callScreen && (
       <div className="voice-controls">
         <div className="dock">
           <button
@@ -638,6 +644,7 @@ export default function VoiceView({ channel }) {
           </button>
         </div>
       </div>
+      )}
     </div>
   );
 }

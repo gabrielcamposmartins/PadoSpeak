@@ -141,12 +141,14 @@ pub struct Guild {
     pub msg_color_mode: String,
     /// Som para todos quando alguém é movido de canal de voz.
     pub move_sound: bool,
+    /// Sons rápidos ligados nos canais de voz do servidor.
+    pub sounds: bool,
 }
 
 pub const GUILD_COLS: &str = "g.id, g.name, g.icon_color, g.owner_id, g.invite_code, g.icon_at, g.default_perms, g.file_ttl_ms, \
-     g.voice_ttl_ms, g.background_at, g.msg_color, g.msg_color_mode, g.move_sound";
+     g.voice_ttl_ms, g.background_at, g.msg_color, g.msg_color_mode, g.move_sound, g.sounds";
 /// Quantas colunas `GUILD_COLS` ocupa (as seguintes começam neste índice).
-pub const GUILD_COLS_LEN: i32 = 13;
+pub const GUILD_COLS_LEN: i32 = 14;
 pub fn guild_from_row(r: &Row) -> DbResult<Guild> {
     let id: String = r.get(0)?;
     let icon_at: Option<i64> = r.get(5)?;
@@ -164,6 +166,7 @@ pub fn guild_from_row(r: &Row) -> DbResult<Guild> {
         msg_color: r.get(10)?,
         msg_color_mode: r.get(11)?,
         move_sound: r.get::<i64>(12)? != 0,
+        sounds: r.get::<i64>(13)? != 0,
     })
 }
 
@@ -178,9 +181,12 @@ pub struct Channel {
     pub position: i64,
     /// Só quem tem acesso (e o dono/admins) vê o canal.
     pub private: bool,
+    /// Canal de voz: quem entra gera o aviso "X entrou em 🔊 canal" para os membros que pediram esse
+    /// aviso. Desligado pelos administradores, ninguém é avisado das entradas neste canal.
+    pub announce_join: bool,
 }
 
-pub const CHANNEL_COLS: &str = "c.id, c.guild_id, c.name, c.type, c.position, c.private";
+pub const CHANNEL_COLS: &str = "c.id, c.guild_id, c.name, c.type, c.position, c.private, c.announce_join";
 pub fn channel_from_row(r: &Row) -> DbResult<Channel> {
     Ok(Channel {
         id: r.get(0)?,
@@ -189,6 +195,7 @@ pub fn channel_from_row(r: &Row) -> DbResult<Channel> {
         kind: r.get(3)?,
         position: r.get(4)?,
         private: r.get::<i64>(5)? != 0,
+        announce_join: r.get::<i64>(6)? != 0,
     })
 }
 

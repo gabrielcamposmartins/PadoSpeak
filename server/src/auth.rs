@@ -19,7 +19,7 @@ pub async fn verify_password(password: String, hash: String) -> bool {
 }
 
 /// Código temporário legível (sem letras que confundem: 0/O, 1/I/L), no formato `ABCD-EFGH`.
-fn temp_code() -> String {
+pub fn temp_code() -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
     // bytes aleatórios do UUID v4 (o gerador seguro do sistema)
     let bytes = *uuid::Uuid::new_v4().as_bytes();

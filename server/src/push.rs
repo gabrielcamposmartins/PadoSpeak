@@ -43,6 +43,38 @@ pub struct Note {
     pub tag: String,
     /// Para onde o app vai ao tocar na notificação.
     pub url: String,
+    /// "message", "call", "nudge", "friend" ou "guild": o celular escolhe a vibração (a chamada toca
+    /// até a pessoa atender ou recusar).
+    pub kind: &'static str,
+    /// Quem fez (a foto vira o ícone da notificação).
+    pub from: Option<Sender>,
+}
+
+/// Foto de quem mandou; sem foto, o aparelho desenha a inicial na cor da pessoa.
+pub struct Sender {
+    pub avatar: Option<String>,
+    pub color: String,
+    pub initial: String,
+}
+
+impl Sender {
+    pub fn of(user: &crate::models::User) -> Option<Self> {
+        let name = crate::models::plain_text(&user.display_name);
+        let initial = name.trim().chars().next().or_else(|| user.username.chars().next()).unwrap_or('?');
+        Some(Self { avatar: user.avatar_url.clone(), color: user.avatar_color.clone(), initial: initial.to_uppercase().collect() })
+    }
+}
+
+impl Note {
+    pub fn payload(&self) -> Value {
+        let mut v = json!({ "title": self.title, "body": self.body, "tag": self.tag, "url": self.url, "kind": self.kind });
+        if let Some(f) = &self.from {
+            v["icon"] = json!(f.avatar);
+            v["color"] = json!(f.color);
+            v["initial"] = json!(f.initial);
+        }
+        v
+    }
 }
 
 impl Push {
@@ -74,7 +106,7 @@ impl Push {
                 )
                 .await
                 .unwrap_or_default();
-            let payload = json!({ "title": note.title, "body": note.body, "tag": note.tag, "url": note.url }).to_string();
+            let payload = note.payload().to_string();
             for (endpoint, p256dh, auth) in subs {
                 match me.deliver(&endpoint, &p256dh, &auth, &payload).await {
                     // Inscrição cancelada ou vencida: o aparelho não quer mais avisos.
@@ -203,5 +235,33 @@ mod tests {
         assert!(!String::from_utf8_lossy(req.body()).contains("Bia"), "conteúdo vai cifrado");
         let opened = web_push_native::decrypt(req.body().clone(), &ua_secret, &Auth::clone_from_slice(&auth)).unwrap();
         assert_eq!(String::from_utf8(opened).unwrap(), payload);
+    }
+
+    #[test]
+    fn notificacao_leva_a_foto_de_quem_mandou() {
+        let mut bia = crate::models::User {
+            id: "u1".into(),
+            username: "bia".into(),
+            display_name: "[cor=#ff0000]**bia**[/cor]".into(),
+            avatar_color: "#3366cc".into(),
+            avatar_url: Some("/api/users/u1/avatar?v=5".into()),
+            bio: String::new(),
+            name_color: None,
+            bio_color: None,
+            banner_color: None,
+            lan: false,
+            message_color: None,
+        };
+        let note = |from| Note { title: "Bia".into(), body: "oi".into(), tag: "dm:1".into(), url: "/?dm=1".into(), kind: "message", from };
+        let v = note(Sender::of(&bia)).payload();
+        assert_eq!(v["kind"], "message");
+        assert_eq!(v["icon"], "/api/users/u1/avatar?v=5");
+        assert_eq!(v["initial"], "B");
+        bia.avatar_url = None;
+        let v = note(Sender::of(&bia)).payload();
+        assert!(v["icon"].is_null());
+        assert_eq!(v["color"], "#3366cc");
+        // Aviso do sistema (sem pessoa): o ícone do PadoSpeak.
+        assert!(note(None).payload().get("initial").is_none());
     }
 }

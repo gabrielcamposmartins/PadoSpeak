@@ -28,7 +28,7 @@ import AttachSheet from './AttachSheet.jsx';
 import { addRecent } from '../lib/recent.js';
 import { useConn, useConnKey } from './conn.jsx';
 import Avatar, { UserName, Orb, usePresence, useUser, colorClass, colorStyle } from './Avatar.jsx';
-import { RichText, FormattedText, plain, EmojiText, EmojiPicker, Floating, insertText, EMOTES } from './Emotes.jsx';
+import { RichText, FormattedText, plain, EmojiText, EmojiPicker, Floating, insertText, EMOTES, mentionsUser } from './Emotes.jsx';
 import { useLayout, isTouch } from '../lib/layout.js';
 
 /** Abre o perfil de alguém desta conexão (servidor ou PC da rede). */
@@ -359,6 +359,8 @@ function Message({ m, head, canEdit: canEditText, canDelete, onReply, me, receip
   const voice = !sticker && !parsedFile && parseVoice(m.content);
   const caption = sticker?.caption || parsedFile?.caption || '';
   const canEdit = canEditText && !sticker && !parsedFile && !voice;
+  // Mensagem de outra pessoa que fala comigo (@meu_usuario ou @everyone): fica destacada.
+  const mentionsMe = m.author?.id !== me?.id && mentionsUser(plain(m.content), me?.username);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(m.content);
   const useC = useConn();
@@ -416,7 +418,7 @@ function Message({ m, head, canEdit: canEditText, canDelete, onReply, me, receip
     <div
       ref={rowRef}
       id={`msg-${m.id}`}
-      className={`msg${head ? ' head' : ''}${toolsOpen ? ' tools-open' : ''}`}
+      className={`msg${head ? ' head' : ''}${toolsOpen ? ' tools-open' : ''}${mentionsMe ? ' mentioned' : ''}`}
       {...longPress}
     >
       {/* A fotinha de quem escreveu, nos canais e nas conversas privadas. */}
@@ -460,14 +462,14 @@ function Message({ m, head, canEdit: canEditText, canDelete, onReply, me, receip
               <VoiceNote voice={voice} />
             ) : color ? (
               <span className="tc msg-color" style={{ '--tc': color }}>
-                <RichText text={m.content} />
+                <RichText text={m.content} me={me?.username} />
               </span>
             ) : (
-              <RichText text={m.content} />
+              <RichText text={m.content} me={me?.username} />
             )}
             {caption && (
               <div className={`caption${color ? ' tc msg-color' : ''}`} style={color ? { '--tc': color } : undefined}>
-                <RichText text={caption} />
+                <RichText text={caption} me={me?.username} />
               </div>
             )}
             {m.editedAt && <span className="edited">(editado)</span>}
@@ -672,6 +674,8 @@ export default function ChatView({ channel, variant = 'channel' }) {
   const [uploads, setUploads] = useState([]); // arquivos sendo enviados
   const [dragging, setDragging] = useState(false);
   const [attach, setAttach] = useState([]); // anexos esperando o envio (arquivos e sticker), acima da caixa
+  // Marca (ou desmarca) um anexo como NSFW antes de enviar: chega borrado para todos, no privado e nos canais.
+  const toggleNsfw = (i) => setAttach((a) => a.map((it, j) => (j === i ? { ...it, nsfw: !it.nsfw } : it)));
   const [camera, setCamera] = useState(false);
   const [recording, setRecording] = useState(false);
   const connKey = useConnKey();
@@ -834,8 +838,63 @@ export default function ChatView({ channel, variant = 'channel' }) {
     if (!ok) setText(content);
   }
 
+  // Menção: "@" seguido do começo do nome, logo antes do cursor, abre a lista de membros.
+  const [mention, setMention] = useState(null); // { start, query, index }
+  const mentionItems = useMemo(() => {
+    if (!mention || !members) return [];
+    const q = mention.query.toLowerCase();
+    const list = members
+      .filter((u) => u.id !== me.id)
+      .filter((u) => !q || u.username.toLowerCase().startsWith(q) || plain(u.displayName).toLowerCase().includes(q))
+      .sort((a, b) => a.username.localeCompare(b.username))
+      .slice(0, 7)
+      .map((u) => ({ key: u.id, username: u.username, user: u }));
+    if ('everyone'.startsWith(q)) list.unshift({ key: 'everyone', username: 'everyone' });
+    return list;
+  }, [mention, members, me.id]);
+  const findMention = (value, caret) => {
+    if (!members) return setMention(null);
+    const m = /(^|[^\w.@])@([A-Za-z0-9_.]{0,32})$/.exec(value.slice(0, caret));
+    setMention(m ? { start: caret - m[2].length - 1, query: m[2], index: 0 } : null);
+  };
+  const pickMention = (item) => {
+    const el = inputRef.current;
+    if (!el || !mention || !item) return;
+    const caret = el.selectionStart;
+    const next = `${text.slice(0, mention.start)}@${item.username} ${text.slice(caret)}`.slice(0, MAX);
+    const pos = Math.min(next.length, mention.start + item.username.length + 2);
+    setText(next);
+    setMention(null);
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(pos, pos);
+    });
+  };
+  /** Teclas da lista de menções: setas escolhem, Enter/Tab colocam, Esc fecha. */
+  const mentionKey = (e) => {
+    if (!mention || !mentionItems.length) return false;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const d = e.key === 'ArrowDown' ? 1 : -1;
+      setMention((m) => ({ ...m, index: (m.index + d + mentionItems.length) % mentionItems.length }));
+      return true;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      pickMention(mentionItems[mention.index] || mentionItems[0]);
+      return true;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      setMention(null);
+      return true;
+    }
+    return false;
+  };
+
   function onChange(e) {
     setText(e.target.value);
+    findMention(e.target.value, e.target.selectionStart);
     const now = Date.now();
     if (now - lastTyping.current > 3000 && e.target.value) {
       lastTyping.current = now;
@@ -947,12 +1006,15 @@ export default function ChatView({ channel, variant = 'channel' }) {
       maxLength={MAX}
       onChange={onChange}
       onKeyDown={(e) => {
+        if (mentionKey(e)) return;
         if (formatKey(e, inputRef.current, text, setText, MAX)) return;
         if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
           e.preventDefault();
           send();
         } else if (e.key === 'Escape' && reply) setReply(null);
       }}
+      onClick={(e) => findMention(e.currentTarget.value, e.currentTarget.selectionStart)}
+      onBlur={() => setTimeout(() => setMention(null), 150)}
       onPaste={(e) => {
         // Colar uma imagem (print) ou arquivos copiados envia como arquivo.
         const files = [...(e.clipboardData?.files || [])];
@@ -1036,6 +1098,41 @@ export default function ChatView({ channel, variant = 'channel' }) {
     </div>
   ) : (
     <div className="compose-row">
+      {mention && mentionItems.length > 0 && (
+        <div className="mention-pick" role="listbox" aria-label="Mencionar">
+          <div className="mention-pick-head">Mencionar</div>
+          {mentionItems.map((it, i) => (
+            <button
+              key={it.key}
+              type="button"
+              role="option"
+              aria-selected={i === mention.index}
+              className={i === mention.index ? 'on' : ''}
+              onMouseDown={(e) => e.preventDefault()}
+              onMouseEnter={() => setMention((m) => ({ ...m, index: i }))}
+              onClick={() => pickMention(it)}
+            >
+              {it.user ? (
+                <>
+                  <Avatar user={it.user} size={22} frame={false} />
+                  <span className="mp-name">
+                    <UserName user={it.user} />
+                  </span>
+                  <small>@{it.username}</small>
+                </>
+              ) : (
+                <>
+                  <span className="mp-all" aria-hidden="true">
+                    @
+                  </span>
+                  <span className="mp-name">@everyone</span>
+                  <small>avisa todos que veem este canal</small>
+                </>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
       {aaBtn}
       {textarea}
       {sendBtn}
@@ -1071,7 +1168,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
             items={attach}
             onRemove={(i) => setAttach((a) => a.filter((_, j) => j !== i))}
             onClear={() => setAttach([])}
-            onNsfw={(i) => setAttach((a) => a.map((it, j) => (j === i ? { ...it, nsfw: !it.nsfw } : it)))}
+            onNsfw={toggleNsfw}
           />
           {showTools && (
             <div className="panel-head tools-head">
@@ -1105,7 +1202,12 @@ export default function ChatView({ channel, variant = 'channel' }) {
         </div>
         <UploadList uploads={uploads} />
         {replyBar}
-        <AttachTray items={attach} onRemove={(i) => setAttach((a) => a.filter((_, j) => j !== i))} onClear={() => setAttach([])} />
+        <AttachTray
+          items={attach}
+          onRemove={(i) => setAttach((a) => a.filter((_, j) => j !== i))}
+          onClear={() => setAttach([])}
+          onNsfw={toggleNsfw}
+        />
         {showTools && tools}
         {composeRow}
         <div className="count">

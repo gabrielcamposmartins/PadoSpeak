@@ -12,6 +12,21 @@ export function plain(text) {
 /** Tamanho que aparece na tela (as tags não contam). */
 export const visibleLength = (text) => [...plain(text)].length;
 
+/** `@usuario` (letras, números, _ e .) ou `@everyone`, sem colar em outra palavra ou e-mail. */
+export const MENTION_RE = /(?<![\w.@])@(everyone|[A-Za-z0-9_.]*[A-Za-z0-9_])/;
+
+/** O texto menciona `username` (ou todos, com @everyone)? */
+export function mentionsUser(text, username) {
+  if (!text || !username) return false;
+  const me = username.toLowerCase();
+  const re = new RegExp(MENTION_RE.source, 'g');
+  for (const m of String(text).matchAll(re)) {
+    const who = m[1].toLowerCase();
+    if (who === 'everyone' || who === me) return true;
+  }
+  return false;
+}
+
 
 /** As 8 cores principais do texto (Ctrl+1…8), personalizáveis nas configurações. */
 export const DEFAULT_PALETTE = ['#e2331f', '#e8781a', '#c79100', '#2e9e1a', '#0f9f9a', '#1a7fc4', '#7b44c8', '#d6418f'];

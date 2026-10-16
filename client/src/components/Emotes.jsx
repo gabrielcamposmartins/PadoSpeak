@@ -1,10 +1,10 @@
 // Emoticons no estilo Aero (desenhos próprios em SVG, com brilho de vidro) e o texto formatado das mensagens.
 import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { plain, visibleLength, paletteOf, colorSpans } from '../lib/text.js';
+import { plain, visibleLength, paletteOf, colorSpans, MENTION_RE, mentionsUser } from '../lib/text.js';
 import { useStore } from '../store.js';
 
-export { plain, visibleLength };
+export { plain, visibleLength, mentionsUser };
 
 const INK = '#6b3d00';
 const line = { fill: 'none', stroke: INK, strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' };
@@ -332,6 +332,32 @@ export const EMOTES = [
     ),
   },
   {
+    code: '(V)',
+    name: 'Certo',
+    draw: (id) => (
+      <Glossy
+        id={id}
+        d="M3.5 17.2 L9.4 11.6 L13.6 15.8 L22.8 4.8 L28.6 10.2 L13.8 27 Z"
+        colors={['#e2ffb4', '#5fcf2a', '#2a930c']}
+        stroke="#1f6e07"
+        gloss={[21.5, 8.6, 2.6, 1.2]}
+      />
+    ),
+  },
+  {
+    code: '(X)',
+    name: 'Errado',
+    draw: (id) => (
+      <Glossy
+        id={id}
+        d="M5 10 L10 5 L16 11 L22 5 L27 10 L21 16 L27 22 L22 27 L16 21 L10 27 L5 22 L11 16 Z"
+        colors={['#ffc9bf', '#f0452f', '#b3150b']}
+        stroke="#860e06"
+        gloss={[11.5, 8.8, 2.4, 1.1]}
+      />
+    ),
+  },
+  {
     code: '(PADO)',
     name: 'Gorro do Pado',
     draw: () => (
@@ -406,9 +432,15 @@ const FORMAT_RULES = [
 ];
 const LINK_RULE = { re: /https?:\/\/[^\s<]+/, link: true };
 const EMOTE_RULE = { re: EMOTE_RE, emote: true };
+const MENTION_RULE = { re: MENTION_RE, mention: true };
 
 function parse(text, opts, key = 'k') {
-  const rules = [...(opts.format ? FORMAT_RULES : []), ...(opts.links ? [LINK_RULE] : []), EMOTE_RULE];
+  const rules = [
+    ...(opts.format ? FORMAT_RULES : []),
+    ...(opts.links ? [LINK_RULE] : []),
+    ...(opts.mentions ? [MENTION_RULE] : []),
+    EMOTE_RULE,
+  ];
   const out = [];
   let rest = text;
   let n = 0;
@@ -426,6 +458,15 @@ function parse(text, opts, key = 'k') {
     if (m.index > 0) out.push(rest.slice(0, m.index));
     const k = `${key}.${n++}`;
     if (rule.emote) out.push(<Emote key={k} code={m[0]} size={opts.emoteSize} />);
+    else if (rule.mention) {
+      const who = m[1].toLowerCase();
+      const mine = who === 'everyone' || who === opts.me;
+      out.push(
+        <span key={k} className={`mention${who === 'everyone' ? ' everyone' : ''}${mine ? ' me' : ''}`}>
+          {m[0]}
+        </span>,
+      );
+    }
     else if (rule.link)
       out.push(
         <a key={k} href={m[0]} target="_blank" rel="noreferrer noopener">
@@ -447,9 +488,12 @@ function parse(text, opts, key = 'k') {
   return out.map((x, i) => (typeof x === 'string' ? <Fragment key={`${key}t${i}`}>{x}</Fragment> : x));
 }
 
-/** Mensagem: **negrito**, *itálico*, __sublinhado__, ~~riscado~~, [cor=#hex]…[/cor], links e emoticons. */
-export function RichText({ text }) {
-  return parse(text, { format: true, links: true, emoteSize: 22 });
+/**
+ * Mensagem: **negrito**, *itálico*, __sublinhado__, ~~riscado~~, [cor=#hex]…[/cor], links, emoticons e
+ * menções (@usuario, @everyone — as que falam comigo, `me`, ficam mais fortes).
+ */
+export function RichText({ text, me }) {
+  return parse(text, { format: true, links: true, mentions: true, me: me?.toLowerCase(), emoteSize: 22 });
 }
 
 /** Nome e mensagem pessoal: formatação, cores e emoticons (sem links). */

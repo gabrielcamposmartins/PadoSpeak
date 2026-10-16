@@ -19,7 +19,7 @@ const COLORS: [&str; 10] = [
     "#5865f2", "#57f287", "#fee75c", "#eb459e", "#ed4245", "#3ba55c", "#faa61a", "#9b59b6", "#1abc9c", "#e67e22",
 ];
 
-fn random_color() -> String {
+pub fn random_color() -> String {
     COLORS[uuid::Uuid::new_v4().as_bytes()[0] as usize % COLORS.len()].to_string()
 }
 fn new_id() -> String {
@@ -383,6 +383,10 @@ async fn register(
     if !valid {
         return Err(bad("Usuário deve ter 3–24 caracteres (letras, números, _ ou .)"));
     }
+    // "@everyone" avisa todos do canal: ninguém pode ter esse nome.
+    if username.eq_ignore_ascii_case("everyone") {
+        return Err(ApiError::new(StatusCode::CONFLICT, "Nome de usuário já em uso"));
+    }
     if body.password.chars().count() < 6 {
         return Err(bad("A senha deve ter pelo menos 6 caracteres"));
     }
@@ -419,18 +423,16 @@ async fn login(
     let limiter = &crate::ratelimit::LOGIN;
     limiter.check(&ip, &body.username, crate::now_ms()).map_err(LoginError::Limited)?;
     let wrong = || login_failed(&ip, &body.username, "Usuário ou senha incorretos");
-    let sql = format!("SELECT {USER_COLS}, u.password_hash, u.must_reset FROM users u WHERE u.username = ?1");
-    let found = app
-        .db
-        .query_one(&sql, [body.username.trim()], |r| {
-            Ok((user_from_row(r)?, r.get::<String>(USER_COLS_LEN)?, r.get::<i64>(USER_COLS_LEN + 1)? != 0))
-        })
-        .await?;
-    let Some((user, hash, must_reset)) = found else {
+    // Pelo nome de usuário ou pelo e-mail confirmado da conta.
+    let Some((user, hash, mut must_reset)) = crate::account::find_login(&app, &body.username).await? else {
         return Err(wrong());
     };
     if !auth::verify_password(body.password.clone(), hash).await {
-        return Err(wrong());
+        // "Esqueci a senha": o código mandado por e-mail vale no lugar da senha (e pede uma senha nova).
+        if !crate::account::check_reset_code(&app, &user.id, &body.password).await? {
+            return Err(wrong());
+        }
+        must_reset = true;
     }
     limiter.success(&ip, &body.username);
     // Senha redefinida pelo administrador: entrou com o código, agora precisa criar uma senha nova.
@@ -568,17 +570,12 @@ async fn new_password(
     if body.new_password.chars().count() < 6 {
         return Err(bad("A senha deve ter pelo menos 6 caracteres").into());
     }
-    let sql = format!("SELECT {USER_COLS}, u.password_hash, u.must_reset FROM users u WHERE u.username = ?1");
-    let found = app
-        .db
-        .query_one(&sql, [body.username.trim()], |r| {
-            Ok((user_from_row(r)?, r.get::<String>(USER_COLS_LEN)?, r.get::<i64>(USER_COLS_LEN + 1)? != 0))
-        })
-        .await?;
-    let Some((user, hash, must_reset)) = found else {
+    let Some((user, hash, must_reset)) = crate::account::find_login(&app, &body.username).await? else {
         return Err(wrong());
     };
-    if !must_reset || !auth::verify_password(body.password.clone(), hash).await {
+    // O código do administrador (senha redefinida) ou o do "esqueci a senha" (por e-mail).
+    let by_admin = must_reset && auth::verify_password(body.password.clone(), hash).await;
+    if !by_admin && !crate::account::check_reset_code(&app, &user.id, &body.password).await? {
         return Err(wrong());
     }
     if body.new_password == body.password {
@@ -589,6 +586,7 @@ async fn new_password(
     app.db
         .execute("UPDATE users SET password_hash = ?1, must_reset = 0 WHERE id = ?2", (new_hash.as_str(), user.id.as_str()))
         .await?;
+    crate::account::clear_reset_code(&app, &user.id).await?;
     let token = auth::create_session(&app.db, &user.id).await?;
     Ok(Json(json!({ "token": token, "user": user })))
 }
@@ -700,7 +698,7 @@ async fn join_guild(
             let (app, user, guild_id) = (app.clone(), user.clone(), guild_id.clone());
             tokio::spawn(async move {
                 let body = format!("{} entrou no servidor", crate::models::plain_text(&user.display_name));
-                crate::hub::notify_guild(&app, &guild_id, &user.id, None, &body, &format!("member:{guild_id}"), "/", |_, n| n.members).await;
+                crate::hub::notify_guild(&app, &guild_id, &user, None, &body, &format!("member:{guild_id}"), "/", |_, n| n.members).await;
             });
         }
     }
@@ -886,6 +884,10 @@ async fn update_guild(
     if let Some(on) = body.get("moveSound").and_then(Value::as_bool) {
         app.db.execute("UPDATE guilds SET move_sound = ?1 WHERE id = ?2", libsql::params![on as i64, id.as_str()]).await?;
         changes.insert("moveSound".into(), json!(on));
+    }
+    if let Some(on) = body.get("sounds").and_then(Value::as_bool) {
+        app.db.execute("UPDATE guilds SET sounds = ?1 WHERE id = ?2", libsql::params![on as i64, id.as_str()]).await?;
+        changes.insert("sounds".into(), json!(on));
     }
     if !changes.is_empty() {
         app.audit(crate::audit::Entry::new(&id, "settings.guild", &user.id).detail(Value::Object(changes)));
@@ -1101,6 +1103,7 @@ async fn create_channel(
         kind: kind.to_string(),
         position: g.channels.iter().filter(|c| c.kind == kind).count() as i64,
         private: false,
+        announce_join: true,
     };
     app.db
         .execute(
@@ -1131,11 +1134,14 @@ async fn delete_channel(State(app): AppState, AuthUser(user, _): AuthUser, Path(
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ChannelPatch {
-    name: String,
+    name: Option<String>,
+    /// Canal de voz: avisar os membros quando alguém entra.
+    announce_join: Option<bool>,
 }
 
-/// Renomeia um canal (quem pode criar/editar canais).
+/// Renomeia um canal ou liga/desliga o aviso de entrada (quem pode criar/editar canais).
 async fn update_channel(
     State(app): AppState,
     AuthUser(user, _): AuthUser,
@@ -1144,16 +1150,26 @@ async fn update_channel(
 ) -> ApiResult<Json<Channel>> {
     let mut ch = channel_with_access(&app, &id, &user.id).await.ok_or_else(|| not_found("Canal não encontrado"))?;
     require_perm(&app, &ch.guild_id, &user.id, perm::CHANNELS, "Você não tem permissão para editar canais").await?;
-    let mut name: String = body.name.trim().chars().take(32).collect();
-    if ch.kind == "text" {
-        name = name.to_lowercase().split_whitespace().collect::<Vec<_>>().join("-");
+    if let Some(name) = &body.name {
+        let mut name: String = name.trim().chars().take(32).collect();
+        if ch.kind == "text" {
+            name = name.to_lowercase().split_whitespace().collect::<Vec<_>>().join("-");
+        }
+        if name.is_empty() {
+            return Err(bad("Nome obrigatório"));
+        }
+        app.db.execute("UPDATE channels SET name = ?1 WHERE id = ?2", [name.as_str(), id.as_str()]).await?;
+        app.audit(crate::audit::Entry::new(&ch.guild_id, "settings.channel_rename", &user.id).channel(&ch.id).detail(json!({ "from": ch.name, "to": name })));
+        ch.name = name;
     }
-    if name.is_empty() {
-        return Err(bad("Nome obrigatório"));
+    if let Some(on) = body.announce_join.filter(|on| *on != ch.announce_join) {
+        if ch.kind != "voice" {
+            return Err(bad("Só canais de voz avisam quando alguém entra"));
+        }
+        app.db.execute("UPDATE channels SET announce_join = ?1 WHERE id = ?2", libsql::params![on as i64, id.as_str()]).await?;
+        app.audit(crate::audit::Entry::new(&ch.guild_id, "settings.channel_announce", &user.id).channel(&ch.id).detail(json!({ "on": on })));
+        ch.announce_join = on;
     }
-    app.db.execute("UPDATE channels SET name = ?1 WHERE id = ?2", [name.as_str(), id.as_str()]).await?;
-    app.audit(crate::audit::Entry::new(&ch.guild_id, "settings.channel_rename", &user.id).channel(&ch.id).detail(json!({ "from": ch.name, "to": name })));
-    ch.name = name;
     app.hub.to_channel(&ch.guild_id, &ch.id, "channel:updated", &ch);
     Ok(Json(ch))
 }
