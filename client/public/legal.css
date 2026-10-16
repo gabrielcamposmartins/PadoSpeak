@@ -1,0 +1,162 @@
+/* Páginas de Privacidade e Termos: o céu do PadoSpeak no alto e uma folha de vidro para o texto. */
+:root {
+  --font: 'Segoe UI', 'Istok Web', system-ui, -apple-system, sans-serif;
+  --page: #eaf6fe;
+  --page-img: linear-gradient(180deg, #d4ecfb 0%, #eef8ff 55%, #f7fcff 100%);
+  --sky: radial-gradient(120% 160% at 82% -40%, rgba(255, 255, 255, 0.85) 0%, rgba(255, 255, 255, 0) 42%),
+    linear-gradient(180deg, #0d6cc0 0%, #3ea3e6 70%, #6fc5ef 100%);
+  --text: #10324d;
+  --muted: #4c6d86;
+  --head: #1b5b88;
+  --link: #0a62ad;
+  --sheet: rgba(255, 255, 255, 0.92);
+  --border: #a9cfe9;
+  --row: #f2f9fe;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #0a1f3a;
+    --page-img: linear-gradient(180deg, #071a33 0%, #0a223f 55%, #08182c 100%);
+    --sky: radial-gradient(60% 150% at 84% -30%, rgba(160, 220, 255, 0.5) 0%, rgba(160, 220, 255, 0) 45%),
+      linear-gradient(180deg, #030c22 0%, #0b2a5c 70%, #13508a 100%);
+    --text: #e8f4ff;
+    --muted: #9ec3e0;
+    --head: #7fd0ff;
+    --link: #7fd0ff;
+    --sheet: rgba(13, 36, 66, 0.92);
+    --border: rgba(127, 208, 255, 0.3);
+    --row: rgba(120, 190, 255, 0.07);
+    color-scheme: dark;
+  }
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: var(--page);
+  background-image: var(--page-img);
+  background-attachment: fixed;
+  color: var(--text);
+  font: 16px/1.6 var(--font);
+}
+a {
+  color: var(--link);
+}
+.sky {
+  background: var(--sky);
+  color: #fff;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 20px;
+  padding: 18px max(16px, calc((100% - 860px) / 2)) 64px;
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: #fff;
+  font-size: 24px;
+  font-weight: 800;
+  text-decoration: none;
+  text-shadow: 0 1px 3px rgba(0, 30, 70, 0.4);
+}
+.brand em {
+  font-style: normal;
+  color: #c9efff;
+}
+.sky nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.sky nav a {
+  color: #fff;
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.14);
+}
+.sky nav a[aria-current='page'] {
+  background: rgba(255, 255, 255, 0.92);
+  color: #0b4f86;
+}
+.sheet {
+  max-width: 860px;
+  margin: -44px auto 0;
+  padding: 28px clamp(18px, 4vw, 44px) 36px;
+  background: var(--sheet);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 10px 30px rgba(10, 70, 120, 0.16);
+}
+@media (max-width: 900px) {
+  .sheet {
+    margin-left: 12px;
+    margin-right: 12px;
+  }
+}
+h1 {
+  margin: 0;
+  font-size: 30px;
+  line-height: 1.2;
+}
+h2 {
+  margin: 30px 0 8px;
+  font-size: 19px;
+  color: var(--head);
+}
+.meta {
+  margin: 4px 0 18px;
+  color: var(--muted);
+  font-size: 14px;
+}
+p,
+li {
+  max-width: 72ch;
+}
+ul {
+  padding-left: 22px;
+}
+li {
+  margin: 4px 0;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 15px;
+  display: block;
+  overflow-x: auto;
+}
+th,
+td {
+  text-align: left;
+  vertical-align: top;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+}
+th {
+  color: var(--head);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+tbody tr:nth-child(odd) {
+  background: var(--row);
+}
+td:first-child {
+  font-weight: 600;
+  min-width: 200px;
+}
+footer {
+  text-align: center;
+  padding: 28px 16px 40px;
+  font-size: 14px;
+  color: var(--muted);
+}

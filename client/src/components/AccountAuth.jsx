@@ -319,6 +319,18 @@ export function AccountSettings() {
           {note}
         </p>
       )}
+      <div className="settings-sec">Seus dados</div>
+      <p className="kv">
+        Veja o que o PadoSpeak guarda e as regras de uso:{' '}
+        <a href={`${base}/privacidade`} target="_blank" rel="noreferrer">
+          Política de Privacidade
+        </a>{' '}
+        e{' '}
+        <a href={`${base}/termos`} target="_blank" rel="noreferrer">
+          Termos de Serviço
+        </a>
+        .
+      </p>
     </div>
   );
 }

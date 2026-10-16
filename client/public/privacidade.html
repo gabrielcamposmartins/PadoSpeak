@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Política de Privacidade · PadoSpeak</title>
+<meta name="description" content="Quais dados o PadoSpeak guarda, para quê, com quem compartilha e como pedir a exclusão.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/legal.css">
+</head>
+<body>
+<header class="sky">
+  <a class="brand" href="/"><img src="/favicon.svg" alt="" width="34" height="34"><span>Pado<em>Speak</em></span></a>
+  <nav><a href="/privacidade" aria-current="page">Privacidade</a><a href="/termos">Termos de Serviço</a><a href="/">Abrir o app</a></nav>
+</header>
+<main class="sheet">
+<h1>Política de Privacidade</h1>
+<p class="meta">Última atualização: 16 de outubro de 2026</p>
+
+<p>O PadoSpeak é um aplicativo de mensagens, voz e vídeo mantido de forma independente, sem anúncios e sem venda de dados. Esta página explica o que o servidor <b>padospeak.padoru.org</b> guarda, para quê e o que você pode pedir. Ela segue a Lei Geral de Proteção de Dados (LGPD, Lei nº 13.709/2018).</p>
+
+<h2>Quem cuida dos seus dados</h2>
+<p>O controlador é o administrador do PadoSpeak (no app, a conta <b>@gabs</b>). Para dúvidas e pedidos sobre os seus dados, fale com essa conta pelo próprio PadoSpeak ou abra um pedido em <a href="https://github.com/gabrielcamposmartins/PadoSpeak/issues">github.com/gabrielcamposmartins/PadoSpeak</a>.</p>
+
+<h2>O que guardamos</h2>
+<table>
+<thead><tr><th>Dado</th><th>Para quê</th></tr></thead>
+<tbody>
+<tr><td>Nome de usuário, nome de exibição, foto, mensagem pessoal, cores do perfil e status</td><td>Mostrar o seu perfil para amigos e servidores.</td></tr>
+<tr><td>Senha</td><td>Entrar na conta. Só guardamos um resumo criptográfico (bcrypt), nunca a senha em si.</td></tr>
+<tr><td>E-mail (se você vincular)</td><td>Entrar com ele e receber códigos de confirmação e de recuperação de senha. Não mandamos propaganda.</td></tr>
+<tr><td>Conta Google (se você usar “Entrar com o Google”)</td><td>Entrar na conta. Recebemos do Google só o identificador da conta, o e-mail e o nome. Não temos acesso ao Gmail, contatos, Drive nem a nada além disso.</td></tr>
+<tr><td>Mensagens, reações, anexos, mensagens de voz, stickers e sons rápidos</td><td>Entregar o que você manda. As mensagens ficam criptografadas no banco (AES-256-GCM), com a chave guardada fora dele. Anexos e mensagens de voz podem vencer sozinhos, conforme a configuração de cada servidor.</td></tr>
+<tr><td>Amigos, servidores, canais e permissões</td><td>Fazer o app funcionar.</td></tr>
+<tr><td>Registro de cada servidor (entradas e saídas, mensagens enviadas e apagadas com um trecho, mudanças de configuração)</td><td>Moderação. Só os administradores daquele servidor veem.</td></tr>
+<tr><td>Sessões do app (plataforma, tipo de aparelho, sistema e horários)</td><td>Estatísticas de uso vistas só pelo administrador do PadoSpeak.</td></tr>
+<tr><td>Inscrição de notificações do aparelho</td><td>Mandar notificações com o app fechado. O conteúdo vai criptografado.</td></tr>
+<tr><td>Jogo em foco (“Jogando …”), só no app do Windows</td><td>Mostrar no seu status. Só o nome do jogo sai do seu PC, e dá para desligar em Configurações → Funcionalidade.</td></tr>
+</tbody>
+</table>
+
+<h2>O que não guardamos</h2>
+<ul>
+<li><b>Chamadas de voz e vídeo e telas compartilhadas</b> não são gravadas. Elas vão direto entre os aparelhos ou, quando a rede não deixa, passam pelo relay do servidor, sempre criptografadas (DTLS-SRTP).</li>
+<li><b>Endereço IP</b> é usado na hora, para limitar tentativas de login e mostrar quem está na mesma rede (“Na sua rede”), e não fica gravado no banco.</li>
+<li>Não usamos cookies de propaganda nem rastreadores. O app guarda no seu aparelho o login e as preferências, e um cookie técnico durante o login com o Google.</li>
+</ul>
+
+<h2>Com quem compartilhamos</h2>
+<p>Não vendemos nem alugamos dados. Alguns serviços participam do funcionamento:</p>
+<ul>
+<li><b>Google Cloud</b>: hospeda o servidor e o banco (Estados Unidos).</li>
+<li><b>Google</b>: o login com o Google, quando você usa.</li>
+<li><b>Provedor de e-mail</b>: entrega os códigos que mandamos por e-mail.</li>
+<li><b>Serviços de notificação do navegador</b> (Google, Apple ou Mozilla, conforme o aparelho): entregam as notificações, sem ver o conteúdo.</li>
+<li><b>YouTube e Spotify</b>: quando alguém põe uma música na fila, o servidor busca o áudio e os dados da faixa pelo link enviado.</li>
+</ul>
+<p>Outras pessoas veem o que você publica para elas: o perfil, as mensagens nas conversas e nos servidores de que participam e o seu status.</p>
+
+<h2>Por quanto tempo</h2>
+<p>Os dados ficam enquanto a conta existir. Anexos e mensagens de voz podem sumir antes, conforme a validade escolhida em cada servidor. Códigos de confirmação valem 15 minutos e os de recuperação de senha, 30. Se você pedir a exclusão da conta, apagamos o perfil, as mensagens diretas, os arquivos e os sons ligados a ela em até 30 dias, exceto o que a lei mandar guardar.</p>
+
+<h2>Seus direitos</h2>
+<p>Pela LGPD, você pode pedir: confirmação e acesso aos seus dados, correção, exclusão, portabilidade, informação sobre compartilhamento e revogação de consentimento. Boa parte você faz no próprio app (editar o perfil, desvincular o e-mail ou o Google, desligar o “Jogando”, apagar mensagens). Para o resto, fale com o administrador pelos canais acima. Também é possível reclamar à ANPD (Autoridade Nacional de Proteção de Dados).</p>
+
+<h2>Segurança</h2>
+<p>O acesso é por HTTPS, as senhas ficam só como resumo criptográfico, as mensagens ficam criptografadas no banco e o banco não fica exposto na internet. Nenhum sistema é perfeito: se houver um incidente que afete você, avisamos pelo app.</p>
+
+<h2>Crianças</h2>
+<p>O PadoSpeak é para pessoas com 13 anos ou mais. Menores de 18 anos devem usar com o consentimento dos pais ou responsáveis.</p>
+
+<h2>Mudanças</h2>
+<p>Se esta política mudar de um jeito importante, avisamos nas notas de atualização do app. A data no alto desta página mostra a versão em vigor.</p>
+</main>
+<footer><a href="/privacidade">Privacidade</a> · <a href="/termos">Termos de Serviço</a> · <a href="/">PadoSpeak</a></footer>
+</body>
+</html>

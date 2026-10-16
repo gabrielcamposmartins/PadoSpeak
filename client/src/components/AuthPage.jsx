@@ -260,6 +260,15 @@ export default function AuthPage() {
           </form>
           )}
 
+          <p className="auth-legal">
+            <a href={`${serverUrl}/privacidade`} target="_blank" rel="noreferrer">
+              Privacidade
+            </a>
+            {' · '}
+            <a href={`${serverUrl}/termos`} target="_blank" rel="noreferrer">
+              Termos de Serviço
+            </a>
+          </p>
           {/* No celular/tablet: instalar como app (PWA) — botão ou o passo a passo do iPhone/iPad. */}
           {!isDesktop && <InstallCard />}
           {/* No navegador: convite para baixar o app (perfil local, rede local, bandeja do Windows). */}

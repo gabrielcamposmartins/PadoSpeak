@@ -86,6 +86,8 @@ self.addEventListener('fetch', (e) => {
   if (url.pathname.startsWith('/api/') || url.pathname === '/ws') return;
   // A página: rede primeiro (sempre a versão nova); sem rede, a última que abriu.
   if (req.mode === 'navigate') {
+    // Páginas avulsas (privacidade, termos): direto da rede, sem trocar o app guardado.
+    if (/^\/(privacidade|termos)(\.html)?$/.test(url.pathname)) return;
     e.respondWith(
       fetch(req)
         .then((res) => {

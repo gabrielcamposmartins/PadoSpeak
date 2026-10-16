@@ -26,6 +26,8 @@ pub async fn static_handler(uri: Uri) -> Response {
         return (StatusCode::NOT_FOUND, axum::Json(serde_json::json!({ "error": "Rota não encontrada" }))).into_response();
     }
     serve(if path.is_empty() { "index.html" } else { path })
+        // Páginas avulsas sem a extensão: /privacidade → privacidade.html, /termos → termos.html.
+        .or_else(|| (!path.is_empty() && !path.contains('.') && !path.contains('/')).then(|| serve(&format!("{path}.html"))).flatten())
         .or_else(|| serve("index.html"))
         .unwrap_or_else(not_built)
 }
