@@ -5,6 +5,9 @@
 // mensagens e chamadas. Para sair de verdade, botão direito no ícone → "Fechar o PadoSpeak".
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod activity;
+mod screen_audio;
+
 use padospeak_server::lan::Hosting;
 use padospeak_server::logs::LogLine;
 use padospeak_server::{HostConfig, HostManager, HostStatus};
@@ -120,6 +123,12 @@ fn autostart_set(cfg: State<'_, Autostart>, on: bool) -> Result<bool, String> {
     startup::set(on).map_err(|e| e.to_string())?;
     std::fs::write(&cfg.choice, if on { "on" } else { "off" }).map_err(|e| e.to_string())?;
     Ok(startup::enabled())
+}
+
+/// Jogo em foco agora (o mesmo que vai no evento "activity").
+#[tauri::command]
+fn activity_get(current: State<'_, activity::Current>) -> Option<activity::Activity> {
+    current.lock().unwrap().clone()
 }
 
 /// Portas tentadas para o nó local (a primeira livre vale).
@@ -297,6 +306,8 @@ fn main() {
             };
             apply_autostart(&autostart);
             app.manage(autostart);
+            app.manage(activity::spawn(app.handle().clone()));
+            app.manage(screen_audio::ScreenAudio::default());
             build_tray(app)?;
             // Aberto pela inicialização do Windows: fica só na bandeja; senão mostra a janela.
             if !std::env::args().any(|a| a == AUTOSTART_ARG) {
@@ -314,7 +325,7 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, local_node, notify_windows, autostart_get, autostart_set, open_url])
+        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, local_node, notify_windows, autostart_get, autostart_set, open_url, activity_get, screen_audio::screen_audio_start, screen_audio::screen_audio_stop])
         .build(tauri::generate_context!())
         .expect("erro ao iniciar o PadoSpeak");
 

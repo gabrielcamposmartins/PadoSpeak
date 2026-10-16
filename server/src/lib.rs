@@ -24,6 +24,7 @@ pub mod panel;
 pub mod push;
 pub mod ratelimit;
 pub mod tls;
+pub mod turn;
 
 pub use config::HostConfig;
 pub use host::{HostManager, HostStatus};

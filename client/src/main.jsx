@@ -6,7 +6,8 @@ import { isTauri } from './lib/env.js';
 import { watchViewport } from './lib/layout.js';
 import { initPwa } from './lib/pwa.js';
 import { unlockAudio } from './lib/sounds.js';
-import { openFromUrl, initBackNavigation } from './store.js';
+import { openFromUrl, initBackNavigation, setMyActivity } from './store.js';
+import { watchActivity } from './lib/activity.js';
 import { onNotificationClick } from './lib/background.js';
 import './styles.css';
 
@@ -25,6 +26,8 @@ watchViewport();
 initPwa({ onOpen: openFromUrl });
 initBackNavigation();
 onNotificationClick(openFromUrl);
+// App do Windows: o jogo em foco vai para o status ("Jogando …").
+watchActivity(setMyActivity);
 // O iPhone só libera áudio dentro de um toque: o primeiro toque deixa os sons de aviso prontos.
 window.addEventListener('pointerdown', unlockAudio, { once: true, capture: true });
 

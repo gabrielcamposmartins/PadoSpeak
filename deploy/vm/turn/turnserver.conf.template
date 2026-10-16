@@ -1,0 +1,36 @@
+# coturn do PadoSpeak (o setup-turn.sh troca __SECRET__ pela senha gerada).
+# Os clientes chegam só por TCP, vindos do nginx de borda (que termina o TLS na porta 443).
+listening-port=3478
+no-udp
+no-tls
+no-dtls
+relay-ip=172.19.0.250
+min-port=49160
+max-port=49260
+realm=padoru.org
+fingerprint
+use-auth-secret
+static-auth-secret=__SECRET__
+# 1,5 Mbps por sessão (voz folgada; câmera/tela pelo relay caem de qualidade em vez de pesar na VM)
+max-bps=187500
+# no máximo 20 Mbps somando todo mundo
+bps-capacity=2500000
+user-quota=12
+total-quota=100
+stale-nonce=600
+no-cli
+no-multicast-peers
+# O relay não alcança a rede interna; só ele mesmo (chamadas relay ↔ relay).
+denied-peer-ip=0.0.0.0-0.255.255.255
+denied-peer-ip=10.0.0.0-10.255.255.255
+denied-peer-ip=100.64.0.0-100.127.255.255
+denied-peer-ip=127.0.0.0-127.255.255.255
+denied-peer-ip=169.254.0.0-169.254.255.255
+denied-peer-ip=172.16.0.0-172.31.255.255
+denied-peer-ip=192.168.0.0-192.168.255.255
+denied-peer-ip=::1
+denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+allowed-peer-ip=172.19.0.250
+log-file=stdout
+simple-log

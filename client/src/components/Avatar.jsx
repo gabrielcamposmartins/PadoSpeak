@@ -40,20 +40,36 @@ export function usePresence(userId) {
   });
 }
 
-/** Onde a pessoa está agora ("em Sala de Estar"), para a linha abaixo do nome. */
+/** "Jogando Counter-Strike 2" (o app do Windows conta o jogo em foco), ou null. */
+export const gameText = (activity) => (activity?.name ? `Jogando ${activity.name}` : null);
+
+export function useGame(userId) {
+  const useC = useConn();
+  return useC((s) => gameText(s.activities?.[userId]));
+}
+
+/**
+ * Onde a pessoa está na voz ("em Sala de Estar · Servidor"). Canal privado não diz o nome: quem vê o
+ * status pode não ter acesso a ele.
+ */
+export function voicePlace(s, userId) {
+  for (const [channelId, list] of Object.entries(s.voiceStates)) {
+    if (!list.some((x) => x.user.id === userId)) continue;
+    for (const [guildId, g] of Object.entries(s.guildData)) {
+      const ch = g.channels.find((c) => c.id === channelId);
+      if (!ch) continue;
+      const guild = s.guilds.find((x) => x.id === guildId)?.name || '';
+      return ch.private ? `em um canal privado · ${guild}` : `em ${ch.name} · ${guild}`;
+    }
+    return s.dms.some((d) => d.id === channelId) ? 'em uma chamada' : 'em um canal de voz';
+  }
+  return null;
+}
+
+/** O que a pessoa está fazendo agora, para a linha abaixo do nome: o jogo e/ou onde está na voz. */
 export function useActivity(userId) {
   const useC = useConn();
-  return useC((s) => {
-    for (const [channelId, list] of Object.entries(s.voiceStates)) {
-      if (!list.some((x) => x.user.id === userId)) continue;
-      for (const [guildId, g] of Object.entries(s.guildData)) {
-        const ch = g.channels.find((c) => c.id === channelId);
-        if (ch) return `em ${ch.name} · ${s.guilds.find((x) => x.id === guildId)?.name || ''}`;
-      }
-      return s.dms.some((d) => d.id === channelId) ? 'em uma chamada' : 'em um canal de voz';
-    }
-    return null;
-  });
+  return useC((s) => [gameText(s.activities?.[userId]), voicePlace(s, userId)].filter(Boolean).join(' · ') || null);
 }
 
 /** Fundo da foto sem imagem: a cor da pessoa com brilho, como as fotos de exibição do Messenger. */

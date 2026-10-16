@@ -1,5 +1,17 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.7.0 — 16/10/2026
+
+### Novidades
+- **Jogando …** (app do Windows): o PadoSpeak reconhece o jogo em foco (Counter-Strike 2, League of Legends, VALORANT, jogos da Steam, Epic, Riot, Xbox…) e mostra “Jogando X” no seu status, na lista de membros e no perfil enquanto o jogo estiver aberto. Dá para desligar em Configurações → Funcionalidade → Atividade.
+- **Som da transmissão só da janela**: ao transmitir uma janela, vai só o som daquele programa — não o do computador inteiro.
+- **Sem retorno na transmissão**: o som do PadoSpeak (as vozes da chamada) não entra mais na sua transmissão de tela, nem transmitindo a tela inteira.
+- **Diagnóstico da chamada mais completo**: por pessoa, o caminho da conexão (direto ou pelo relay), quanto de voz chega e sai, perdas e o histórico de quedas.
+
+### Correções
+- **Pessoas que paravam de ouvir alguém na chamada**: quando duas pessoas não conseguem se conectar direto (internet com CGNAT, 4G, rede de empresa ou faculdade), a voz agora passa pelo relay do servidor. Se a conexão com alguém cai no meio da chamada, o app reconecta sozinho — e quem estiver sem conexão aparece com o ícone de “sem conexão” na chamada.
+- **Canal privado**: o status não mostra mais o nome do canal (“em um canal privado”).
+
 ## 1.6.7 — 15/10/2026
 
 ### Novidades

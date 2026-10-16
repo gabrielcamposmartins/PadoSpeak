@@ -47,6 +47,7 @@ import {
   Share,
   SquarePlus,
   CircleCheck,
+  Gamepad2,
 } from 'lucide-react';
 import {
   useStore,
@@ -60,7 +61,9 @@ import {
   usePerms,
   PERM,
   DEFAULT_NOTIFY,
+  setMyActivity,
 } from '../store.js';
+import { currentActivity } from '../lib/activity.js';
 import { isDesktop, isTauri, DOWNLOAD_URL, DEFAULT_SERVER, openExternal } from '../lib/env.js';
 import { usePwa, installState, install } from '../lib/pwa.js';
 import { ConnProvider, useConn } from './conn.jsx';
@@ -764,6 +767,7 @@ function SettingsModal({ close }) {
   const [sounds, setSounds] = useState(useStore.getState().prefs.sounds !== false);
   const [repeatAlerts, setRepeatAlerts] = useState(useStore.getState().prefs.repeatAlerts !== false);
   const [nearbyVisible, setNearbyVisible] = useState(useStore.getState().prefs.nearbyVisible !== false);
+  const [shareActivity, setShareActivity] = useState(useStore.getState().prefs.shareActivity !== false);
   // App desktop: iniciar com o Windows (abre minimizado na bandeja).
   const [autostart, setAutostart] = useState(null);
   const [autostartOn, setAutostartOn] = useState(false);
@@ -940,6 +944,21 @@ function SettingsModal({ close }) {
           </span>
         </label>
         <p className="kv">As notificações de cada servidor ficam nas configurações do servidor.</p>
+        {isTauri && (
+          <>
+            <div className="settings-sec">Atividade</div>
+            <label className="checkbox">
+              <input type="checkbox" checked={shareActivity} onChange={(e) => setShareActivity(e.target.checked)} />
+              <span>
+                Mostrar o jogo que estou jogando
+                <small className="check-hint">
+                  Aparece “Jogando …” no seu status para amigos e servidores enquanto o jogo estiver aberto (o PadoSpeak
+                  reconhece o jogo pela janela em foco).
+                </small>
+              </span>
+            </label>
+          </>
+        )}
         <div className="settings-sec">Vistos nas mensagens</div>
         <label className="checkbox">
           <input type="checkbox" checked={receipts.show !== false} onChange={(e) => setReceipts({ show: e.target.checked })} />
@@ -1067,6 +1086,10 @@ function SettingsModal({ close }) {
             st.setDevices(choice);
             st.setSounds(sounds);
             st.setRepeatAlerts(repeatAlerts);
+            if (shareActivity !== (st.prefs.shareActivity !== false)) {
+              st.setAppearance({ shareActivity });
+              setMyActivity(currentActivity());
+            }
             if (nearbyVisible !== (st.prefs.nearbyVisible !== false)) {
               st.setAppearance({ nearbyVisible });
               st.lanHello();
@@ -1259,6 +1282,12 @@ function DiagnosticsModal({ close }) {
 
 const fmtDate = (ts) => new Date(ts).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' });
 
+/** "5 min", "1 h 20 min" desde quando começou a jogar. */
+function sinceText(t) {
+  const min = Math.max(1, Math.round((Date.now() - t) / 60000));
+  return min < 60 ? `${min} min` : `${Math.floor(min / 60)} h${min % 60 ? ` ${min % 60} min` : ''}`;
+}
+
 function ProfileModal({ close, userId, conn }) {
   return (
     <ConnProvider conn={conn}>
@@ -1273,6 +1302,7 @@ function ProfileCard({ close, userId }) {
   const me = useC((s) => s.me);
   const friend = useC((s) => s.friends[userId]);
   const online = useC((s) => Boolean(s.online[userId]));
+  const game = useC((s) => (s.online[userId] || userId === s.me?.id ? s.activities?.[userId] : null));
   const nudgeBlocked = useC((s) => Boolean(s.nudgeSettings?.nudgeBlocks.some((u) => u.id === userId)));
   const [profile, setProfile] = useState(null);
   const [error, setError] = useState('');
@@ -1327,6 +1357,15 @@ function ProfileCard({ close, userId }) {
           <UserName user={user} /> {(user.lan || !isServer) && <span className="lan-tag">LAN</span>}
         </h2>
         <div className="profile-username">@{user.username}</div>
+        {game?.name && (
+          <section className="profile-game">
+            <h4>Jogando</h4>
+            <p>
+              <Gamepad2 size={16} aria-hidden="true" /> <b>{game.name}</b>
+              {game.since ? <span className="sub"> · há {sinceText(game.since)}</span> : null}
+            </p>
+          </section>
+        )}
         {profile.bio && (
           <section>
             <h4>Sobre mim</h4>

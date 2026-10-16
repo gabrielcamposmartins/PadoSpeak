@@ -8567,3 +8567,26 @@ a.downloading {
   font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
+
+/* Jogo em foco na lista de membros ("Jogando …"): sem itálico, com o controle na frente. */
+.pm.playing {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--text-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+}
+.pm.playing > svg {
+  flex: none;
+}
+.pm.playing > :not(svg) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.profile-game p {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}

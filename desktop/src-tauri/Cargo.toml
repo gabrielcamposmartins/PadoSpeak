@@ -12,6 +12,7 @@ tauri-build = { version = "2", features = [] }
 padospeak-server = { path = "../../server" }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tauri-plugin-notification = "2"
@@ -24,3 +25,7 @@ tauri-plugin-global-shortcut = "2"
 tauri-winrt-notification = "0.8"
 # Iniciar com o Windows (chave Run do usuário)
 winreg = "0.55"
+# Jogo em foco (janela/processo) e janela escolhida na transmissão
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_System_Diagnostics_ToolHelp"] }
+# Som da transmissão: só da janela, ou do sistema sem o PadoSpeak (process loopback)
+wasapi = "0.26"

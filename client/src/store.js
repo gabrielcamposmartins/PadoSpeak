@@ -115,6 +115,12 @@ export const DEFAULT_NOTIFY = { messages: 'mentions', mutedChannels: [], voiceJo
 
 /** Todas as conexões abertas (chave → store). A lista de chaves vive em `useStore.connKeys`. */
 export const connRegistry = new Map();
+/** O jogo em foco no app do Windows ({ type, name, since } ou null), contado a todas as conexões. */
+let myActivity = null;
+export function setMyActivity(activity) {
+  myActivity = activity;
+  for (const c of connRegistry.values()) c.getState()._sendActivity();
+}
 const syncConnKeys = () => useStore?.setState({ connKeys: [...connRegistry.keys()] });
 
 /**
@@ -209,6 +215,8 @@ export function createConnStore({ key, kind, base, primary = false }) {
     hasMore: {},
     online: {},
     statuses: {}, // userId -> online | away | busy (de quem está visível)
+    activities: {}, // userId -> { type: "playing", name, since } (jogo em foco, contado pelo app do Windows)
+    iceServers: null, // STUN/TURN do `ready` (com a senha temporária do TURN)
     myStatus: 'online', // online | away | busy | invisible
     nudgeSettings: null, // { allowNudges, nudgeBlocks: User[] }
     marks: { hidden: {}, nsfw: {} }, // só para mim: mensagens excluídas e fotos marcadas como NSFW (id -> true)
@@ -349,6 +357,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
         hasMore: {},
         online: {},
         statuses: {},
+        activities: {},
         voiceStates: {},
         music: {},
         typing: {},
@@ -482,7 +491,11 @@ export function createConnStore({ key, kind, base, primary = false }) {
           voiceStates: d.voice || {},
           music: Object.fromEntries((d.music || []).map((m) => [m.channelId, m])),
           serverOffset: d.serverTime - Date.now(),
+          activities: d.activities || {},
+          // STUN/TURN com a senha temporária deste login (o TURN só vem aqui, nunca no /api/config).
+          iceServers: d.iceServers || null,
         });
+        get()._sendActivity();
         get().loadMarks();
         // O que mudou entre o carregamento inicial e a conexão (ou durante uma queda) não chegou por evento.
         if (!firstReady) get().resync();
@@ -506,7 +519,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
         }
       });
       rt.on('lan:peers', (lanPeers) => kind === 'local' && set({ lanPeers }));
-      rt.on('presence:update', ({ userId, online, status }) => {
+      rt.on('presence:update', ({ userId, online, status, activity }) => {
         const s = get();
         const friend = s.friends[userId];
         // Ficou online (inclusive quem saiu do "aparecer offline"). Quem desligou as notificações
@@ -525,7 +538,10 @@ export function createConnStore({ key, kind, base, primary = false }) {
           const statuses = { ...st.statuses };
           if (online) statuses[userId] = status || 'online';
           else delete statuses[userId];
-          return { online: { ...st.online, [userId]: online || undefined }, statuses };
+          const activities = { ...st.activities };
+          if (online && activity) activities[userId] = activity;
+          else delete activities[userId];
+          return { online: { ...st.online, [userId]: online || undefined }, statuses, activities };
         });
       });
       rt.on('status:self', ({ status }) => set({ myStatus: status }));
@@ -1270,7 +1286,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
       if (!rt || rt.status !== 'connected') return notify('Sem conexão com o servidor');
       const client = new VoiceClient({
         rt,
-        iceServers: get().config?.iceServers || [],
+        iceServers: get().iceServers || get().config?.iceServers || [],
         onNotice: (text) => notify(text, 'info'),
         onChange: (snap) => {
           if (voiceClient !== client) return;
@@ -1390,6 +1406,14 @@ export function createConnStore({ key, kind, base, primary = false }) {
     setStreamAudio: (peerId, opts) => voiceClient?.setStreamAudio(peerId, opts),
     setScreenAudioMuted: (muted) => voiceClient?.setScreenAudioMuted(muted),
     diagnostics: () => voiceClient?.diagnostics() || 'Fora de chamada.',
+    /** Conta a esta conexão o jogo em foco (o app do Windows detecta; veja lib/activity.js). */
+    _sendActivity() {
+      if (rt?.status !== 'connected') return;
+      const mine = prefs().shareActivity === false ? null : myActivity;
+      rt.send('activity:set', { activity: mine });
+      const me = get().me?.id;
+      if (me) set((st) => ({ activities: { ...st.activities, [me]: mine || undefined } }));
+    },
     latencyHistory: () => voiceClient?.latencyHistory() || { samples: [], series: [] },
 
     // ---------- Música ----------
@@ -1903,6 +1927,7 @@ globalThis.__padospeak = {
   openLanDm: (...a) => openLanDm(...a),
   connectServer: (...a) => connectServer(...a),
   syncProfileEverywhere: () => syncProfileEverywhere(),
+  setMyActivity: (a) => setMyActivity(a),
   NearbyProbe,
 };
 

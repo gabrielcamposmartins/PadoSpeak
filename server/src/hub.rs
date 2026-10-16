@@ -118,6 +118,8 @@ struct HubState {
     voice_empty_tx: Option<UnboundedSender<String>>,
     /// Status escolhido por quem está conectado (online, away, busy, invisible).
     statuses: HashMap<String, String>,
+    /// O que cada um está fazendo agora ("Jogando …"), e a conexão que contou (o app do Windows).
+    activities: HashMap<String, (Value, ConnId)>,
     /// Horários dos últimos "chamar atenção" de cada usuário (limite por minuto).
     nudges: HashMap<String, VecDeque<i64>>,
     /// Nó local: a presença vai para todos os conectados (perfil do PC e convidados da rede).
@@ -331,7 +333,30 @@ impl Hub {
     fn tell_presence(s: &HubState, about: &str, to: &str) {
         if Self::visible(s, about) {
             let status = s.statuses.get(about).cloned().unwrap_or_else(|| "online".into());
-            Self::send_to_user(s, to, &event("presence:update", json!({ "userId": about, "online": true, "status": status })));
+            let activity = Self::activity_of(s, about);
+            Self::send_to_user(
+                s,
+                to,
+                &event("presence:update", json!({ "userId": about, "online": true, "status": status, "activity": activity })),
+            );
+        }
+    }
+
+    fn activity_of(s: &HubState, user_id: &str) -> Value {
+        s.activities.get(user_id).map(|(a, _)| a.clone()).unwrap_or(Value::Null)
+    }
+
+    /// Troca a atividade ("Jogando …") de quem está conectado e avisa quem vê a presença dele.
+    pub fn set_activity(&self, user_id: &str, conn_id: &str, activity: Option<Value>) {
+        let mut s = self.state.lock().unwrap();
+        let before = Self::activity_of(&s, user_id);
+        match activity {
+            Some(a) => s.activities.insert(user_id.to_string(), (a, conn_id.to_string())),
+            None => s.activities.remove(user_id),
+        };
+        if Self::activity_of(&s, user_id) != before && Self::visible(&s, user_id) {
+            let (guilds, friends) = Self::audience(&s, user_id);
+            Self::presence(&s, user_id, true, guilds, &friends);
         }
     }
 
@@ -433,7 +458,8 @@ impl Hub {
 
     fn presence(s: &HubState, user_id: &str, online: bool, guilds: impl IntoIterator<Item = String>, friends: &HashSet<String>) {
         let status = online.then(|| s.statuses.get(user_id).cloned().unwrap_or_else(|| "online".into()));
-        let msg = event("presence:update", json!({ "userId": user_id, "online": online, "status": status }));
+        let activity = if online { Self::activity_of(s, user_id) } else { Value::Null };
+        let msg = event("presence:update", json!({ "userId": user_id, "online": online, "status": status, "activity": activity }));
         if s.lan_mode {
             for c in s.conns.values() {
                 let _ = c.tx.send(msg.clone());
@@ -577,6 +603,11 @@ impl Hub {
         let guilds: HashSet<String> = guild_ids_of(&app, &user.id).await.into_iter().collect();
         let music = app.music.states_for(&guilds);
         let friends: HashSet<String> = crate::social::friend_ids(&app, &user.id).await.into_iter().collect();
+        // STUN/TURN da configuração + o relay com senha temporária deste usuário.
+        let mut ice_servers = app.config.ice_servers.clone();
+        if let Some(turn) = &app.turn {
+            ice_servers.push(turn.ice_server(&user.id, crate::now_ms()));
+        }
         let my_status = app
             .db
             .query_one("SELECT status FROM users WHERE id = ?1", [user.id.as_str()], |r| r.get::<String>(0))
@@ -615,11 +646,14 @@ impl Hub {
                 .collect();
             let statuses: HashMap<&String, &String> =
                 online.iter().filter_map(|u| s.statuses.get(*u).map(|st| (*u, st))).collect();
+            let activities: HashMap<&String, &Value> =
+                online.iter().filter_map(|u| s.activities.get(*u).map(|(a, _)| (*u, a))).collect();
             let _ = tx.send(event(
                 "ready",
                 json!({
                     "peerId": conn_id, "online": online, "statuses": statuses, "selfStatus": my_status,
-                    "voice": voice, "music": music, "serverTime": crate::now_ms()
+                    "activities": activities, "voice": voice, "music": music, "serverTime": crate::now_ms(),
+                    "iceServers": ice_servers
                 }),
             ));
             s.users.insert(user.id.clone(), user.clone());
@@ -704,10 +738,20 @@ impl Hub {
                     }
                     None => false,
                 };
+                // A atividade vinha desta conexão (o app do Windows fechou): some para os outros.
+                let lost_activity = s.activities.get(&user.id).is_some_and(|(_, c)| c == &conn_id);
+                if lost_activity {
+                    s.activities.remove(&user.id);
+                }
+                if !now_offline && lost_activity && Self::visible(&s, &user.id) {
+                    let (guilds, friends) = Self::audience(&s, &user.id);
+                    Self::presence(&s, &user.id, true, guilds, &friends);
+                }
                 if now_offline {
                     let was_visible = Self::visible(&s, &user.id);
                     s.user_conns.remove(&user.id);
                     s.statuses.remove(&user.id);
+                    s.activities.remove(&user.id);
                     if was_visible {
                         Self::presence(&s, &user.id, false, c.guilds.clone(), &c.friends);
                     }
@@ -1067,6 +1111,33 @@ impl Hub {
                 }
                 self.set_status(&user.id, &status);
                 Some(json!({ "status": status }))
+            }
+
+            // O app do Windows conta o jogo em foco: { activity: { type: "playing", name } | null }.
+            "activity:set" => {
+                let activity = match d.get("activity") {
+                    Some(Value::Object(a)) => {
+                        let name: String = a
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .chars()
+                            .filter(|c| !c.is_control())
+                            .collect::<String>()
+                            .trim()
+                            .chars()
+                            .take(80)
+                            .collect();
+                        if name.is_empty() {
+                            return err("Atividade inválida");
+                        }
+                        let started = a.get("since").and_then(Value::as_i64).filter(|t| *t > 0 && *t <= crate::now_ms());
+                        Some(json!({ "type": "playing", "name": name, "since": started.unwrap_or_else(crate::now_ms) }))
+                    }
+                    _ => None,
+                };
+                self.set_activity(&user.id, conn_id, activity);
+                Some(json!({ "ok": true }))
             }
 
             "nudge:send" => {
@@ -1599,6 +1670,44 @@ mod tests {
         assert_eq!(hub.presence_of("ana"), None);
         hub.set_status("ana", "busy");
         assert_eq!(hub.presence_of("ana").as_deref(), Some("busy"));
+    }
+
+    #[test]
+    fn atividade_vai_para_os_amigos() {
+        let (hub, _rx) = Hub::new();
+        let (tx, mut bia) = unbounded_channel();
+        let conn = |user: &str, tx: UnboundedSender<String>, friend: &str| Conn {
+            tx,
+            user_id: user.into(),
+            guilds: HashSet::new(),
+            friends: [friend.to_string()].into(),
+            visible: true,
+            net: Net::from_ip("10.0.0.1".parse().unwrap()),
+            nearby: false,
+            device: String::new(),
+            session: None,
+        };
+        {
+            let mut s = hub.state.lock().unwrap();
+            s.user_conns.entry("ana".into()).or_default().insert("c1".into());
+            s.user_conns.entry("bia".into()).or_default().insert("c2".into());
+            s.conns.insert("c1".into(), conn("ana", unbounded_channel().0, "bia"));
+            s.conns.insert("c2".into(), conn("bia", tx, "ana"));
+        }
+        let cs = json!({ "type": "playing", "name": "Counter-Strike 2", "since": 1 });
+        hub.set_activity("ana", "c1", Some(cs.clone()));
+        let msg: Value = serde_json::from_str(&bia.try_recv().unwrap()).unwrap();
+        assert_eq!(msg["d"]["activity"], cs);
+        // A mesma atividade de novo não gera aviso.
+        hub.set_activity("ana", "c1", Some(cs));
+        assert!(bia.try_recv().is_err());
+        // Invisível: some junto com a presença, e trocar a atividade não avisa ninguém.
+        hub.set_status("ana", "invisible");
+        let msg: Value = serde_json::from_str(&bia.try_recv().unwrap()).unwrap();
+        assert_eq!(msg["d"]["online"], false);
+        assert_eq!(msg["d"]["activity"], Value::Null);
+        hub.set_activity("ana", "c1", None);
+        assert!(bia.try_recv().is_err());
     }
 }
 

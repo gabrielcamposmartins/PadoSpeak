@@ -135,6 +135,18 @@ gcloud compute ssh instance-20260920-143727 --zone us-central1-a --command "bash
 A chave das mensagens fica em `/etc/padospeak/server.env` (só o root lê). **Guarde uma cópia**: sem ela,
 as mensagens guardadas não podem ser lidas.
 
+**Relay das chamadas (TURN)** sem abrir portas: `deploy/vm/setup-turn.sh` sobe o coturn (`deploy/vm/turn/`) e
+transforma a porta 443 do nginx de borda num roteador TLS (`deploy/vm/edge/stream.d/443.conf`): conexões para
+`padospeak.padoru.org` **sem ALPN HTTP** (o TURN dos navegadores e do app) vão para o coturn, com o mesmo
+certificado do site; o resto segue para os sites, agora em `127.0.0.1:8443` com PROXY protocol (o IP real de
+quem acessa continua chegando). O relay entre duas pessoas acontece dentro do contêiner do coturn, por isso
+nenhuma porta UDP fica aberta. Limites: 1,5 Mbps por sessão e 20 Mbps no total.
+
+```bash
+gcloud compute scp --recurse deploy/vm/turn deploy/vm/edge deploy/vm/setup-turn.sh instance-20260920-143727:padospeak-deploy/ --zone us-central1-a
+gcloud compute ssh instance-20260920-143727 --zone us-central1-a --command "bash padospeak-deploy/setup-turn.sh"
+```
+
 ### Variáveis de ambiente
 
 Valores definidos por variável de ambiente prevalecem sobre o painel (lá aparecem como travados).
@@ -150,6 +162,7 @@ Valores definidos por variável de ambiente prevalecem sobre o painel (lá apare
 | `MESSAGE_KEY`                                    | arquivo `chave-mensagens.key` | Chave AES-256 (base64 de 32 bytes) das mensagens guardadas |
 | `ALLOW_REGISTRATION`                             | `true`              | Permite criar contas                                       |
 | `ICE_SERVERS`                                    | STUN do Google      | Lista JSON de `RTCIceServer` (STUN/TURN)                   |
+| `TURN_URLS` / `TURN_SECRET`                      | —                   | Relay das chamadas com senha temporária por usuário (coturn `use-auth-secret`), ex.: `turns:exemplo.org:443?transport=tcp` |
 | `AUTO_HOST`                                      | `false`             | Sobe o servidor ao iniciar (igual a `--host`)              |
 | `PANEL` / `PANEL_HOST` / `PANEL_PORT` / `PANEL_PASSWORD` | ligado / `127.0.0.1` / `3001` / — | Painel; fora de loopback exige senha (HTTP Basic) |
 
@@ -166,8 +179,23 @@ Valores definidos por variável de ambiente prevalecem sobre o painel (lá apare
 - **HTTPS**: navegadores só liberam microfone, câmera e captura de tela em `localhost` ou HTTPS. Para acessar
   pelo IP da rede no navegador, use `HTTPS=self-signed` (aceite o aviso do certificado) ou um certificado real.
   O **app desktop não precisa** disso.
-- **TURN**: entre redes diferentes com NAT restritivo o P2P pode falhar; configure o coturn do `docker-compose.yml`
-  e adicione-o em “Servidores ICE”.
+- **TURN**: entre redes diferentes com NAT restritivo (CGNAT, 4G, redes de empresa/faculdade) o P2P pode falhar
+  só entre algumas pessoas — cada uma ouve as outras, menos aquela. Com `TURN_URLS` + `TURN_SECRET`, cada login
+  recebe no `ready` do WebSocket uma senha do TURN válida por 24 h (formato *TURN REST API* do coturn; nunca no
+  `/api/config`, que é público). Sem isso, dá para pôr um TURN fixo em “Servidores ICE”.
+- **Reconexão por par**: quem fica sem conexão com alguém por 6 s tem o ICE reiniciado (só um lado, para não
+  colidir); depois de 15 s a conexão inteira é refeita, mantendo volume e o que se estava assistindo. Na tela,
+  a pessoa aparece com o ícone de “sem conexão”, e o **Diagnóstico da chamada** mostra, por pessoa, o caminho
+  (direto ou relay), a voz recebida/enviada (kbps, perdas, jitter, nível), o estado do áudio local e o histórico
+  de quedas.
+- **Som da transmissão**: no navegador, `restrictOwnAudio` tira o som da própria página (as vozes da chamada) e
+  `windowAudio: "window"` oferece o som só da janela escolhida (Chrome 141+). No **app do Windows** o som vem do
+  próprio Windows (WASAPI *process loopback*, Windows 10 2004+): janela → só o som do programa dela; tela
+  inteira → o sistema todo menos o PadoSpeak (o processo `msedgewebview2.exe` do app, de onde sai o som dele).
+- **Jogando …**: o app do Windows olha a janela em foco a cada 3 s e reconhece o jogo (lista de executáveis
+  conhecidos e as pastas da Steam — com o nome do `appmanifest` —, Epic, Riot, Xbox, GOG, Ubisoft e EA). O
+  status mostra “Jogando X” enquanto o jogo estiver aberto; só o nome do jogo sai do PC, e dá para desligar
+  em Configurações → Funcionalidade → Atividade.
 
 ## Música
 

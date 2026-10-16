@@ -28,6 +28,8 @@ import {
   VolumeX,
   ChartColumn,
   Download,
+  Gamepad2,
+  WifiOff,
 } from 'lucide-react';
 import { useStore, primaryConn, setStatusEverywhere, connRegistry, usePerms } from '../store.js';
 import { isDesktop, DOWNLOAD_URL } from '../lib/env.js';
@@ -38,7 +40,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useLayout, useNarrow, isTouch } from '../lib/layout.js';
 import MobileShell, { MobileBack } from './Mobile.jsx';
-import Avatar, { UserName, Orb, useActivity, STATUS_INFO, colorClass, colorStyle } from './Avatar.jsx';
+import Avatar, { UserName, Orb, useActivity, useGame, gameText, STATUS_INFO, colorClass, colorStyle } from './Avatar.jsx';
 import { SceneArt, BuddiesIcon } from './Aero.jsx';
 import { HomeSidebar, FriendsPage, DmView } from './Home.jsx';
 import ChatView from './ChatView.jsx';
@@ -137,6 +139,7 @@ export function ProfileBar({ onMenu }) {
   );
   const dm = vc((s) => (s.voice?.dm ? s.dms.find((d) => d.id === s.voice.channelId) : null));
   const playing = vc((s) => (s.voice ? s.music[s.voice.channelId]?.current?.track : null));
+  const game = prim((s) => gameText(s.activities?.[s.me?.id]));
   if (!me) return null;
   const { toggleMute, toggleDeafen, openModal, setNoiseSuppression } = useStore.getState();
 
@@ -153,8 +156,10 @@ export function ProfileBar({ onMenu }) {
     : dm
       ? `${statusLabel} · em chamada com ${plain(dm.recipient.displayName)}`
       : channel
-        ? `${voice.screen ? `${statusLabel} · ao vivo` : statusLabel} · em ${channel.name}`
-        : statusLabel;
+        ? `${voice.screen ? `${statusLabel} · ao vivo` : statusLabel} · ${channel.private ? 'em um canal privado' : `em ${channel.name}`}`
+        : game
+          ? `${statusLabel} · ${game}`
+          : statusLabel;
 
   return (
     <header className="profile-bar scene">
@@ -383,6 +388,7 @@ function VoiceChannelMembers({ channelId, guildId }) {
           guildId={guildId}
           speaking={inThisCall && (p.peerId === voice.selfId ? voice.speaking.me : voice.speaking[p.peerId])}
           watch={p.screen && p.peerId !== voice?.selfId}
+          trouble={inThisCall && voice.peers.some((x) => x.peerId === p.peerId && x.trouble)}
         />
       ))}
     </div>
@@ -393,7 +399,7 @@ function VoiceChannelMembers({ channelId, guildId }) {
  * Pessoa no canal de voz: clique abre o perfil rápido (em quem está ao vivo, abre a transmissão),
  * botão direito abre o menu e, com permissão, dá para arrastar para outro canal.
  */
-function VoiceMemberRow({ p, channelId, guildId, speaking, watch }) {
+function VoiceMemberRow({ p, channelId, guildId, speaking, watch, trouble }) {
   const localMuted = useStore((s) => Boolean(s.prefs.localMutes?.[p.user.id]));
   const { props, overlay } = useVoicePerson({
     p,
@@ -416,6 +422,11 @@ function VoiceMemberRow({ p, channelId, guildId, speaking, watch }) {
       {p.video && <Video size={14} />}
       {p.serverMuted && <MicOff size={14} className="muted-ico server" aria-label="silenciado para todos" />}
       {localMuted && <VolumeX size={14} className="muted-ico" aria-label="silenciado para você" />}
+      {trouble && (
+        <span className="muted-ico server" title="Sem conexão de voz com você: reconectando…">
+          <WifiOff size={14} aria-label="sem conexão de voz com você" />
+        </span>
+      )}
       {p.deafened ? (
         <HeadphoneOff size={14} className="muted-ico" aria-label="ensurdecido" />
       ) : p.muted && !p.serverMuted ? (
@@ -655,6 +666,7 @@ export function VoiceStatus() {
 
 function MemberRow({ m, isOn, ownerId, admin }) {
   const activity = useActivity(m.id);
+  const game = useGame(m.id);
   const liveIn = useStore(
     (s) => Object.entries(s.voiceStates).find(([, l]) => l.some((p) => p.user.id === m.id && p.screen))?.[0],
   );
@@ -675,9 +687,10 @@ function MemberRow({ m, isOn, ownerId, admin }) {
           {ownerId !== m.id && admin && <Shield size={13} className="crown admin-badge" aria-label="Administrador" />}
           {live && <span className="live">AO VIVO</span>}
         </span>
-        {isOn && (fresh.bio || activity) && (
-          <span className="pm">
-            <FormattedText text={fresh.bio || activity} size={14} />
+        {isOn && (game || fresh.bio || activity) && (
+          <span className={`pm${game ? ' playing' : ''}`}>
+            {game ? <Gamepad2 size={13} aria-hidden="true" /> : null}
+            <FormattedText text={game || fresh.bio || activity} size={14} />
           </span>
         )}
       </span>

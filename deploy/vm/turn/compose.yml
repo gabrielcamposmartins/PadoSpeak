@@ -1,0 +1,28 @@
+# Relay das chamadas (TURN) do PadoSpeak na VM, instalado em /srv/turn.
+#
+# Ninguém fala com o coturn direto: os clientes chegam pelo nginx de borda na porta 443
+# (turns:padospeak.padoru.org:443?transport=tcp). O nginx separa a conexão TURN do site porque o
+# TURN não anuncia protocolo HTTP no TLS (ALPN) — veja deploy/vm/edge/stream.d/443.conf.
+# Sem portas publicadas: o relay entre duas pessoas acontece dentro do contêiner (relay ↔ relay).
+#
+# A senha (static-auth-secret) fica só em /srv/turn/turnserver.conf (gerado pelo setup-turn.sh) e em
+# TURN_SECRET no /etc/padospeak/server.env.
+name: turn
+
+services:
+  coturn:
+    image: coturn/coturn:4.7.0-alpine
+    container_name: padospeak-turn
+    restart: unless-stopped
+    command: ["-c", "/etc/coturn/turnserver.conf"]
+    volumes:
+      - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
+    networks:
+      edge:
+        # IP fixo: o nginx aponta para ele (sem DNS, o nginx sobe mesmo se o coturn estiver parado)
+        ipv4_address: 172.19.0.250
+    mem_limit: 64m
+
+networks:
+  edge:
+    external: true

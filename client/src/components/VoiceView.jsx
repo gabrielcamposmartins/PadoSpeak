@@ -18,6 +18,7 @@ import {
   X,
   SwitchCamera,
   EyeOff,
+  WifiOff,
 } from 'lucide-react';
 import { useStore } from '../store.js';
 import { useConn } from './conn.jsx';
@@ -139,7 +140,9 @@ function Tile({ tile, focused, onFocus }) {
   const name = plain(tile.user?.displayName) || 'alguém';
   const kind = tile.kind === 'screen' ? 'screen' : 'camera';
   const isScreen = tile.kind === 'screen';
-  const problem = videoProblem(tile, rendered);
+  const problem =
+    videoProblem(tile, rendered) ||
+    (tile.trouble && !isScreen ? `Sem conexão de voz com ${name} — você não ouve e não é ouvido. Tentando reconectar…` : null);
   const badge = tile.stats?.w
     ? `${tile.self ? 'enviando ' : ''}${fmtStats(tile.stats, tile.self)}`
     : rendered?.w
@@ -230,6 +233,7 @@ function Tile({ tile, focused, onFocus }) {
       <span className="tag">
         {tile.serverMuted && <MicOff size={13} className="server-muted" aria-label="silenciado para todos" />}
         {tile.localMuted && <VolumeX size={13} aria-label="silenciado para você" />}
+        {tile.trouble && <WifiOff size={13} className="server-muted" aria-label="sem conexão de voz com você" />}
         {tile.muted && !tile.serverMuted && <MicOff size={13} />}
         {isScreen && tile.hasAudio && tile.audioMuted && <VolumeX size={13} />}
         <span>
@@ -411,6 +415,7 @@ export default function VoiceView({ channel }) {
         stream: p.cameraStream,
         stats: p.cameraStats,
         connection: p.connectionState,
+        trouble: p.trouble,
         // Câmera ligada, mas você ainda não pediu para ver.
         offer: p.cameraAnnounced && !p.watchingCamera && !p.cameraStream ? 'camera' : null,
         watching: p.watchingCamera,

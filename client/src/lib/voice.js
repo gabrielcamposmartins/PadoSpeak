@@ -1,5 +1,7 @@
 import { suppressNoise } from './noise.js';
 import { plain } from './text.js';
+import { isTauri } from './env.js';
+import { startNativeScreenAudio } from './screenAudio.js';
 
 // Voz, câmera e compartilhamento de tela via WebRTC em malha (P2P), com "perfect negotiation".
 // O servidor Rust só repassa a sinalização (oferta/resposta/ICE) entre quem está no mesmo canal.
@@ -14,6 +16,15 @@ const SPEAKING_THRESHOLD = 0.02;
 const SPEAKING_HOLD_MS = 300;
 /** Amostras de latência guardadas (uma a cada 2 s → 3 minutos). */
 const LATENCY_SAMPLES = 90;
+// Reconexão por par: caiu (ou nunca conectou) → reinicia o ICE; continua sem conexão → refaz a conexão
+// inteira (de novo, no máximo a cada RESET_EVERY_MS). Quem não consegue direto passa pelo TURN.
+const RESTART_AFTER_MS = 6000;
+const RESET_AFTER_MS = 15000;
+const RESET_EVERY_MS = 20000;
+/** "Sem conexão" na tela depois de tanto tempo sem conectar. */
+const TROUBLE_AFTER_MS = 5000;
+/** Eventos guardados por par (para o diagnóstico). */
+const PEER_LOG = 30;
 
 // Com o RNNoise ligado, o supressor nativo do navegador fica desligado para não processar o áudio duas vezes.
 const audioConstraints = (deviceId, rnnoise) => ({
@@ -116,6 +127,7 @@ export class VoiceClient {
     this.statsTimer = setInterval(() => {
       this.collectStats();
       this.startLateSenders();
+      this.checkPeers();
     }, 2000);
     this.changed();
   }
@@ -130,6 +142,8 @@ export class VoiceClient {
     this.unsubs = [];
     for (const id of [...this.peers.keys()]) this.removePeer(id, false);
     for (const s of [this.rawMic, this.mic, this.camera, this.screen]) s?.getTracks().forEach((t) => t.stop());
+    this.screenAudio?.stop();
+    this.screenAudio = null;
     this.nsPipe?.close();
     this.nsPipe = null;
     this.rawMic = this.mic = this.camera = this.screen = null;
@@ -182,6 +196,12 @@ export class VoiceClient {
       boosts: new Map(), // streamId -> { source, gain }: volume acima de 100% (Web Audio)
       streamMuted: false,
       connectionState: 'new',
+      // Desde quando está sem conexão (nunca conectou: desde a criação).
+      badSince: Date.now(),
+      lastRestart: 0,
+      lastReset: 0,
+      resets: 0,
+      log: [],
     };
     this.peers.set(peerId, peer);
 
@@ -201,10 +221,16 @@ export class VoiceClient {
     };
     pc.onconnectionstatechange = () => {
       peer.connectionState = pc.connectionState;
-      if (pc.connectionState === 'failed') pc.restartIce();
-      if (pc.connectionState === 'connected') this.sendWant(peer);
+      this.peerLog(peer, `conexão: ${pc.connectionState}`);
+      if (pc.connectionState === 'connected') {
+        peer.badSince = null;
+        this.sendWant(peer);
+      } else if (!peer.badSince) peer.badSince = Date.now();
+      // Só um lado reinicia o ICE: os dois ao mesmo tempo colidem (veja checkPeers).
+      if (pc.connectionState === 'failed') this.restartIce(peer);
       this.changed();
     };
+    pc.oniceconnectionstatechange = () => this.peerLog(peer, `ice: ${pc.iceConnectionState}`);
     pc.ontrack = ({ track, streams }) => {
       const stream = streams[0] || new MediaStream([track]);
       peer.streams.set(stream.id, stream);
@@ -323,8 +349,81 @@ export class VoiceClient {
     this.rt.send('voice:signal', { to, data });
   }
 
+  peerLog(peer, text) {
+    peer.log.push(`${new Date().toLocaleTimeString('pt-BR')} ${text}`);
+    if (peer.log.length > PEER_LOG) peer.log.shift();
+  }
+
+  /** Reinicia o ICE (só o lado não educado; o educado responde à oferta). */
+  restartIce(peer) {
+    if (peer.polite || peer.pc.signalingState === 'closed' || Date.now() - peer.lastRestart < RESTART_AFTER_MS) return;
+    peer.lastRestart = Date.now();
+    this.peerLog(peer, 'reiniciando o ICE');
+    peer.pc.restartIce();
+  }
+
+  /**
+   * Refaz a conexão com um par do zero (nova RTCPeerConnection), mantendo volume, mudo e o que eu
+   * estava assistindo. `fromRemote`: o outro lado pediu (não avisa de volta).
+   */
+  resetPeer(peerId, fromRemote = false) {
+    const old = this.peers.get(peerId);
+    if (!old) return;
+    if (!fromRemote) this.signal(peerId, { reset: true });
+    const keep = {
+      info: old.info,
+      volume: old.volume,
+      streamVolume: old.streamVolume,
+      streamMuted: old.streamMuted,
+      watching: old.watching,
+      resets: old.resets + 1,
+      log: old.log,
+    };
+    this.removePeer(peerId, false);
+    const peer = this.ensurePeer(peerId, keep.info);
+    Object.assign(peer, {
+      volume: keep.volume,
+      streamVolume: keep.streamVolume,
+      streamMuted: keep.streamMuted,
+      resets: keep.resets,
+      log: keep.log,
+      lastReset: Date.now(),
+      autoApplied: true,
+    });
+    if (keep.watching.camera || keep.watching.screen) {
+      peer.watching = { ...keep.watching };
+      peer.wantDirty = true;
+    }
+    this.applyAudio(peer);
+    this.peerLog(peer, fromRemote ? 'conexão refeita (pedido do outro lado)' : 'conexão refeita');
+    this.changed();
+  }
+
+  /** A cada 2 s: quem está sem conexão há um tempo tem o ICE reiniciado e, se não voltar, a conexão refeita. */
+  checkPeers() {
+    const now = Date.now();
+    for (const peer of [...this.peers.values()]) {
+      if (!peer.badSince || peer.pc.connectionState === 'connected') continue;
+      const bad = now - peer.badSince;
+      if (bad > RESET_AFTER_MS && now - Math.max(peer.lastReset, peer.createdAt) > RESET_EVERY_MS) {
+        if (peer.polite) {
+          // Quem refaz é o lado não educado; este só pede (e espera a vez de novo).
+          peer.lastReset = now;
+          this.peerLog(peer, 'pedindo para refazer a conexão');
+          this.signal(peer.id, { resetRequest: true });
+        } else this.resetPeer(peer.id);
+      } else if (bad > RESTART_AFTER_MS && peer.pc.connectionState !== 'new') this.restartIce(peer);
+    }
+  }
+
   handleSignal(from, data) {
+    // O outro lado refez a conexão comigo: refaço a minha também (antes de qualquer sinal novo dele).
+    if (data.reset) return this.resetPeer(from, true);
     const peer = this.ensurePeer(from);
+    if (data.resetRequest) {
+      if (!peer.polite) this.resetPeer(from);
+      return;
+    }
     // Processa em ordem: a negociação não pode intercalar descrições.
     peer.queue = peer.queue.then(() => this.processSignal(peer, data)).catch((e) => console.warn('[voz] sinal', e));
   }
@@ -687,23 +786,42 @@ export class VoiceClient {
         frameRate: { ideal: preset.fps, max: preset.fps },
       };
       const touch = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+      // App do Windows: o som vem do próprio Windows (só da janela, ou do sistema sem o PadoSpeak); o
+      // seletor só escolhe a imagem.
+      const native = isTauri;
       try {
         this.screen = await navigator.mediaDevices.getDisplayMedia(
-          touch
-            ? // Celular/tablet (app instalado ou navegador): só o essencial, que todos aceitam.
-              { video: videoOpts, audio: true }
-            : {
-                video: videoOpts,
-                audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-                systemAudio: 'include',
-                selfBrowserSurface: 'exclude',
-                surfaceSwitching: 'include',
-              },
+          native
+            ? { video: videoOpts, audio: false, selfBrowserSurface: 'exclude', surfaceSwitching: 'exclude' }
+            : touch
+              ? // Celular/tablet (app instalado ou navegador): só o essencial, que todos aceitam.
+                { video: videoOpts, audio: true }
+              : {
+                  video: videoOpts,
+                  // restrictOwnAudio: o som desta página (as vozes da chamada) não entra na transmissão.
+                  audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, restrictOwnAudio: true },
+                  systemAudio: 'include',
+                  // Chrome 141+: ao escolher uma janela, oferece o som só daquela janela.
+                  windowAudio: 'window',
+                  selfBrowserSurface: 'exclude',
+                  surfaceSwitching: 'include',
+                },
         );
       } catch (e) {
         // Alguns aparelhos não capturam o áudio junto: tenta só a imagem.
         if (!['TypeError', 'NotSupportedError', 'OverconstrainedError'].includes(e.name)) throw e;
         this.screen = await navigator.mediaDevices.getDisplayMedia({ video: videoOpts });
+      }
+      if (native) {
+        try {
+          this.screenAudio = await startNativeScreenAudio(this.screen.getVideoTracks()[0]);
+          this.screen.addTrack(this.screenAudio.track);
+          if (this.screenAudio.fallback)
+            this.onNotice?.('Não deu para separar o som desta janela: a transmissão leva o som do computador (sem o PadoSpeak).');
+        } catch (e) {
+          console.warn('[voz] som da transmissão', e);
+          this.onNotice?.(`A transmissão vai sem som: ${e.message}`);
+        }
       }
       this.state.screenAudioMuted = false;
       const [video] = this.screen.getVideoTracks();
@@ -720,6 +838,8 @@ export class VoiceClient {
         }
       }
       this.screen.getTracks().forEach((t) => t.stop());
+      this.screenAudio?.stop();
+      this.screenAudio = null;
       this.screen = null;
       this.pushState({ screen: false, screenStreamId: null });
     }
@@ -777,9 +897,22 @@ export class VoiceClient {
         };
         const codec = (s) => byId.get(s.codecId)?.mimeType?.replace('video/', '') || '?';
         const video = {};
+        const audio = { in: [], out: [] };
         let path = null;
         report.forEach((s) => {
-          if (s.type === 'inbound-rtp' && s.kind === 'video') {
+          if (s.type === 'inbound-rtp' && s.kind === 'audio') {
+            audio.in.push({
+              kbps: kbps(s, 'bytesReceived'),
+              bytes: s.bytesReceived || 0,
+              lost: s.packetsLost || 0,
+              packets: s.packetsReceived || 0,
+              jitterMs: s.jitter != null ? Math.round(s.jitter * 1000) : null,
+              level: s.audioLevel != null ? Math.round(s.audioLevel * 1000) / 1000 : null,
+              concealed: s.totalSamplesReceived ? Math.round((100 * (s.concealedSamples || 0)) / s.totalSamplesReceived) : 0,
+            });
+          } else if (s.type === 'outbound-rtp' && s.kind === 'audio') {
+            audio.out.push({ kbps: kbps(s, 'bytesSent'), bytes: s.bytesSent || 0 });
+          } else if (s.type === 'inbound-rtp' && s.kind === 'video') {
             video[s.trackIdentifier] = {
               dir: 'in',
               codec: codec(s),
@@ -814,14 +947,16 @@ export class VoiceClient {
             const r = byId.get(pair?.remoteCandidateId);
             if (pair)
               path = {
-                local: `${l?.candidateType}/${l?.protocol}`,
+                local: `${l?.candidateType}/${l?.protocol}${l?.relayProtocol ? `/turn-${l.relayProtocol}` : ''}`,
                 remote: `${r?.candidateType}/${r?.protocol}`,
                 rttMs: pair.currentRoundTripTime != null ? Math.round(pair.currentRoundTripTime * 1000) : null,
               };
           }
         });
         peer.prevStats = byId;
-        peer.stats = { connection: peer.pc.connectionState, ice: peer.pc.iceConnectionState, path, video };
+        const route = path ? (path.local.startsWith('relay') || path.remote.startsWith('relay') ? 'relay' : 'direto') : null;
+        if (route && route !== peer.stats?.route) this.peerLog(peer, `caminho: ${route} (${path.local} → ${path.remote})`);
+        peer.stats = { connection: peer.pc.connectionState, ice: peer.pc.iceConnectionState, path, route, video, audio };
       } catch (e) {
         console.warn('[voz] getStats', e);
       }
@@ -872,21 +1007,37 @@ export class VoiceClient {
     const lines = [
       `PadoSpeak · ${new Date().toISOString()}`,
       `UA: ${navigator.userAgent}`,
-      `contexto seguro: ${window.isSecureContext} · microfone: ${this.state.micAvailable} · supressão RNNoise: ${Boolean(this.nsPipe)} · ICE: ${JSON.stringify(this.iceServers)}`,
-      `local: câmera=${Boolean(this.camera)} tela=${Boolean(this.screen)} preset=${this.state.screenPreset}`,
+      `contexto seguro: ${window.isSecureContext} · microfone: ${this.state.micAvailable} · supressão RNNoise: ${Boolean(this.nsPipe)}`,
+      // Sem a senha do TURN (o relatório pode ser colado em qualquer lugar).
+      `ICE: ${JSON.stringify((this.iceServers || []).map((s) => ({ urls: s.urls, ...(s.credential ? { senha: 'temporária' } : {}) })))}`,
+      `local: mudo=${this.state.muted} surdo=${this.state.deafened} silenciado-pelo-mod=${Boolean(this.state.serverMuted)} microfone-ativo=${Boolean(this.mic?.getAudioTracks()[0]?.enabled)} saída=${this.devices.output || 'padrão'}`,
+      `local: câmera=${Boolean(this.camera)} tela=${Boolean(this.screen)} preset=${this.state.screenPreset}${this.screenAudio ? ` som-da-tela=${this.screenAudio.mode}${this.screenAudio.source ? `(${this.screenAudio.source})` : ''}` : ''}`,
     ];
     for (const p of this.peers.values()) {
       lines.push(
         '',
         `par ${p.info.user?.username || p.id}: conexão=${p.pc.connectionState} ice=${p.pc.iceConnectionState} sinalização=${p.pc.signalingState}`,
       );
-      lines.push(`  caminho: ${JSON.stringify(p.stats?.path || null)}`);
+      lines.push(`  caminho: ${p.stats?.route || 'nenhum'} ${JSON.stringify(p.stats?.path || null)} · conexões refeitas: ${p.resets}`);
+      for (const a of p.stats?.audio?.in || [])
+        lines.push(
+          `  voz recebida: ${a.kbps ?? '?'} kbps · pacotes=${a.packets} perdidos=${a.lost} jitter=${a.jitterMs ?? '?'}ms nível=${a.level ?? '?'} preenchido=${a.concealed}%`,
+        );
+      for (const a of p.stats?.audio?.out || []) lines.push(`  voz enviada: ${a.kbps ?? '?'} kbps`);
+      const els = [...p.audioEls.entries()].map(
+        ([id, el]) =>
+          `${id === p.info.screenStreamId ? 'tela' : 'voz'}:${el.paused ? 'PAUSADO' : 'tocando'}${el.muted ? '/mudo' : ''}/vol=${el.volume}${p.boosts.has(id) ? '/amplificado' : ''}`,
+      );
+      lines.push(
+        `  áudio aqui: ${els.join(' ') || 'nenhum'} · volume=${Math.round(p.volume * 100)}% · silenciado-por-mim=${this.localMutes.has(p.info.user?.id)} · mudo-dele=${Boolean(p.info.muted)} silenciado-pelo-mod=${Boolean(p.info.serverMuted)}`,
+      );
       lines.push(
         `  anunciado: câmera=${Boolean(p.info.video)} tela=${Boolean(p.info.screen)} streams recebidos=${p.streams.size}`,
         `  assistindo: câmera=${p.watching.camera} tela=${p.watching.screen} · pediu de mim: câmera=${p.wants.camera} tela=${p.wants.screen}`,
       );
       for (const [id, v] of Object.entries(p.stats?.video || {}))
         lines.push(`  vídeo ${v.dir} ${id.slice(0, 8)}: ${JSON.stringify(v)}`);
+      if (p.log.length) lines.push('  histórico:', ...p.log.map((l) => `    ${l}`));
     }
     return lines.join('\n');
   }
@@ -936,6 +1087,9 @@ export class VoiceClient {
         streamMuted: p.streamMuted,
         screenHasAudio: Boolean(p.streams.get(p.info.screenStreamId)?.getAudioTracks().length),
         connectionState: p.connectionState,
+        // Sem conexão de mídia com esta pessoa há alguns segundos (você não a ouve, ela não te ouve).
+        trouble: Boolean(p.badSince && Date.now() - p.badSince > TROUBLE_AFTER_MS),
+        route: p.stats?.route || null,
         cameraStats: p.info.video ? this.videoStats(p.streams.get(p.info.cameraStreamId), p.id) : null,
         screenStats: p.info.screen ? this.videoStats(p.streams.get(p.info.screenStreamId), p.id) : null,
         cameraStream: p.info.video ? p.streams.get(p.info.cameraStreamId) || null : null,

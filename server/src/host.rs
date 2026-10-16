@@ -34,6 +34,8 @@ pub struct App {
     pub data_dir: PathBuf,
     /// Registro de cada servidor (veja `crate::audit`).
     pub audit: crate::audit::Sender,
+    /// Relay das chamadas (TURN), com senha temporária por usuário (veja `crate::turn`).
+    pub turn: Option<crate::turn::Turn>,
 }
 
 struct Running {
@@ -199,6 +201,10 @@ impl HostManager {
         };
         let (audit_tx, audit_rx) = tokio::sync::mpsc::unbounded_channel();
         hub.set_audit(audit_tx.clone());
+        let turn = if self.local_node { None } else { crate::turn::Turn::from_env() };
+        if let Some(t) = &turn {
+            self.logs.info(format!("Relay das chamadas (TURN): {}", t.urls().join(", ")));
+        }
         let app = Arc::new(App {
             audit: audit_tx,
             db: self.db.clone(),
@@ -210,6 +216,7 @@ impl HostManager {
             lan: lan.clone(),
             push,
             data_dir: self.data_dir.clone(),
+            turn,
         });
         if let Some(lan) = &lan {
             app.hub.set_lan_mode();
