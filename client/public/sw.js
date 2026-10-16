@@ -1,6 +1,6 @@
 // Service worker do PadoSpeak instalado (PWA): abre a interface na hora mesmo com a rede lenta e
 // mostra as notificações push com o app fechado.
-const CACHE = 'padospeak-v1';
+const CACHE = 'padospeak-v2';
 const SHELL = ['/', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/badge-96.png'];
 
 self.addEventListener('install', (e) => {

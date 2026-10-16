@@ -1,7 +1,7 @@
 // Entrar com o Google, "esqueci minha senha" (código por e-mail) e a aba "Conta" das configurações
 // (vincular o e-mail e o Google).
 import { useEffect, useRef, useState } from 'react';
-import { Mail, Check, X, Send, ShieldCheck } from 'lucide-react';
+import { Mail, Check, X, Send, ShieldCheck, KeyRound, MailCheck, ArrowLeft } from 'lucide-react';
 import { useStore } from '../store.js';
 import { googleFlow, authOptions } from '../lib/google.js';
 
@@ -70,20 +70,20 @@ function useGoogleFlow(base) {
 function GoogleWaiting({ flow }) {
   const [code, setCode] = useState('');
   if (!flow.waiting) return null;
+  const ready = code.replace(/[^a-z0-9]/gi, '').length === 6;
+  const send = () => {
+    flow.submit(code);
+    setCode('');
+  };
   return (
     <>
       <button type="button" className="link-inline" onClick={flow.cancel}>
         Cancelar
       </button>
       {flow.ask && (
-        <form
-          className="acc-form google-code"
-          onSubmit={(e) => {
-            e.preventDefault();
-            flow.submit(code);
-            setCode('');
-          }}
-        >
+        // Sem <form>: o botão do Google costuma ficar dentro do formulário de login, e um formulário dentro
+        // do outro faz o navegador enviar (e recarregar) a página ao confirmar o código.
+        <div className="acc-form google-code" role="group" aria-label="Código do Google">
           <label className="field grow">
             <span>Código que apareceu no navegador</span>
             <input
@@ -94,15 +94,20 @@ function GoogleWaiting({ flow }) {
               autoCapitalize="characters"
               spellCheck={false}
               placeholder="ABC123"
-              required
               autoFocus
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter') return;
+                e.preventDefault();
+                e.stopPropagation();
+                if (ready) send();
+              }}
             />
           </label>
-          <button className="btn green" disabled={code.replace(/[^a-z0-9]/gi, '').length !== 6}>
+          <button type="button" className="btn green" disabled={!ready} onClick={send}>
             <Check size={14} /> Confirmar
           </button>
           {flow.ask.error && <p className="error-text">{flow.ask.error}</p>}
-        </form>
+        </div>
       )}
     </>
   );
@@ -132,45 +137,173 @@ export function GoogleButton({ base, onDone, onError, label = 'Entrar com o Goog
   );
 }
 
-/** "Esqueci minha senha": manda o código para o e-mail da conta. */
-export function ForgotForm({ base, onBack, onSent }) {
+/** Formata o código de recuperação enquanto a pessoa digita: ABCD-EFGH. */
+const fmtResetCode = (v) => {
+  const c = v.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+  return c.length > 4 ? `${c.slice(0, 4)}-${c.slice(4)}` : c;
+};
+/** a•••@gmail.com */
+const maskEmail = (e) => e.replace(/^(.)[^@]*(@.*)$/, (_, a, d) => `${a}•••${d}`);
+
+/**
+ * "Esqueci minha senha", em três passos na mesma tela: o e-mail da conta, o código que chega por e-mail e
+ * a senha nova. `onReset({ username, password, newPassword })` troca a senha e entra (o código vale como
+ * a senha temporária).
+ */
+export function ForgotForm({ base, onBack, onReset }) {
+  const [step, setStep] = useState('email');
   const [email, setEmail] = useState('');
+  const [code, setCode] = useState('');
+  const [pass, setPass] = useState('');
+  const [repeat, setRepeat] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const send = async (e) => {
-    e.preventDefault();
+  const [wait, setWait] = useState(0);
+  useEffect(() => {
+    if (wait <= 0) return;
+    const t = setTimeout(() => setWait((w) => w - 1), 1000);
+    return () => clearTimeout(t);
+  }, [wait]);
+
+  const send = async () => {
     setBusy(true);
     setError('');
     try {
       const res = await fetch(`${base}/api/auth/forgot`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email: email.trim() }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `Erro ${res.status}`);
-      onSent(email.trim());
+      setStep('code');
+      setWait(60);
     } catch (err) {
       setError(err.message);
     } finally {
       setBusy(false);
     }
   };
+  const save = async () => {
+    setError('');
+    if (pass.length < 6) return setError('A senha nova precisa de pelo menos 6 caracteres.');
+    if (pass !== repeat) return setError('As duas senhas não são iguais.');
+    setBusy(true);
+    try {
+      await onReset({ username: email.trim(), password: code, newPassword: pass });
+    } catch (err) {
+      setError(err.status === 401 ? 'Código incorreto ou vencido. Confira o e-mail ou peça outro código.' : err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const steps = [
+    ['email', 'E-mail'],
+    ['code', 'Nova senha'],
+  ];
+  const at = steps.findIndex(([k]) => k === step);
+
   return (
-    <form onSubmit={send} className="auth-form">
-      <p className="auth-reset">Digite o e-mail da sua conta. Mandamos um código que vale no lugar da senha por 30 minutos.</p>
-      <label className="field">
-        <span>E-mail</span>
-        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" placeholder="voce@exemplo.com" required autoFocus />
-      </label>
-      {error && <p className="error-text">{error}</p>}
-      <button className="go big-go" disabled={busy}>
-        {busy ? 'Mandando…' : 'Mandar o código'}
-      </button>
+    <div className="recover">
+      <div className="recover-head">
+        <span className="recover-orb" aria-hidden="true">
+          {step === 'email' ? <KeyRound size={26} /> : <MailCheck size={26} />}
+        </span>
+        <div>
+          <h2>{step === 'email' ? 'Recuperar a senha' : 'Confira o seu e-mail'}</h2>
+          <p>
+            {step === 'email'
+              ? 'Digite o e-mail confirmado da sua conta. Mandamos um código para você criar uma senha nova.'
+              : `Se ${maskEmail(email.trim())} for de uma conta, o código já está chegando. Ele vale por 30 minutos; confira também o spam.`}
+          </p>
+        </div>
+      </div>
+      <ol className="recover-steps" aria-label="Etapas">
+        {steps.map(([k, label], i) => (
+          <li key={k} className={i < at ? 'done' : i === at ? 'on' : ''} aria-current={i === at ? 'step' : undefined}>
+            <span className="dot">{i < at ? <Check size={12} /> : i + 1}</span>
+            {label}
+          </li>
+        ))}
+      </ol>
+
+      {step === 'email' ? (
+        <form
+          className="auth-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            send();
+          }}
+        >
+          <label className="field">
+            <span>E-mail</span>
+            <span className="input-ico">
+              <Mail size={16} aria-hidden="true" />
+              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" placeholder="voce@exemplo.com" required autoFocus />
+            </span>
+          </label>
+          {error && <p className="error-text">{error}</p>}
+          <button className="go big-go" disabled={busy || !email.trim()}>
+            {busy ? 'Mandando…' : 'Mandar o código'}
+          </button>
+        </form>
+      ) : (
+        <form
+          className="auth-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            save();
+          }}
+        >
+          <label className="field">
+            <span>Código do e-mail</span>
+            <input
+              className="recover-code"
+              value={code}
+              onChange={(e) => setCode(fmtResetCode(e.target.value))}
+              autoComplete="one-time-code"
+              autoCapitalize="characters"
+              spellCheck={false}
+              placeholder="ABCD-EFGH"
+              inputMode="text"
+              required
+              autoFocus
+            />
+          </label>
+          <label className="field">
+            <span>Senha nova</span>
+            <input type="password" value={pass} onChange={(e) => setPass(e.target.value)} autoComplete="new-password" minLength={6} placeholder="Pelo menos 6 caracteres" required />
+          </label>
+          <label className="field">
+            <span>Repita a senha nova</span>
+            <input type="password" value={repeat} onChange={(e) => setRepeat(e.target.value)} autoComplete="new-password" minLength={6} required />
+          </label>
+          {error && <p className="error-text">{error}</p>}
+          <button className="go big-go" disabled={busy || code.length !== 9}>
+            {busy ? 'Salvando…' : 'Salvar a senha e entrar'}
+          </button>
+          <div className="recover-links">
+            <button type="button" className="link-inline" disabled={wait > 0 || busy} onClick={send}>
+              {wait > 0 ? `Mandar outro código em ${wait} s` : 'Mandar outro código'}
+            </button>
+            <button
+              type="button"
+              className="link-inline"
+              onClick={() => {
+                setStep('email');
+                setError('');
+                setCode('');
+              }}
+            >
+              Usar outro e-mail
+            </button>
+          </div>
+        </form>
+      )}
       <button type="button" className="link-inline auth-back" onClick={onBack}>
-        Voltar para entrar
+        <ArrowLeft size={14} /> Voltar para entrar
       </button>
-    </form>
+    </div>
   );
 }
 

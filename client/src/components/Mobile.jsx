@@ -52,10 +52,12 @@ function TabBar() {
   const tab = useStore((s) => s.mobileTab);
   const unread = useAcross(unreadTotal);
   const pending = useStore((s) => Object.values(s.friends).filter((f) => f.status === 'incoming').length);
+  // Avisos dos servidores ainda não vistos (mensagens que avisaram, menções, entradas na voz…).
+  const serverAlerts = useStore((s) => Object.values(s.alerts).reduce((n, a) => n + (a?.n || 0), 0));
   const tabs = [
     ['chats', 'Conversas', MessageCircle, unread],
     ['friends', 'Amigos', Users, pending],
-    ['servers', 'Servidores', LayoutGrid, 0],
+    ['servers', 'Servidores', LayoutGrid, serverAlerts],
     ['me', 'Eu', UserRound, 0],
   ];
   return (

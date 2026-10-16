@@ -2,7 +2,7 @@
 // editar, apagar e escolher quais ficam nos botões do atalho. E a lista dos sons de outra pessoa,
 // com "Copiar" para a sua biblioteca.
 import { useEffect, useRef, useState } from 'react';
-import { Play, Pencil, Trash2, Upload, Check, X } from 'lucide-react';
+import { Play, Pencil, Trash2, Upload, Check, X, Plus, Minus } from 'lucide-react';
 import { useStore, getConn } from '../store.js';
 import { SoundIcon, SOUND_ICONS, SOUND_TONES } from './SoundIcons.jsx';
 import { playSoundboard, audioDuration } from '../lib/soundboard.js';
@@ -88,7 +88,7 @@ function SoundForm({ initial, file, onCancel, onSave, busy }) {
   );
 }
 
-export function SoundsModal({ slot = null, conn }) {
+export function SoundsModal({ slot = null, conn, embedded = false }) {
   const store = getConn(conn);
   const lib = store((s) => s.sounds);
   const volume = useVolume();
@@ -102,7 +102,7 @@ export function SoundsModal({ slot = null, conn }) {
   useEffect(() => {
     if (!lib) st.loadSounds();
   }, []);
-  if (!lib) return <div className="modal-body">Carregando…</div>;
+  if (!lib) return <div className={embedded ? 'sound-lib' : 'modal-body'}>Carregando…</div>;
   const { sounds, slots, rows, max } = lib;
   const size = rows * 3;
   const inBoard = (id) => slots.slice(0, size).includes(id);
@@ -153,7 +153,7 @@ export function SoundsModal({ slot = null, conn }) {
   };
 
   return (
-    <div className="modal-body sound-lib">
+    <div className={embedded ? 'sound-lib' : 'modal-body sound-lib'}>
       <div className="sl-head">
         <p className="kv">
           {slot != null ? `Escolha o som do botão ${slot + 1}, ou envie um novo.` : 'Seus sons rápidos. Os que estão “No atalho” aparecem nos botões.'}
@@ -329,6 +329,85 @@ export function UserSoundsModal({ userId, conn }) {
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/**
+ * Configurações → Sons: o atalho (de 1 a 3 linhas de 3 botões; tocar num botão tira o som dele) e a
+ * biblioteca. O painel da barra lateral mostra só os botões com som.
+ */
+export function SoundSettings() {
+  const lib = useStore((s) => s.sounds);
+  const st = useStore.getState();
+  const [error, setError] = useState('');
+  useEffect(() => {
+    if (!lib) st.loadSounds();
+  }, []);
+  if (!lib) return <p className="kv">Carregando…</p>;
+  const { sounds, slots, rows } = lib;
+  const byId = new Map(sounds.map((x) => [x.id, x]));
+  const size = rows * 3;
+  const board = Array.from({ length: size }, (_, i) => (slots[i] && byId.get(slots[i])) || null);
+  const save = (next, r) => st.setSoundBoard(next, r).catch((e) => setError(e.message));
+  const remove = (i) => {
+    const next = [...slots];
+    next[i] = null;
+    save(next, rows);
+  };
+  const resize = (r) => {
+    // Menos linhas: os sons do atalho sobem para as primeiras casas; os que não couberem saem do atalho
+    // (continuam na biblioteca).
+    const filled = slots.filter((id) => id && byId.has(id));
+    const next = Array.from({ length: 9 }, (_, i) => (i < r * 3 ? filled[i] || null : null));
+    save(next, r);
+  };
+  const dropped = Math.max(0, board.filter(Boolean).length - (rows - 1) * 3);
+
+  return (
+    <div className="sound-settings">
+      <div className="settings-sec">Atalho</div>
+      <p className="kv">
+        Os sons do atalho aparecem embaixo da lista de canais e na tela de chamada do celular. Clique num botão aqui para tirar o som
+        dele; para pôr, use “Pôr no atalho” na biblioteca.
+      </p>
+      <div className="sb-edit" role="group" aria-label="Botões do atalho">
+        {board.map((snd, i) =>
+          snd ? (
+            <button key={snd.id} type="button" className={`snd t-${snd.tone}`} onClick={() => remove(i)} title={`Tirar “${snd.name}” do atalho`}>
+              <SoundIcon icon={snd.icon} />
+              <span className="n">{snd.name}</span>
+              <span className="sb-x" aria-hidden="true">
+                <X size={11} />
+              </span>
+            </button>
+          ) : (
+            <span key={`v${i}`} className="snd empty" aria-label="Botão vazio">
+              <span className="n">Vazio</span>
+            </span>
+          ),
+        )}
+      </div>
+      <div className="sb-rows">
+        <button type="button" className="btn ghost" disabled={rows >= 3} onClick={() => resize(rows + 1)}>
+          <Plus size={14} /> linha
+        </button>
+        <button
+          type="button"
+          className="btn ghost"
+          disabled={rows <= 1}
+          onClick={() => resize(rows - 1)}
+          title={dropped > 0 ? `${dropped} som(s) sairão do atalho (continuam na biblioteca)` : undefined}
+        >
+          <Minus size={14} /> linha
+        </button>
+        <span className="kv">
+          {rows} {rows === 1 ? 'linha' : 'linhas'} (máximo 3) · até {size} sons
+        </span>
+      </div>
+      {error && <p className="error-text">{error}</p>}
+      <div className="settings-sec">Biblioteca</div>
+      <SoundsModal embedded />
     </div>
   );
 }

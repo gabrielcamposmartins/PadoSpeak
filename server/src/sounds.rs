@@ -25,8 +25,8 @@ pub const MAX_SOUND: usize = 1024 * 1024;
 pub const MAX_DURATION_MS: i64 = 5_000;
 /// Sons na biblioteca de cada pessoa.
 pub const MAX_PER_USER: i64 = 10;
-/// Botões do atalho: 3 por linha, 2 ou 3 linhas.
-pub const MIN_ROWS: i64 = 2;
+/// Botões do atalho: 3 por linha, de 1 a 3 linhas (escolhido em Configurações → Sons).
+pub const MIN_ROWS: i64 = 1;
 pub const MAX_ROWS: i64 = 3;
 /// Intervalo mínimo entre dois sons da mesma pessoa.
 pub const COOLDOWN_MS: i64 = 2_000;
@@ -121,8 +121,8 @@ async fn board(app: &App, user_id: &str, sounds: &[Sound]) -> Result<(Vec<Option
         .await?;
     let (slots, rows) = match saved {
         Some((slots, rows)) => (serde_json::from_str::<Vec<Option<String>>>(&slots).unwrap_or_default(), rows.clamp(MIN_ROWS, MAX_ROWS)),
-        // Ainda sem atalho: os primeiros sons da biblioteca.
-        None => (sounds.iter().take(6).map(|s| Some(s.id.clone())).collect(), MIN_ROWS),
+        // Ainda sem atalho: começa com 1 linha, com os primeiros sons da biblioteca.
+        None => (sounds.iter().take(3).map(|s| Some(s.id.clone())).collect(), MIN_ROWS),
     };
     let size = (MAX_ROWS * 3) as usize;
     let mut out: Vec<Option<String>> = slots.into_iter().map(|id| id.filter(|id| sounds.iter().any(|s| &s.id == id))).collect();

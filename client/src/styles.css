@@ -151,7 +151,8 @@
   --mentioned-row-hover: rgba(255, 215, 80, 0.24);
   /* Celular: cor das barras do sistema nas telas sem a cena (conversa, servidor…) e embaixo. */
   --bar-top: #fcfeff;
-  --bar-bottom: #e6f3fc;
+  /* Barra de navegação do Android (voltar, início): branca no claro, preta no escuro. */
+  --bar-bottom: #ffffff;
   /* Tela de chamada do celular e sons rápidos (vidro com bolhas, botões de gel) */
   --call-top: #0d6cc0;
   --call-bottom: #0a4f93;
@@ -342,7 +343,7 @@
   --mentioned-row: rgba(255, 200, 40, 0.09);
   --mentioned-row-hover: rgba(255, 200, 40, 0.14);
   --bar-top: #23405f;
-  --bar-bottom: #0d1f33;
+  --bar-bottom: #000000;
   --call-top: #030c22;
   --call-bottom: #040d26;
   --call-bg: radial-gradient(120% 60% at 50% 0%, rgba(80, 160, 255, 0.3) 0%, rgba(80, 160, 255, 0) 60%), linear-gradient(180deg, #030c22 0%, #0b2a5c 50%, #040d26 100%);
@@ -519,7 +520,7 @@
     --mentioned-row: rgba(255, 200, 40, 0.09);
     --mentioned-row-hover: rgba(255, 200, 40, 0.14);
     --bar-top: #23405f;
-    --bar-bottom: #0d1f33;
+    --bar-bottom: #000000;
     --call-top: #030c22;
     --call-bottom: #040d26;
     --call-bg: radial-gradient(120% 60% at 50% 0%, rgba(80, 160, 255, 0.3) 0%, rgba(80, 160, 255, 0) 60%), linear-gradient(180deg, #030c22 0%, #0b2a5c 50%, #040d26 100%);
@@ -1470,7 +1471,7 @@ html.framed .overlay {
 .guild-badge {
   position: absolute;
   right: -6px;
-  bottom: -4px;
+  top: -4px;
   z-index: 2;
 }
 
@@ -10056,4 +10057,248 @@ html[data-touch] .call-screen .tile-tools,
 }
 .auth-legal a {
   color: var(--link);
+}
+
+/* ---------- Recuperar a senha ---------- */
+.recover {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.recover-head {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+.recover-head h2 {
+  margin: 2px 0 4px;
+  font-size: 19px;
+  color: var(--text);
+}
+.recover-head p {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.recover-orb {
+  flex: none;
+  position: relative;
+  overflow: hidden;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  border: 1px solid #0a5f99;
+  background: radial-gradient(circle at 50% 35%, #e6fbff 0%, #4fc0f2 45%, #0a6fb0 100%);
+  box-shadow:
+    inset 0 -4px 10px rgba(255, 255, 255, 0.3),
+    0 4px 12px rgba(10, 100, 170, 0.35);
+}
+.recover-orb::before {
+  content: '';
+  position: absolute;
+  left: 14%;
+  right: 14%;
+  top: 4px;
+  height: 42%;
+  border-radius: 50%;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.85), rgba(255, 255, 255, 0));
+}
+.recover-orb svg {
+  position: relative;
+  filter: drop-shadow(0 1px 1px rgba(0, 40, 80, 0.45));
+}
+.recover-steps {
+  display: flex;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.recover-steps li {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+  border: 1px solid var(--panel-border);
+  background: var(--row-hover);
+}
+.recover-steps li.on {
+  color: var(--text);
+  border-color: #3aa6e6;
+  box-shadow: 0 0 0 2px rgba(92, 192, 239, 0.35);
+}
+.recover-steps li.done {
+  color: #2f8a0c;
+}
+.recover-steps .dot {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 800;
+  color: #fff;
+  background: linear-gradient(180deg, #a9d8f6, #4c8fc0);
+}
+.recover-steps li.on .dot {
+  background: linear-gradient(180deg, #8fdcff, #1f86d8);
+}
+.recover-steps li.done .dot {
+  background: linear-gradient(180deg, #c9f6a0, #53b225);
+}
+.input-ico {
+  position: relative;
+  display: block;
+}
+.input-ico > svg {
+  position: absolute;
+  left: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  pointer-events: none;
+}
+.field .input-ico > input,
+.input-ico > input {
+  width: 100%;
+  padding-left: 36px;
+}
+.recover-code {
+  text-align: center;
+  font: 700 22px/1.2 ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  letter-spacing: 0.18em;
+}
+.recover-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 12px;
+  font-size: 13px;
+}
+.recover-links .link-inline:disabled {
+  color: var(--muted);
+  text-decoration: none;
+  cursor: default;
+}
+.auth-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.auth-google {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.auth-google .google-row,
+.auth-google .google-btn {
+  width: 100%;
+}
+.auth-google .auth-or {
+  margin: 0;
+}
+/* Telas baixas (notebook): o cartão inteiro cabe sem rolar — foto menor e menos espaço. */
+@media (max-height: 820px) {
+  .auth-body {
+    gap: 9px;
+    padding: 14px 26px 16px;
+  }
+  .auth-pic .pic {
+    width: 64px;
+    height: 64px;
+  }
+  .auth-known .avatar {
+    width: 72px !important;
+    height: 72px !important;
+  }
+  .auth-body .brand {
+    font-size: 22px;
+  }
+  .auth-body .field {
+    margin-bottom: 8px;
+  }
+  .auth-download {
+    margin-top: 4px;
+  }
+}
+
+/* Sons rápidos: painel sem sons ocupa só a linha do título; editor do atalho nas configurações */
+.sound-panel.empty {
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+.sound-panel.empty .sp-head {
+  margin-bottom: 0;
+}
+.sp-none {
+  font-weight: 600;
+  color: var(--muted);
+  text-shadow: none;
+}
+.sound-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sb-edit {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 96px));
+  gap: 8px;
+}
+.sb-edit .snd {
+  cursor: pointer;
+}
+.sb-edit span.snd {
+  cursor: default;
+  justify-content: center;
+}
+.sb-x {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: rgba(0, 30, 60, 0.45);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.sb-edit .snd:hover .sb-x,
+.sb-edit .snd:focus-visible .sb-x {
+  opacity: 1;
+}
+html[data-touch] .sb-x {
+  opacity: 1;
+}
+.sb-rows {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.sb-rows .kv {
+  margin: 0;
+}
+
+/* Avisos de um canal de servidor ainda não vistos */
+.row.channel .ch-badge {
+  position: static;
+  margin-left: auto;
+  flex: none;
 }

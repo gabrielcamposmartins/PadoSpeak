@@ -193,6 +193,13 @@ export function createConnStore({ key, kind, base, primary = false }) {
     const v = ui().getState().view;
     return v?.channelId === channelId && (v.conn || 'server') === key;
   };
+  /** Mais um aviso de um servidor (canal ou o servidor todo) para a bolinha vermelha. */
+  const bumpAlert = (alertKey, guildId) =>
+    store.setState((s) => ({ alerts: { ...s.alerts, [alertKey]: { g: guildId, n: (s.alerts[alertKey]?.n || 0) + 1 } } }));
+  const clearAlert = (alertKey) =>
+    store.getState().alerts[alertKey] && store.setState((s) => ({ alerts: { ...s.alerts, [alertKey]: undefined } }));
+  const guildOfChannel = (channelId) =>
+    Object.entries(store.getState().guildData).find(([, g]) => g.channels.some((c) => c.id === channelId))?.[0];
 
   store = create((set, get) => ({
     key,
@@ -246,6 +253,9 @@ export function createConnStore({ key, kind, base, primary = false }) {
     friends: {}, // userId -> { user, status: friend | incoming | outgoing }
     dms: [], // conversas diretas, mais recentes primeiro
     unread: {}, // dmId -> mensagens não lidas
+    // Avisos dos servidores ainda não vistos (a bolinha vermelha no ícone do servidor): por canal
+    // (mensagens que avisaram, chamar atenção) e `g:<servidor>` (entrou na voz, transmissão, membro novo).
+    alerts: {}, // chave -> { g: guildId, n }
     incomingCall: null, // { dmId, from }
     sidebarView: 'channels', // channels | music
     music: {}, // canal de voz -> estado da fila (music:state)
@@ -370,6 +380,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
         friends: {},
         dms: [],
         unread: {},
+        alerts: {},
         incomingCall: null,
         lanPeers: [],
         nudgeSettings: null,
@@ -553,6 +564,10 @@ export function createConnStore({ key, kind, base, primary = false }) {
       rt.on('nudge', ({ channelId, dm, from }) => {
         if (dm && !get().dms.some((d) => d.id === channelId)) get().loadDms();
         get().pushNotice(channelId, { kind: 'nudge-in', author: from });
+        if (!dm && !(isViewing(channelId) && appHasFocus())) {
+          const gid = guildOfChannel(channelId);
+          if (gid) bumpAlert(channelId, gid);
+        }
         ding('nudge');
         shakeWindow();
         flashTaskbar();
@@ -589,7 +604,8 @@ export function createConnStore({ key, kind, base, primary = false }) {
       rt.on('message:new', (m) => {
         const s = get();
         const isDm = s.dms.some((d) => d.id === m.channelId);
-        const isGuild = Object.values(s.guildData).some((g) => g.channels.some((c) => c.id === m.channelId));
+        // Mensagem de canal de servidor traz o `guildId` (o servidor pode ainda não ter sido aberto no app).
+        const isGuild = Boolean(m.guildId) || Object.values(s.guildData).some((g) => g.channels.some((c) => c.id === m.channelId));
         if (!isDm && !isGuild) get().loadDms(); // primeira mensagem de uma conversa nova
         if (isDm || !isGuild) {
           // Só conta como lida se a pessoa está mesmo olhando: conversa aberta e janela em foco (com a
@@ -610,22 +626,24 @@ export function createConnStore({ key, kind, base, primary = false }) {
           }
         } else if (m.author.id !== s.me?.id && !(isViewing(m.channelId) && appHasFocus())) {
           // Canal de servidor: avisa conforme as notificações escolhidas para o servidor.
-          const guildId = Object.entries(s.guildData).find(([, g]) => g.channels.some((c) => c.id === m.channelId))?.[0];
+          const guildId = m.guildId || Object.entries(s.guildData).find(([, g]) => g.channels.some((c) => c.id === m.channelId))?.[0];
           const n = { ...DEFAULT_NOTIFY, ...s.guildNotify[guildId] };
           // @meu_usuario ou @everyone: avisa mesmo com "só menções" ou com o canal silenciado.
           const mentioned = mentionsUser(plain(m.content), s.me?.username);
           const wants =
             n.messages === 'all' ? mentioned || !n.mutedChannels.includes(m.channelId) : n.messages === 'mentions' && mentioned;
           if (wants) {
-            const ch = s.guildData[guildId].channels.find((c) => c.id === m.channelId);
+            const ch = s.guildData[guildId]?.channels.find((c) => c.id === m.channelId);
+            const where = ch ? `#${ch.name}` : s.guilds.find((g) => g.id === guildId)?.name || 'um servidor';
+            bumpAlert(m.channelId, guildId);
             ding('message');
             notify(
               mentioned
-                ? `${plain(m.author.displayName)} mencionou você em #${ch?.name}: ${plain(m.content).slice(0, 120)}`
-                : `${messageNotice(m.author, m.content)} (#${ch?.name})`,
+                ? `${plain(m.author.displayName)} mencionou você em ${where}: ${plain(m.content).slice(0, 120)}`
+                : `${messageNotice(m.author, m.content)} (${where})`,
               'presence',
               m.author,
-              `/?channel=${m.channelId}`,
+              `/?channel=${m.channelId}&guild=${guildId}`,
             );
           }
         }
@@ -741,10 +759,13 @@ export function createConnStore({ key, kind, base, primary = false }) {
             if (p.user.id === s0.me?.id) continue;
             const was = before.get(p.peerId);
             // O canal pode ter o aviso de entrada desligado pelos administradores.
-            if (!was && n.voiceJoin && ch?.announceJoin !== false && !participants.some((o) => o !== p && o.user.id === p.user.id))
+            if (!was && n.voiceJoin && ch?.announceJoin !== false && !participants.some((o) => o !== p && o.user.id === p.user.id)) {
               notify(`${p.user.displayName} entrou em 🔊 ${ch?.name || 'um canal de voz'}.`, 'presence', p.user);
-            else if (was && !was.screen && p.screen && n.streams)
+              bumpAlert(`g:${guildId}`, guildId);
+            } else if (was && !was.screen && p.screen && n.streams) {
               notify(`${p.user.displayName} começou a transmitir em 🔊 ${ch?.name || 'um canal de voz'}.`, 'presence', p.user);
+              bumpAlert(`g:${guildId}`, guildId);
+            }
           }
         }
         set((s) => {
@@ -782,6 +803,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
         if (user.id !== s.me?.id && s.guildNotify[guildId]?.members) {
           const g = s.guilds.find((x) => x.id === guildId);
           notify(`${user.displayName} entrou em ${g?.name || 'um servidor'}.`, 'presence', user);
+          bumpAlert(`g:${guildId}`, guildId);
         }
         set((st) => {
           const g = st.guildData[guildId];
@@ -1115,6 +1137,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
 
     async selectGuild(guildId) {
       set({ currentGuildId: guildId, lastGuildId: guildId, mobilePane: 'list' });
+      clearAlert(`g:${guildId}`);
       let data = get().guildData[guildId];
       if (!data) {
         try {
@@ -1127,10 +1150,14 @@ export function createConnStore({ key, kind, base, primary = false }) {
       const last = get().lastChannel[guildId];
       const target = data.channels.find((c) => c.id === last) || data.channels.find((c) => c.type === 'text');
       set({ view: target ? { type: 'text', channelId: target.id } : null });
-      if (target) get().loadMessages(target.id);
+      if (target) {
+        clearAlert(target.id);
+        get().loadMessages(target.id);
+      }
     },
 
     selectTextChannel(channelId) {
+      clearAlert(channelId);
       const guildId = get().currentGuildId;
       set((s) => ({ view: { type: 'text', channelId }, lastChannel: { ...s.lastChannel, [guildId]: channelId } }));
       openPane();
@@ -1837,7 +1864,7 @@ export function openFromUrl(url = location.href) {
     ui.goHome();
     ui.setMobileTab('friends');
   } else if (channel) {
-    const guildId = Object.entries(ui.guildData).find(([, g]) => g.channels.some((c) => c.id === channel))?.[0];
+    const guildId = Object.entries(ui.guildData).find(([, g]) => g.channels.some((c) => c.id === channel))?.[0] || q.get('guild');
     if (guildId)
       ui.selectGuild(guildId).then(() => {
         useStore.getState().selectTextChannel(channel);
@@ -1885,7 +1912,13 @@ export function initBackNavigation() {
 /** Voltou para a janela: a conversa que está aberta foi lida (some o número vermelho). */
 function markViewedRead() {
   const v = useStore.getState().view;
-  if (v?.type !== 'dm' || !appHasFocus()) return;
+  if (!appHasFocus()) return;
+  // Canal de servidor aberto: os avisos dele somem ao voltar para a janela.
+  if (v?.type === 'text' && useStore.getState().alerts[v.channelId]) {
+    useStore.setState((s) => ({ alerts: { ...s.alerts, [v.channelId]: undefined } }));
+    return;
+  }
+  if (v?.type !== 'dm') return;
   const store = getConn(v.conn);
   if (store.getState().unread[v.channelId]) store.setState((s) => ({ unread: { ...s.unread, [v.channelId]: 0 } }));
 }
@@ -2217,6 +2250,8 @@ export async function connectServer({ username, password = localPassword } = {})
   if (pendingServerToken) {
     saveToken(url, pendingServerToken, profileScope);
     pendingServerToken = null;
+    // A conexão do servidor passa a usar essa sessão (ela leu o token antes de ele existir).
+    st.reloadToken();
   }
   try {
     if (loadToken(url, profileScope)) {

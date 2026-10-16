@@ -1,5 +1,19 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.8.1 — 16/10/2026
+
+### Novidades
+- **Avisos dos servidores**: quando um aviso vem de um servidor (mensagem, menção, chamar atenção, alguém entrando na voz ou transmitindo, membro novo), aparece uma bolinha vermelha no ícone daquele servidor e o número ao lado do canal. Somem ao abrir o servidor ou o canal. No celular, o total aparece na aba Servidores.
+- **Recuperar a senha** ficou numa tela só: digite o e-mail, depois o código que chegou e a senha nova, e você já entra.
+- **Sons rápidos**: o painel embaixo da lista de canais mostra só os sons que estão no atalho (de 1 a 3 linhas); sem nenhum, fica só “Sons rápidos — Nenhum”. Montar o atalho, a biblioteca e o volume ficam em Configurações → Sons.
+- **Celular**: a tela de abertura do app instalado no iPhone e no iPad ganhou o céu com bolhas e a grama da tela de entrada, e a barra de navegação do Android fica branca no tema claro e preta no escuro.
+- **Política de Privacidade e Termos de Serviço**: links na tela de entrada e em Configurações → Conta.
+
+### Correções
+- **Entrar com o Google no app do Windows**: depois de digitar o código que aparece no navegador, o app agora entra na conta.
+- **Tela de entrada**: não mostra mais o endereço do servidor e cabe inteira em telas de notebook.
+- **Celular**: um aviso de um servidor ainda não aberto no app não conta mais como conversa em “Conversas”.
+
 ## 1.8.0 — 16/10/2026
 
 ### Novidades

@@ -960,7 +960,10 @@ impl Hub {
                     return err("Erro ao salvar mensagem");
                 }
                 msg.expires_at = crate::files::link_message(app, &msg.content, &ch.id, &user.id, &msg.id).await;
-                self.to_channel(&ch.guild_id, &ch.id, "message:new", &msg);
+                // Com o servidor junto: quem ainda não abriu o servidor no app sabe de onde veio o aviso.
+                let mut payload = serde_json::to_value(&msg).unwrap_or_default();
+                payload["guildId"] = json!(ch.guild_id);
+                self.to_channel(&ch.guild_id, &ch.id, "message:new", &payload);
                 app.audit(
                     crate::audit::Entry::new(&ch.guild_id, "message.send", &user.id)
                         .channel(&ch.id)
@@ -974,7 +977,7 @@ impl Hub {
                         let body = format!("{}: {}", plain_text(&author.display_name), reply_preview(&content));
                         // @usuario ou @everyone: avisa mesmo quem pediu "só menções" ou silenciou o canal.
                         let everyone = said.contains("everyone");
-                        notify_guild(&app, &ch.guild_id, &author, Some(&ch.id), &body, &format!("ch:{}", ch.id), &format!("/?channel={}", ch.id), |name, n| {
+                        notify_guild(&app, &ch.guild_id, &author, Some(&ch.id), &body, &format!("ch:{}", ch.id), &format!("/?channel={}&guild={}", ch.id, ch.guild_id), |name, n| {
                             n.wants_message(&ch.id, everyone || said.contains(&name.to_ascii_lowercase()))
                         })
                         .await;

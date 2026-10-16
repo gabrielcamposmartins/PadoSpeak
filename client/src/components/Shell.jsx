@@ -301,6 +301,13 @@ export function GuildRail() {
     return JSON.stringify(n);
   });
   const voiceCount = JSON.parse(inVoice);
+  // Avisos não vistos de cada servidor (mensagens que avisaram, menções, entradas na voz…).
+  const alertsJson = useStore((s) => {
+    const n = {};
+    for (const a of Object.values(s.alerts)) if (a?.n) n[a.g] = (n[a.g] || 0) + a.n;
+    return JSON.stringify(n);
+  });
+  const guildAlerts = JSON.parse(alertsJson);
   const [tip, setTip] = useState(null); // { guild, anchor }
   return (
     <nav className="guild-rail glass" aria-label="Servidores">
@@ -321,7 +328,7 @@ export function GuildRail() {
           <button
             className={`gel guild guild-icon${g.iconUrl ? ' has-img' : ''}`}
             style={{ '--c': g.iconColor }}
-            aria-label={voiceCount[g.id] ? `${g.name} · ${voiceCount[g.id]} na voz` : g.name}
+            aria-label={[g.name, voiceCount[g.id] && `${voiceCount[g.id]} na voz`, guildAlerts[g.id] && `${guildAlerts[g.id]} ${guildAlerts[g.id] === 1 ? 'aviso' : 'avisos'}`].filter(Boolean).join(' · ')}
             onClick={() => {
               setTip(null);
               selectGuild(g.id);
@@ -333,6 +340,11 @@ export function GuildRail() {
           >
             {g.iconUrl ? <img src={base + g.iconUrl} alt="" /> : <span>{initials(g.name)}</span>}
           </button>
+          {guildAlerts[g.id] > 0 && g.id !== current && (
+            <span className="badge guild-badge" aria-hidden="true">
+              {guildAlerts[g.id] > 99 ? '99+' : guildAlerts[g.id]}
+            </span>
+          )}
           {voiceCount[g.id] > 0 && (
             <span className="guild-voice-dot" aria-hidden="true">
               <Volume2 size={10} strokeWidth={2.6} />
@@ -450,6 +462,7 @@ function VoiceChannelRow({ c, active, children }) {
 
 function ChannelGroup({ title, type, list, canManage, guildId, activeId }) {
   const { selectTextChannel, joinVoice, openModal, deleteChannel } = useStore.getState();
+  const alerts = useStore((s) => s.alerts);
   return (
     <>
       <div className="grp">
@@ -479,6 +492,11 @@ function ChannelGroup({ title, type, list, canManage, guildId, activeId }) {
             {type === 'text' ? <Hash size={16} /> : <Volume2 size={16} />}
             <span className="label-text">{c.name}</span>
             {c.private && <Lock size={12} className="ch-lock" aria-label="Canal privado" />}
+            {alerts[c.id]?.n > 0 && activeId !== c.id && (
+              <span className="badge ch-badge" aria-label={`${alerts[c.id].n} ${alerts[c.id].n === 1 ? 'aviso' : 'avisos'}`}>
+                {alerts[c.id].n > 99 ? '99+' : alerts[c.id].n}
+              </span>
+            )}
             {canManage && (
               <span
                 className="ch-del ch-edit"

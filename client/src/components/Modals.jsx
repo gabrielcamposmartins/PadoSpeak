@@ -68,7 +68,7 @@ import {
   setMyActivity,
 } from '../store.js';
 import { currentActivity, listPrograms, setCustomPrograms } from '../lib/activity.js';
-import { SoundsModal, UserSoundsModal } from './SoundLibrary.jsx';
+import { SoundsModal, UserSoundsModal, SoundSettings } from './SoundLibrary.jsx';
 import { GoogleButton, useAuthOptions, AccountSettings } from './AccountAuth.jsx';
 import VolumeSlider from './Volume.jsx';
 import { isDesktop, isTauri, DOWNLOAD_URL, DEFAULT_SERVER, openExternal } from '../lib/env.js';
@@ -520,6 +520,7 @@ const SETTINGS_TABS = [
   ['aparencia', 'Aparência', Palette],
   ['funcionalidade', 'Funcionalidade', SlidersHorizontal],
   ['formatacao', 'Formatação de texto', Type],
+  ['sons', 'Sons', Music2],
   ['apps', 'Apps', Download],
   ['conta', 'Conta', KeyRound],
 ];
@@ -1082,7 +1083,6 @@ function SettingsModal({ close }) {
             <small className="check-hint">Entradas e saídas no canal de voz, transmissões, mensagens diretas e toque de chamada.</small>
           </span>
         </label>
-        <SoundboardPrefs />
         {canPickOutput && <DeviceSelect {...props} k="output" kind="audiooutput" label="Saída de áudio" />}
         <DeviceSelect {...props} k="camera" kind="videoinput" label="Câmera" />
         {needsPermission && (
@@ -1240,6 +1240,13 @@ function SettingsModal({ close }) {
           {tab === 'aparencia' && appearance}
           {tab === 'funcionalidade' && features}
           {tab === 'formatacao' && <TextFormatting />}
+          {tab === 'sons' && (
+            <section className="settings-col">
+              <SoundSettings />
+              <div className="settings-sec">Ouvir</div>
+              <SoundboardPrefs />
+            </section>
+          )}
           {tab === 'conta' && (
             <section className="settings-col">
               <AccountSettings />

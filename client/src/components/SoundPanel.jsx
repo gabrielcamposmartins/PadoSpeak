@@ -1,14 +1,13 @@
-// Sons rápidos: botões de gel (2 ou 3 linhas de 3) logo abaixo da lista de canais / amigos online, e a
-// folha que abre na tela de chamada do celular. Na chamada, um toque toca para todos; fora dela, toca
-// só para você ouvir. Botão vazio abre a biblioteca para escolher o som.
+// Sons rápidos: os botões de gel logo abaixo da lista de canais / amigos online, e a folha que abre na
+// tela de chamada do celular. Mostra só os sons que estão no atalho (de 1 a 3 linhas de 3); sem nenhum,
+// só a linha "Sons rápidos — Nenhum". Montar o atalho e a biblioteca fica em Configurações → Sons.
+// Na chamada, um toque toca para todos; fora dela, toca só para você ouvir.
 import { useEffect, useState } from 'react';
 import { useStore } from '../store.js';
 import { useVoiceConn } from './conn.jsx';
 import { SoundIcon } from './SoundIcons.jsx';
 import { plain } from '../lib/text.js';
 import { playSoundboard } from '../lib/soundboard.js';
-
-const COLS = 3;
 
 /** Som tocado há pouco por outra pessoa (para oferecer "Copiar"). */
 function useRecentOther(vc, meId) {
@@ -35,15 +34,18 @@ export default function SoundPanel({ variant = 'side' }) {
   const [copied, setCopied] = useState(null);
   if (!me) return null;
   const st = vc.getState();
-  const rows = lib?.rows || 2;
-  const slots = lib?.slots || [];
+  const rows = lib?.rows || 1;
   const byId = new Map((lib?.sounds || []).map((x) => [x.id, x]));
+  // Só os botões com som, na ordem do atalho.
+  const board = (lib?.slots || [])
+    .slice(0, rows * 3)
+    .map((id) => id && byId.get(id))
+    .filter(Boolean);
   const live = Boolean(voice) && !guildOff;
-  const openLibrary = (slot) => useStore.getState().openModal({ type: 'sounds', slot, conn: st.key });
 
-  const press = async (snd, i) => {
-    setPlaying(i);
-    setTimeout(() => setPlaying((p) => (p === i ? null : p)), 700);
+  const press = (snd) => {
+    setPlaying(snd.id);
+    setTimeout(() => setPlaying((p) => (p === snd.id ? null : p)), 700);
     if (live) st.playBoardSound(snd.id);
     else playSoundboard(st.soundUrl(snd), volume).catch(() => {});
   };
@@ -57,58 +59,38 @@ export default function SoundPanel({ variant = 'side' }) {
     }
   };
   const hasSpace = (lib?.sounds.length || 0) < (lib?.max || 10);
+  const empty = board.length === 0;
 
   return (
-    <section className={`sound-panel aero-glass ${variant}${live ? ' live' : ''}`} aria-label="Sons rápidos">
+    <section className={`sound-panel aero-glass ${variant}${live ? ' live' : ''}${empty ? ' empty' : ''}`} aria-label="Sons rápidos">
       <div className="sp-head">
         <span className="aero-title">
           <svg className="orb" viewBox="0 0 32 32" aria-hidden="true">
             <use href="#snd-orb" />
           </svg>
           Sons rápidos
+          {empty && <span className="sp-none">— Nenhum</span>}
         </span>
-        {variant === 'sheet' && <small className="sp-hint">{live ? 'toque para todos ouvirem' : 'entre numa chamada'}</small>}
-        <span className="sp-grow" />
-        {variant === 'side' && (
-          <button
-            type="button"
-            className="sp-link"
-            onClick={() => st.setSoundBoard(slots, rows === 3 ? 2 : 3)}
-            title={rows === 3 ? 'Voltar para 2 linhas (6 sons)' : 'Mostrar 3 linhas (9 sons)'}
-          >
-            {rows === 3 ? '− linha' : '+ linha'}
-          </button>
-        )}
-        <button type="button" className="sp-link" onClick={() => openLibrary(null)}>
-          Biblioteca
-        </button>
+        {!empty && variant === 'sheet' && <small className="sp-hint">{live ? 'toque para todos ouvirem' : 'entre numa chamada'}</small>}
       </div>
-      {guildOff && <p className="sp-note">Os sons rápidos estão desligados neste servidor.</p>}
-      <div className="sp-grid" style={{ '--rows': rows }}>
-        {Array.from({ length: rows * COLS }, (_, i) => {
-          const snd = slots[i] && byId.get(slots[i]);
-          if (!snd)
-            return (
-              <button key={`e${i}`} type="button" className="snd empty" onClick={() => openLibrary(i)} aria-label="Escolher um som para este botão">
-                <SoundIcon icon="plus" className="snd-ico" />
-                <span className="n">Escolher</span>
-              </button>
-            );
-          return (
+      {guildOff && !empty && <p className="sp-note">Os sons rápidos estão desligados neste servidor.</p>}
+      {!empty && (
+        <div className="sp-grid">
+          {board.map((snd) => (
             <button
               key={snd.id}
               type="button"
-              className={`snd t-${snd.tone}${playing === i ? ' playing' : ''}${live ? '' : ' idle'}`}
-              onClick={() => press(snd, i)}
+              className={`snd t-${snd.tone}${playing === snd.id ? ' playing' : ''}${live ? '' : ' idle'}`}
+              onClick={() => press(snd)}
               title={live ? `Tocar “${snd.name}” para todos da chamada` : `Ouvir “${snd.name}” (fora de chamada, só você ouve)`}
               aria-label={live ? `Tocar ${snd.name} para todos` : `Ouvir ${snd.name}`}
             >
               <SoundIcon icon={snd.icon} />
               <span className="n">{snd.name}</span>
             </button>
-          );
-        })}
-      </div>
+          ))}
+        </div>
+      )}
       {recent && (
         <div className="sp-recent" role="status">
           <span className="sp-recent-txt">

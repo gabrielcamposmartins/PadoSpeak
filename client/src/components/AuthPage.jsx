@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Server, Wifi, Download } from 'lucide-react';
+import { Download } from 'lucide-react';
 import { useStore, localAuthenticate, localRecover, localFromServer, connRegistry, knownProfiles, lastProfile } from '../store.js';
 import { GoogleButton, ForgotForm, useAuthOptions } from './AccountAuth.jsx';
 import Avatar from './Avatar.jsx';
@@ -113,7 +113,7 @@ export default function AuthPage() {
             </span>
           </div>
 
-          {known ? (
+          {mode === 'forgot' ? null : known ? (
             <div className="auth-known" aria-hidden="true">
               <Avatar user={known} base={base} size={104} status="on" />
             </div>
@@ -128,6 +128,7 @@ export default function AuthPage() {
             </div>
           )}
 
+          {mode !== 'forgot' && (
           <div className="aero-tabs" role="tablist" aria-label="Acesso">
             <button
               type="button"
@@ -148,15 +149,16 @@ export default function AuthPage() {
               {isDesktop ? 'Criar perfil' : 'Criar conta'}
             </button>
           </div>
+          )}
 
           {mode === 'forgot' ? (
             <ForgotForm
               base={serverUrl}
               onBack={() => switchTo('login')}
-              onSent={(email) => {
-                switchTo('login');
-                setForm((f) => ({ ...f, username: email, password: '' }));
-                setNote('Se esse e-mail for de uma conta, o código chega em instantes. Entre com o e-mail e use o código no lugar da senha.');
+              onReset={async (creds) => {
+                // O código vale como a senha temporária: troca pela nova e já entra.
+                if (isDesktop) await localRecover(creds);
+                else await useStore.getState().authenticate('new-password', creds);
               }}
             />
           ) : (
@@ -217,28 +219,6 @@ export default function AuthPage() {
               </label>
             )}
 
-            {isDesktop ? (
-              <div className="server-box">
-                <Wifi size={16} />
-                <div className="server-text">
-                  Perfil local · funciona sem internet
-                  <span className="server-hint">
-                    Depois de entrar, o PadoSpeak mostra quem está na sua rede e conecta ao servidor
-                    {' '}
-                    {serverUrl.replace(/^https?:\/\//, '')} se a sua conta lá tiver o mesmo usuário e senha.
-                  </span>
-                </div>
-              </div>
-            ) : (
-              <div className="server-box">
-                <Server size={16} />
-                <div className="server-text">
-                  Servidor
-                  <b title={serverUrl}>{serverUrl}</b>
-                </div>
-              </div>
-            )}
-
             {note && !error && <p className="auth-note" role="status">{note}</p>}
             {locked ? <LoginLock left={lockout.left} /> : (error || localError) && <p className="error-text">{error || localError}</p>}
             <button className="go big-go" disabled={busy || locked}>
@@ -249,15 +229,16 @@ export default function AuthPage() {
                 Esqueci minha senha
               </button>
             )}
-            {mode !== 'reset' && options.google && (
-              <>
-                <div className="auth-or">
-                  <span>ou</span>
-                </div>
-                <GoogleButton base={serverUrl} onDone={google} onError={(e) => setError(e.message)} />
-              </>
-            )}
           </form>
+          )}
+          {/* Fora do formulário: o código do Google (app do Windows) não pode enviar o login. */}
+          {mode !== 'reset' && mode !== 'forgot' && options.google && (
+            <div className="auth-google">
+              <div className="auth-or">
+                <span>ou</span>
+              </div>
+              <GoogleButton base={serverUrl} onDone={google} onError={(e) => setError(e.message)} />
+            </div>
           )}
 
           <p className="auth-legal">
