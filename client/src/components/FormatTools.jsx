@@ -131,6 +131,7 @@ export function formatKey(e, el, text, setText, maxRaw) {
 export default function FormatTools({ inputRef, text, setText, maxRaw, children, label = 'Opções de texto' }) {
   const [open, setOpen] = useState(null); // 'emoji' | 'color'
   const colorBtn = useRef(null);
+  const palette = usePalette();
   const emojiBtn = useRef(null);
   // Não deixa a formatação passar do limite do campo.
   const guarded = (next) => {
@@ -166,6 +167,7 @@ export default function FormatTools({ inputRef, text, setText, maxRaw, children,
         {open === 'color' && (
           <ColorPicker
             anchorRef={colorBtn}
+            palette={palette}
             onClose={() => setOpen(null)}
             onPick={(hex) => {
               setOpen(null);

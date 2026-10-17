@@ -39,6 +39,8 @@ pub struct App {
     /// E-mail (SMTP) e login com o Google (veja `crate::account`); só no servidor de comunidade.
     pub mail: Option<crate::account::Mailer>,
     pub google: Option<crate::account::Google>,
+    /// "Esconder meu perfil de" (veja `crate::privacy`).
+    pub privacy: Arc<crate::privacy::Privacy>,
 }
 
 struct Running {
@@ -216,7 +218,9 @@ impl HostManager {
         if google.is_some() {
             self.logs.info("Login com o Google ligado");
         }
+        let privacy = Arc::new(crate::privacy::Privacy::load(&self.db).await);
         let app = Arc::new(App {
+            privacy,
             mail,
             google,
             audit: audit_tx,
@@ -257,6 +261,7 @@ impl HostManager {
             .route("/ws", get(crate::hub::ws_handler))
             .route("/api/music/stream/{id}", get(crate::music::stream::handler))
             .fallback(crate::assets::static_handler)
+            .layer(axum::middleware::from_fn_with_state(app.clone(), crate::privacy::layer))
             .layer(CorsLayer::permissive())
             .with_state(app.clone());
 

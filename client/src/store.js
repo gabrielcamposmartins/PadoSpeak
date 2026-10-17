@@ -1212,6 +1212,12 @@ export function createConnStore({ key, kind, base, primary = false }) {
         }
       }
       if (get().currentGuildId !== guildId) return;
+      // Em chamada num canal de voz deste servidor: volta para a tela da chamada.
+      const voice = get().voice;
+      if (voice && !voice.dm && voice.guildId === guildId && data.channels.some((c) => c.id === voice.channelId)) {
+        set({ view: { type: 'voice', channelId: voice.channelId } });
+        return;
+      }
       const last = get().lastChannel[guildId];
       const target = data.channels.find((c) => c.id === last) || data.channels.find((c) => c.type === 'text');
       set({ view: target ? { type: 'text', channelId: target.id } : null });
@@ -1790,6 +1796,13 @@ export function createConnStore({ key, kind, base, primary = false }) {
 
     /** URL do áudio de uma faixa (o `<audio>` não manda cabeçalho, o token vai na query). */
     musicUrl: (id) => `${baseUrl}/api/music/stream/${id}?token=${encodeURIComponent(token || '')}`,
+    /** Endereço deste servidor com o token (o `<img>` não manda cabeçalho): a foto de quem usa
+     * "esconder meu perfil de" só sai para quem fez login. */
+    withToken: (url) => (token && url ? `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : url),
+    /** "Esconder meu perfil de": quem está na lista não vê minha foto, mensagem pessoal nem banner. */
+    listHidden: () => api.get('/api/me/hidden'),
+    hideProfileFrom: (username) => api.post('/api/me/hidden', { username }),
+    unhideProfileFrom: (userId) => api.del(`/api/me/hidden/${userId}`),
     /** Link de um arquivo enviado na conversa (imagens e vídeos não mandam cabeçalho: o token vai na URL). */
     fileUrl: (id, download = false) =>
       `${baseUrl}/api/files/${id}?token=${encodeURIComponent(token || '')}${download ? '&download=1' : ''}`,
@@ -1884,7 +1897,9 @@ export function createConnStore({ key, kind, base, primary = false }) {
     const person = (id, u, speaking, muted, deafened) => ({
       id,
       name: plain(u?.displayName) || u?.username || '?',
-      src: src(u?.avatarUrl),
+      // Com os códigos dos emoticons do app (`:)`, `(L)`…): a sobreposição desenha cada um.
+      display: u?.displayName || u?.username || '?',
+      src: u?.avatarUrl && !/^https?:/.test(u.avatarUrl) ? s.withToken(src(u.avatarUrl)) : src(u?.avatarUrl),
       color: u?.avatarColor || null,
       speaking: Boolean(speaking),
       muted: Boolean(muted),

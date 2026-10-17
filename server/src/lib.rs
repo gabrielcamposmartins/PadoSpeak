@@ -23,6 +23,7 @@ pub mod stickers;
 pub mod sounds;
 pub mod music;
 pub mod panel;
+pub mod privacy;
 pub mod push;
 pub mod ratelimit;
 pub mod tls;

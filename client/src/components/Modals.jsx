@@ -530,6 +530,80 @@ const SETTINGS_TABS = [
   ['conta', 'Conta', KeyRound],
 ];
 
+/**
+ * Configurações → Conta: "Esconder meu perfil de". Quem está na lista vê a inicial do nome no lugar da foto,
+ * o nome e o status, sem a mensagem pessoal e o banner; o resto (conversas, chamadas, servidores) continua.
+ * Fica no servidor de comunidade (é lá que estão os servidores e as pessoas).
+ */
+function HiddenProfile() {
+  const me = useStore((s) => s.me);
+  const [list, setList] = useState(null);
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    if (!me) return;
+    useStore.getState().listHidden().then(setList, (e) => setError(e.message));
+  }, [me?.id]);
+  if (!me) return null;
+  const run = async (fn) => {
+    setBusy(true);
+    setError('');
+    try {
+      setList(await fn());
+      return true;
+    } catch (e) {
+      setError(e.message);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+  const add = async (e) => {
+    e.preventDefault();
+    if (name.trim() && (await run(() => useStore.getState().hideProfileFrom(name.trim())))) setName('');
+  };
+  return (
+    <>
+      <div className="settings-sec">Esconder meu perfil de</div>
+      <p className="kv">
+        Quem estiver aqui vê a inicial do seu nome no lugar da sua foto, seu nome e seu status, mas não a foto, a mensagem pessoal nem o
+        banner. Todo o resto continua igual (conversas, chamadas e servidores). Ex.: o servidor do trabalho.
+      </p>
+      <form className="hidden-add" onSubmit={add}>
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="@usuario da pessoa"
+          aria-label="Usuário da pessoa"
+          autoComplete="off"
+        />
+        <button className="btn" disabled={busy || !name.trim()}>
+          Esconder
+        </button>
+      </form>
+      {error && <p className="error-text">{error}</p>}
+      <div className="block-list">
+        {list?.length ? (
+          list.map((u) => (
+            <div className="block-row" key={u.id}>
+              <Avatar user={u} size={22} frame={false} />
+              <span className="nm">
+                <FormattedText text={u.displayName} /> <small>@{u.username}</small>
+              </span>
+              <button type="button" className="btn ghost mini-btn" disabled={busy} onClick={() => run(() => useStore.getState().unhideProfileFrom(u.id))}>
+                Mostrar
+              </button>
+            </div>
+          ))
+        ) : list ? (
+          <p className="kv">Ninguém na lista: todos veem seu perfil completo.</p>
+        ) : null}
+      </div>
+    </>
+  );
+}
+
 /** Configurações → Conta: quem eu bloqueei (desbloquear daqui). */
 function BlockedUsers() {
   const prim = primaryConn();
@@ -1427,6 +1501,7 @@ function SettingsModal({ close, tab: startTab }) {
           {tab === 'conta' && (
             <section className="settings-col">
               <AccountSettings />
+              <HiddenProfile />
               <BlockedUsers />
             </section>
           )}

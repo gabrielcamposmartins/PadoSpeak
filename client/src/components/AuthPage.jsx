@@ -8,6 +8,43 @@ import { isDesktop, DOWNLOAD_URL } from '../lib/env.js';
 import { isStandalone, isTouch } from '../lib/layout.js';
 import { useLoginLock, LoginLock } from './LoginLock.jsx';
 
+/** Usuário a partir do e-mail (o que vem antes do @), no formato aceito: 3–24 letras, números, _ ou . */
+function usernameFrom(email) {
+  const base = email
+    .split('@')[0]
+    .normalize('NFD')
+    .replace(/[^a-zA-Z0-9_.]/g, '')
+    .toLowerCase()
+    .slice(0, 18);
+  return base.length >= 3 ? base : `${base}${'user'.slice(base.length)}`;
+}
+
+/**
+ * Criar conta pelo e-mail: o usuário sai do e-mail (com números se já existir); depois de entrar, o
+ * servidor manda o código para confirmar o e-mail, e Configurações → Conta abre com o campo do código.
+ */
+async function registerWithEmail(form) {
+  const email = form.email.trim();
+  let username = usernameFrom(email);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await useStore.getState().authenticate('register', { username, password: form.password, displayName: form.displayName, email });
+      break;
+    } catch (e) {
+      if (e.status !== 409 || !/usuário/i.test(e.message) || attempt >= 4) throw e;
+      username = `${usernameFrom(email).slice(0, 18)}${Math.floor(100 + Math.random() * 9900)}`;
+    }
+  }
+  const st = useStore.getState();
+  try {
+    await st.startEmail(email);
+    st.openModal({ type: 'settings', tab: 'conta' });
+    st.notify(`Mandamos um código para ${email}. Confirme o e-mail em Configurações → Conta.`, 'info');
+  } catch {
+    // Servidor sem e-mail: a conta fica só com o usuário.
+  }
+}
+
 /** O app para Windows só é oferecido no navegador de um computador com Windows (nunca no celular, no tablet
  * ou no PadoSpeak instalado como app). */
 export const offerWindowsApp =
@@ -46,7 +83,7 @@ export default function AuthPage() {
   // Onde o perfil mora: o nó local no app desktop, o servidor no navegador.
   const base = (isDesktop ? connRegistry.get('local')?.getState().baseUrl : serverUrl) || '';
   const [mode, setMode] = useState('login');
-  const [form, setForm] = useState(() => ({ username: lastProfile(base), password: '', displayName: '', newPassword: '', repeat: '' }));
+  const [form, setForm] = useState(() => ({ username: lastProfile(base), email: '', password: '', confirm: '', displayName: '', newPassword: '', repeat: '' }));
   // Como no Messenger: a foto de quem já entrou neste PC aparece ao digitar o usuário.
   const known = mode === 'login' ? knownProfiles(base)[form.username.trim().toLowerCase()] : null;
   const [error, setError] = useState('');
@@ -67,6 +104,11 @@ export default function AuthPage() {
     useStore.setState({ bootText: null });
     setBusy(true);
     try {
+      if (mode === 'register' && form.password !== form.confirm) throw new Error('As duas senhas não são iguais.');
+      if (mode === 'register' && !isDesktop) {
+        await registerWithEmail(form);
+        return;
+      }
       if (mode === 'reset') {
         if (form.newPassword !== form.repeat) throw new Error('As duas senhas não são iguais.');
         const creds = { username: form.username, password: form.password, newPassword: form.newPassword };
@@ -188,17 +230,33 @@ export default function AuthPage() {
             />
           ) : (
           <form onSubmit={submit} className="auth-form">
-            <label className="field">
-              <span>{mode === 'register' ? 'Usuário' : 'Usuário ou e-mail'}</span>
-              <input
-                value={form.username}
-                onChange={update('username')}
-                autoComplete="username"
-                placeholder="seu_usuario"
-                required
-                autoFocus={!form.username}
-              />
-            </label>
+            {/* Criar conta (navegador e celular): pelo e-mail, que serve para entrar e recuperar a senha. */}
+            {mode === 'register' && !isDesktop ? (
+              <label className="field">
+                <span>E-mail</span>
+                <input
+                  type="email"
+                  value={form.email}
+                  onChange={update('email')}
+                  autoComplete="email"
+                  placeholder="voce@email.com"
+                  required
+                  autoFocus
+                />
+              </label>
+            ) : (
+              <label className="field">
+                <span>{mode === 'register' ? 'Usuário' : 'Usuário ou e-mail'}</span>
+                <input
+                  value={form.username}
+                  onChange={update('username')}
+                  autoComplete="username"
+                  placeholder="seu_usuario"
+                  required
+                  autoFocus={!form.username}
+                />
+              </label>
+            )}
             {mode === 'register' && (
               <label className="field">
                 <span>Nome de exibição</span>
@@ -239,7 +297,20 @@ export default function AuthPage() {
                   autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
                   placeholder="••••••••"
                   required
-                  autoFocus={Boolean(form.username)}
+                  autoFocus={mode === 'login' && Boolean(form.username)}
+                />
+              </label>
+            )}
+            {mode === 'register' && (
+              <label className="field">
+                <span>Repita a senha</span>
+                <input
+                  type="password"
+                  value={form.confirm}
+                  onChange={update('confirm')}
+                  autoComplete="new-password"
+                  placeholder="••••••••"
+                  required
                 />
               </label>
             )}

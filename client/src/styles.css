@@ -2498,6 +2498,27 @@ html.framed .overlay {
   color: var(--notice-ink);
   font-size: 13px;
 }
+/* Celular: "Adicionar amigo" verde e grande (como o "Adicionar servidor"), ao lado das notas. */
+.add-friend-btn {
+  flex: none;
+  height: 38px;
+  padding: 0 14px;
+  gap: 6px;
+  font-size: 14px;
+}
+.main-header .add-friend-btn {
+  margin-left: auto;
+}
+.main-header .add-friend-btn + .notes-btn {
+  margin-left: 8px;
+}
+.no-friends {
+  margin: 4px 4px 10px;
+  flex-wrap: wrap;
+}
+.no-friends > div {
+  min-width: 160px;
+}
 .add-friend {
   max-width: 640px;
   padding-top: 6px;
@@ -5035,6 +5056,16 @@ fieldset.plain {
   display: block;
   color: var(--muted);
   font-size: 12px;
+}
+/* Configurações → Conta → Esconder meu perfil de: o usuário e o botão na mesma linha. */
+.hidden-add {
+  display: flex;
+  gap: 8px;
+  margin: 4px 0 8px;
+}
+.hidden-add input {
+  flex: 1;
+  min-width: 0;
 }
 .block-list {
   margin: -4px 0 12px 24px;

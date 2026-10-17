@@ -37,6 +37,7 @@ export class MusicPlayer {
     this.retryTimer = setTimeout(() => {
       if (this.trackId !== id) return;
       this.stallSince = Date.now();
+      this.placed = false;
       this.audio.src = `${o.streamUrl(id)}&retry=${Date.now()}`;
       this.sync();
     }, wait);
@@ -92,6 +93,7 @@ export class MusicPlayer {
       clearTimeout(this.retryTimer);
       this.stallSince = Date.now();
       this.lastTime = -1;
+      this.placed = false;
       a.src = o.streamUrl(cur.track.id);
     }
     a.volume = o.volume;
@@ -108,9 +110,14 @@ export class MusicPlayer {
       this.startTimer = setTimeout(() => this.sync(), -target * 1000 + 15);
       return;
     }
-    if (a.readyState >= 1 && Math.abs(a.currentTime - target) > DRIFT_S) {
+    // Vai para a posição do servidor assim que souber a duração; depois só corrige com o áudio já
+    // tocando (corrigir enquanto ainda carrega recomeçava o download a cada segundo, e a música ficava
+    // muda numa conexão lenta).
+    const canSeek = this.placed ? a.readyState >= 3 && !a.seeking : a.readyState >= 1;
+    if (canSeek && Math.abs(a.currentTime - target) > DRIFT_S) {
       if (!Number.isFinite(a.duration) || target < a.duration) a.currentTime = target;
     }
+    if (a.readyState >= 1) this.placed = true;
     if (cur.pausedAt != null) {
       a.pause();
       this.stallSince = Date.now();

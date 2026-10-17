@@ -81,11 +81,15 @@ const picBackground = (c) => `linear-gradient(135deg, color-mix(in srgb, ${c} 50
  */
 export default function Avatar({ user: given, size = 40, status, frame = true, speaking, onClick, online, base }) {
   const user = useUser(given);
-  const connBase = useConn()((s) => s.baseUrl);
+  const useC = useConn();
+  const connBase = useC((s) => s.baseUrl);
+  const withToken = useC((s) => s.withToken);
   const auto = usePresence(frame && status == null && online == null ? user?.id : null);
   const [broken, setBroken] = useState(null);
   const name = plain(user?.displayName) || user?.username || '?';
-  const src = avatarSrc(user?.avatarUrl, base || connBase);
+  // Foto deste servidor: vai com o login (quem esconde o perfil de alguém só mostra a foto a quem pode ver).
+  const own = user?.avatarUrl && !/^https?:/.test(user.avatarUrl) && (!base || base === connBase);
+  const src = own && withToken ? withToken(avatarSrc(user.avatarUrl, connBase)) : avatarSrc(user?.avatarUrl, base || connBase);
   const showImg = src && broken !== src;
   const radius = Math.max(3, Math.round(size * 0.09));
   const pad = size >= 48 ? 3 : 2;

@@ -1,5 +1,17 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.9.3 — 17/10/2026
+
+### Novidades
+- **Esconder meu perfil de…**: em Configurações → Conta, escolha pessoas que não veem sua foto, sua mensagem pessoal nem seu banner. Para elas aparece a inicial do seu nome, seu nome e seu status; conversas, chamadas e servidores continuam iguais (ex.: o servidor do trabalho).
+- **Criar conta pelo e-mail**: a conta nova é criada com o e-mail (que serve para entrar e recuperar a senha) e a senha é digitada duas vezes. Logo depois chega o código para confirmar o e-mail.
+- **Adicionar amigo no celular**: botão verde “Adicionar” na aba Amigos e, para quem ainda não tem amigos, um atalho em Conversas.
+- **Emoticons nos nomes** dos cartões do canal de voz e da sobreposição nos jogos.
+- **Voltar para a chamada**: em chamada num canal de voz, clicar no servidor de novo abre a tela da chamada.
+
+### Correções
+- **Músicas que apareciam tocando sem som**: quando o YouTube entrega um link que não serve o arquivo inteiro, o servidor percebe antes de tocar e busca o áudio de outro jeito. Transmissões ao vivo, que a fila não toca, agora são recusadas com aviso.
+
 ## 1.9.2 — 17/10/2026
 
 ### Novidades

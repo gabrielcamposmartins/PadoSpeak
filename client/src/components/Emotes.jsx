@@ -1,8 +1,7 @@
 // Emoticons no estilo Aero (desenhos próprios em SVG, com brilho de vidro) e o texto formatado das mensagens.
 import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { plain, visibleLength, paletteOf, colorSpans, MENTION_RE, mentionsUser } from '../lib/text.js';
-import { useStore } from '../store.js';
+import { plain, visibleLength, colorSpans, MENTION_RE, mentionsUser } from '../lib/text.js';
 
 export { plain, visibleLength, mentionsUser };
 
@@ -586,10 +585,9 @@ export function EmojiPicker({ anchorRef, onPick, onClose, align }) {
 /** Nome de uma cor da paleta padrão (ou nada, se for outra). */
 const colorName = (hex) => TEXT_COLORS.find(([h]) => h.toLowerCase() === hex.toLowerCase())?.[1];
 
-/** Paleta de cores do texto. */
-export function ColorPicker({ anchorRef, onPick, onClose }) {
+/** Paleta de cores do texto (`palette`: a da pessoa, das preferências). */
+export function ColorPicker({ anchorRef, palette, onPick, onClose }) {
   const [custom, setCustom] = useState('#3a8ee0');
-  const palette = paletteOf(useStore((s) => s.prefs));
   const mod = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent) ? '⌘' : 'Ctrl';
   const others = TEXT_COLORS.filter(([hex]) => !palette.some((p) => p.toLowerCase() === hex.toLowerCase()));
   return (

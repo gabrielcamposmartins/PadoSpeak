@@ -5,6 +5,7 @@
 import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Music2, Pause, MicOff, HeadphoneOff } from 'lucide-react';
+import { EmojiText } from './components/Emotes.jsx';
 import './overlay.css';
 
 /** Até quantas fotos na coluna (o resto vira "+N"), menos se a tela for baixa: cada foto ocupa 29 px. */
@@ -35,7 +36,7 @@ function Person({ p }) {
           </span>
         )}
       </span>
-      <span className="ov-name">{p.name}</span>
+      <span className="ov-name">{p.display ? <EmojiText text={p.display} size={14} /> : p.name}</span>
     </li>
   );
 }

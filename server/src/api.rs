@@ -360,6 +360,10 @@ struct Credentials {
     password: String,
     #[serde(default)]
     display_name: Option<String>,
+    /// Criar conta com e-mail: confere antes se ele é válido e está livre (ele só entra na conta depois
+    /// de confirmado pelo código, em `account::email_start`).
+    #[serde(default)]
+    email: Option<String>,
 }
 
 /// No nó local, criar perfil e entrar só valem a partir do próprio PC.
@@ -391,6 +395,15 @@ async fn register(
     }
     if body.password.chars().count() < 6 {
         return Err(bad("A senha deve ter pelo menos 6 caracteres"));
+    }
+    if let Some(email) = body.email.as_deref().map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty()) {
+        if !crate::account::valid_email(&email) {
+            return Err(bad("Digite um e-mail válido"));
+        }
+        let used = app.db.query_one("SELECT 1 FROM users WHERE email = ?1", [email.as_str()], |_| Ok(())).await?;
+        if used.is_some() {
+            return Err(ApiError::new(StatusCode::CONFLICT, "Esse e-mail já está em outra conta. Entre com ele ou use “Esqueci minha senha”."));
+        }
     }
     let taken = app.db.query_one("SELECT 1 FROM users WHERE username = ?1", [username.as_str()], |_| Ok(())).await?;
     if taken.is_some() {

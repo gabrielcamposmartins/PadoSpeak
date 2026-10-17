@@ -26,6 +26,7 @@ import { useConn } from './conn.jsx';
 import { plain } from '../lib/text.js';
 import { SCREEN_PRESETS } from '../lib/voice.js';
 import Avatar from './Avatar.jsx';
+import { EmojiText } from './Emotes.jsx';
 import { useServerPing } from './hooks.js';
 import { useLayout, isTouch } from '../lib/layout.js';
 import { MobileBack } from './Mobile.jsx';
@@ -249,7 +250,9 @@ function Tile({ tile, focused, grid, onFocus }) {
               : `Tela de ${plain(tile.user?.displayName) || '…'}`
             : tile.self
               ? 'Você'
-              : plain(tile.user?.displayName) || 'Conectando…'}
+              : tile.user?.displayName
+                ? <EmojiText text={tile.user.displayName} size={14} />
+                : 'Conectando…'}
         </span>
       </span>
       <div className="tile-tools" onClick={(e) => e.stopPropagation()}>

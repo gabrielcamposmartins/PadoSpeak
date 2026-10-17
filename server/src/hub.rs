@@ -734,11 +734,17 @@ impl Hub {
         }
 
         let shutdown = self.shutdown.clone();
+        // "Esconder meu perfil de": o que sai para esta pessoa vem sem o perfil de quem a pôs na lista.
+        let privacy = app.privacy.clone();
+        let viewer = user.id.clone();
         let writer = tokio::spawn(async move {
             loop {
                 tokio::select! {
                     msg = rx.recv() => match msg {
-                        Some(text) => if sink.send(WsMessage::Text(text.into())).await.is_err() { break },
+                        Some(text) => {
+                            let text = privacy.mask_text(&viewer, text);
+                            if sink.send(WsMessage::Text(text.into())).await.is_err() { break }
+                        }
                         None => break,
                     },
                     _ = shutdown.cancelled() => {

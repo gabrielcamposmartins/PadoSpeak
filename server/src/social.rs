@@ -3,8 +3,8 @@ use crate::api::{ApiError, AuthUser};
 use crate::host::App;
 use crate::models::*;
 use axum::body::Bytes;
-use axum::extract::{Path, State};
-use axum::http::{header, StatusCode};
+use axum::extract::{Path, Query, State};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
@@ -44,6 +44,8 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/dms", get(list_dms).post(open_dm))
         .route("/api/dms/{id}", axum::routing::delete(hide_dm))
         .route("/api/me/blocks/{id}", put(block_user).delete(unblock_user))
+        .route("/api/me/hidden", get(list_hidden).post(hide_profile))
+        .route("/api/me/hidden/{id}", axum::routing::delete(unhide_profile))
         .route("/api/me/settings", get(get_settings).patch(update_settings))
         .route("/api/me/nudge-blocks/{id}", put(block_nudges).delete(unblock_nudges))
         .route("/api/me/marks", get(list_marks))
@@ -214,8 +216,80 @@ async fn remove_avatar(State(app): AppState, AuthUser(me, _): AuthUser) -> ApiRe
     Ok(Json(broadcast_user(&app, &me.id).await?))
 }
 
-/// Foto pública (a URL leva a versão, então pode ficar em cache para sempre).
-async fn avatar(State(app): AppState, Path(id): Path<String>) -> Response {
+#[derive(Deserialize, Default)]
+struct AvatarQuery {
+    #[serde(default)]
+    token: String,
+}
+
+// ---------- Esconder meu perfil de (veja `crate::privacy`) ----------
+
+async fn hidden_list(app: &App, owner: &str) -> ApiResult<Vec<User>> {
+    let sql = format!(
+        "SELECT {USER_COLS} FROM profile_hidden h JOIN users u ON u.id = h.viewer_id \
+         WHERE h.owner_id = ?1 ORDER BY h.created_at DESC"
+    );
+    Ok(app.db.query_all(&sql, [owner], user_from_row).await?)
+}
+
+async fn list_hidden(State(app): AppState, AuthUser(me, _): AuthUser) -> ApiResult<Json<Vec<User>>> {
+    Ok(Json(hidden_list(&app, &me.id).await?))
+}
+
+#[derive(Deserialize)]
+struct HideBody {
+    /// Usuário (com ou sem @) de quem não vai ver a foto, a mensagem pessoal e o banner.
+    username: String,
+}
+
+/// A pessoa recebe o meu perfil de novo, já como deve ver (a escrita do WebSocket mascara se for o caso).
+async fn resend_profile(app: &App, owner: &str, viewer: &str) {
+    let sql = format!("SELECT {USER_COLS} FROM users u WHERE u.id = ?1");
+    if let Ok(Some(user)) = app.db.query_one(&sql, [owner], user_from_row).await {
+        app.hub.to_user(viewer, "user:updated", &user);
+    }
+}
+
+async fn hide_profile(State(app): AppState, AuthUser(me, _): AuthUser, Json(body): Json<HideBody>) -> ApiResult<Json<Vec<User>>> {
+    let name = body.username.trim().trim_start_matches('@').to_lowercase();
+    let sql = format!("SELECT {USER_COLS} FROM users u WHERE lower(u.username) = ?1");
+    let other = app
+        .db
+        .query_one(&sql, [name.as_str()], user_from_row)
+        .await?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Ninguém com esse usuário"))?;
+    if other.id == me.id {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "Você não pode esconder o perfil de você mesmo"));
+    }
+    app.db
+        .execute(
+            "INSERT OR IGNORE INTO profile_hidden (owner_id, viewer_id, created_at) VALUES (?1, ?2, ?3)",
+            libsql::params![me.id.as_str(), other.id.as_str(), crate::now_ms()],
+        )
+        .await?;
+    app.privacy.set(&me.id, &other.id, true);
+    resend_profile(&app, &me.id, &other.id).await;
+    Ok(Json(hidden_list(&app, &me.id).await?))
+}
+
+async fn unhide_profile(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): Path<String>) -> ApiResult<Json<Vec<User>>> {
+    app.db.execute("DELETE FROM profile_hidden WHERE owner_id = ?1 AND viewer_id = ?2", [me.id.as_str(), id.as_str()]).await?;
+    app.privacy.set(&me.id, &id, false);
+    resend_profile(&app, &me.id, &id).await;
+    Ok(Json(hidden_list(&app, &me.id).await?))
+}
+
+/// Foto (a URL leva a versão, então pode ficar em cache). Quem usa "esconder meu perfil de" só mostra a
+/// foto para quem fez login (token na URL, já que o `<img>` não manda cabeçalho) e não está na lista.
+async fn avatar(State(app): AppState, Path(id): Path<String>, Query(q): Query<AvatarQuery>, headers: HeaderMap) -> Response {
+    let guarded = app.privacy.has_list(&id);
+    if guarded {
+        let bearer = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "));
+        let viewer = crate::auth::user_from_token(&app.db, bearer.unwrap_or(&q.token)).await;
+        if viewer.is_none_or(|v| app.privacy.hides(&id, &v.id)) {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+    }
     let row = app
         .db
         .query_one("SELECT mime, data FROM avatars WHERE user_id = ?1", [id.as_str()], |r| {
@@ -224,8 +298,8 @@ async fn avatar(State(app): AppState, Path(id): Path<String>) -> Response {
         .await;
     match row {
         Ok(Some((mime, data))) => {
-            ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "public, max-age=31536000, immutable".into())], data)
-                .into_response()
+            let cache = if guarded { "private, no-cache" } else { "public, max-age=31536000, immutable" };
+            ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, cache.into())], data).into_response()
         }
         _ => StatusCode::NOT_FOUND.into_response(),
     }

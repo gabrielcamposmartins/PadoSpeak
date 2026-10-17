@@ -476,6 +476,18 @@ CREATE TABLE IF NOT EXISTS dm_hidden (
 );
 "#,
     ),
+    (
+        21,
+        r#"
+-- "Esconder meu perfil de": essas pessoas não veem a foto, a mensagem pessoal nem o banner do dono.
+CREATE TABLE IF NOT EXISTS profile_hidden (
+  owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  viewer_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (owner_id, viewer_id)
+);
+"#,
+    ),
 ];
 
 impl Db {

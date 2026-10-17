@@ -318,6 +318,36 @@ function NearbySection() {
 }
 
 /** Botão "!" das notas de atualização (com um ponto enquanto a versão nova não foi vista). */
+/** Abre "Adicionar amigo" (na aba Amigos, no celular). */
+function openAddFriend() {
+  const st = useStore.getState();
+  st.setFriendsTab('add');
+  if (useStore.getState().mobileTab !== 'friends') st.setMobileTab('friends');
+  st.goHome();
+}
+
+/** O botão verde grande de adicionar amigo (como o "Adicionar servidor"). */
+function AddFriendButton({ label = 'Adicionar amigo' }) {
+  return (
+    <button type="button" className="btn add-friend-btn" onClick={openAddFriend}>
+      <UserPlus size={18} /> {label}
+    </button>
+  );
+}
+
+/** Celular, Conversas: quem ainda não tem nenhum amigo vê o convite para adicionar. */
+function NoFriendsCard() {
+  return (
+    <div className="no-guilds no-friends">
+      <div>
+        <b>Você ainda não tem amigos adicionados</b>
+        <span>Adicione pelo nome de usuário para conversar e ligar.</span>
+      </div>
+      <AddFriendButton />
+    </div>
+  );
+}
+
 export function NotesButton({ className = '' }) {
   const seen = useStore((s) => s.prefs.notesSeen);
   const fresh = LATEST_NOTES && seen !== LATEST_NOTES;
@@ -366,10 +396,12 @@ export function HomeSidebar() {
   const [reqCollapsed, toggleReq] = useCollapsed('friend-requests');
   const [dmsCollapsed, toggleDms] = useCollapsed('dms');
   const [friendsCollapsed, toggleFriends] = useCollapsed('friends');
+  const phone = useLayout() === 'phone';
   return (
     <>
       <FriendTabs />
       <div className="channel-list home-list">
+        {phone && mates.length === 0 && incoming.length === 0 && useStore.getState().me && <NoFriendsCard />}
         {incoming.length > 0 && (
           <>
             <GroupHeader title={`Pedidos de amizade (${incoming.length})`} collapsed={reqCollapsed} onToggle={toggleReq} />
@@ -646,6 +678,7 @@ export function ServerNotice() {
 
 export function FriendsPage() {
   const tab = useStore((s) => s.friendsTab);
+  const phone = useLayout() === 'phone';
   const friends = useStore((s) => s.friends);
   const online = useStore((s) => s.online);
   const noGuilds = useStore((s) => s.guilds.length === 0);
@@ -678,6 +711,7 @@ export function FriendsPage() {
           <b>{title}</b>
           <span>Amigos, conversas e chamadas 1 a 1</span>
         </div>
+        {phone && tab !== 'add' && <AddFriendButton label="Adicionar" />}
         <NotesButton />
       </header>
       <div className="friends-body">

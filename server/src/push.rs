@@ -52,6 +52,8 @@ pub struct Note {
 
 /// Foto de quem mandou; sem foto, o aparelho desenha a inicial na cor da pessoa.
 pub struct Sender {
+    /// De quem é a foto (para "esconder meu perfil de").
+    pub owner: String,
     pub avatar: Option<String>,
     pub color: String,
     pub initial: String,
@@ -61,7 +63,7 @@ impl Sender {
     pub fn of(user: &crate::models::User) -> Option<Self> {
         let name = crate::models::plain_text(&user.display_name);
         let initial = name.trim().chars().next().or_else(|| user.username.chars().next()).unwrap_or('?');
-        Some(Self { avatar: user.avatar_url.clone(), color: user.avatar_color.clone(), initial: initial.to_uppercase().collect() })
+        Some(Self { owner: user.id.clone(), avatar: user.avatar_url.clone(), color: user.avatar_color.clone(), initial: initial.to_uppercase().collect() })
     }
 }
 
@@ -166,7 +168,14 @@ fn build_request(
 
 impl App {
     /// Notificação push para quem não está com o PadoSpeak aberto na tela.
-    pub fn push_to(&self, user_id: &str, note: Note) {
+    pub fn push_to(&self, user_id: &str, mut note: Note) {
+        if let Some(from) = note.from.as_mut() {
+            // "Esconder meu perfil de": quem está na lista vê a inicial. E a foto de quem tem a lista
+            // pede login, que o ícone da notificação não tem: aí vai a inicial para todos.
+            if self.privacy.hides(&from.owner, user_id) || self.privacy.has_list(&from.owner) {
+                from.avatar = None;
+            }
+        }
         if let Some(push) = &self.push {
             if !self.hub.is_watching(user_id) {
                 push.send(user_id, note);

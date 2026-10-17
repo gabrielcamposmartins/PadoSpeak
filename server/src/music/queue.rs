@@ -1,5 +1,5 @@
 //! Fila por canal de voz e o relógio de cada faixa.
-use super::stream::{resolve_audio, Audio, AUDIO_TTL};
+use super::stream::{probe_audio, resolve_audio, Audio, AUDIO_TTL, CLIENTS};
 use super::tools::{self, Tools};
 use super::{Source, Track};
 use crate::hub::Hub;
@@ -443,13 +443,36 @@ impl MusicManager {
         if let Some(a) = cached().filter(|a| !force || a.fetched.elapsed() < Duration::from_secs(30)) {
             return Ok(a);
         }
-        let result = resolve_audio(tools, source).await;
+        let result = self.resolve_playable(tools, source).await;
         self.resolving.lock().unwrap().retain(|_, l| Arc::strong_count(l) > 1);
         let audio = result?;
         let mut cache = self.audio.lock().unwrap();
         cache.retain(|_, a| a.fetched.elapsed() < AUDIO_TTL);
         cache.insert(track_id.to_string(), audio.clone());
         Ok(audio)
+    }
+
+    /// Resolve o áudio testando a URL antes: se o YouTube recusar o meio do arquivo (a música
+    /// "tocaria" sem som) ou entregar devagar demais, tenta o próximo cliente. Sem nenhum perfeito,
+    /// fica com o primeiro que resolveu.
+    async fn resolve_playable(&self, tools: &Tools, source: &Source) -> Result<Audio, String> {
+        let mut fallback = None;
+        let mut error = None;
+        for client in CLIENTS {
+            match resolve_audio(tools, source, client).await {
+                Ok(audio) => {
+                    if probe_audio(self.http_for(&audio.url), &audio.url).await {
+                        return Ok(audio);
+                    }
+                    self.logs.warn(format!("Música: o YouTube recusou ou atrasou o áudio (cliente {}); tentando outro", client.unwrap_or("padrão")));
+                    fallback.get_or_insert(audio);
+                }
+                // Ao vivo ou sem resultado: os outros clientes dariam o mesmo.
+                Err(e) if fallback.is_none() && error.is_none() && (e.contains("ao vivo") || e.contains("nenhum resultado")) => return Err(e),
+                Err(e) => error = Some(e),
+            }
+        }
+        fallback.ok_or_else(|| error.unwrap_or_else(|| "nenhum resultado no YouTube".into()))
     }
 
     /// URL direta do áudio de uma faixa que está na fila (usada pelo proxy).

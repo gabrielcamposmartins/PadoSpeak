@@ -20,16 +20,33 @@ pub struct Audio {
     pub fetched: Instant,
 }
 
-/// Pede ao yt-dlp a URL direta do melhor áudio (Opus/WebM quando disponível).
-pub async fn resolve_audio(tools: &Tools, source: &Source) -> Result<Audio, String> {
+/// Clientes do YouTube, na ordem em que tentamos. O padrão às vezes entrega uma URL que só serve o
+/// primeiro 1 MB (falta o "PO token" do cliente web) ou que vem lenta demais: aí vale o próximo.
+/// `tv_simply` e `mweb` costumam vir só com o MP4 de 360p (vídeo junto), por isso ficam por último.
+pub const CLIENTS: [Option<&str>; 4] = [None, Some("web_embedded"), Some("tv_simply"), Some("mweb")];
+
+/// O melhor áudio (Opus/WebM quando disponível).
+const FORMAT: &str = "bestaudio[acodec=opus]/bestaudio/best";
+
+/// Pede ao yt-dlp a URL direta do melhor áudio, com o cliente `client` (None: o padrão).
+pub async fn resolve_audio(tools: &Tools, source: &Source, client: Option<&str>) -> Result<Audio, String> {
     let target = match source {
         Source::Youtube(url) => url.clone(),
         Source::Search(q) => format!("ytsearch1:{q}"),
     };
-    let args = ["-f", "bestaudio[acodec=opus]/bestaudio/best", "--no-playlist", "--print", "%(url)s", "--print", "%(duration)s", &target];
-    let stdout = tools.run(&args, Duration::from_secs(60)).await?;
+    let args = ["-f", FORMAT, "--no-playlist", "--print", "%(is_live)s %(protocol)s", "--print", "%(url)s", "--print", "%(duration)s", &target];
+    let timeout = Duration::from_secs(60);
+    let stdout = match client {
+        None => tools.run(&args, timeout).await?,
+        Some(c) => tools.run_client(c, &args, timeout).await?,
+    };
     let stdout = String::from_utf8_lossy(&stdout);
     let mut lines = stdout.lines().map(str::trim).filter(|l| !l.is_empty());
+    // Ao vivo (ou só em lista HLS, que o `<audio>` não toca): a música ficaria "tocando" sem som.
+    let kind = lines.next().unwrap_or_default();
+    if kind.starts_with("True") || kind.contains("m3u8") {
+        return Err("é uma transmissão ao vivo, e a fila só toca vídeos".into());
+    }
     match lines.next() {
         Some(url) if url.starts_with("http") => Ok(Audio {
             url: url.to_string(),
@@ -37,6 +54,28 @@ pub async fn resolve_audio(tools: &Tools, source: &Source) -> Result<Audio, Stri
             fetched: Instant::now(),
         }),
         _ => Err("nenhum resultado no YouTube".into()),
+    }
+}
+
+/// A URL entrega o arquivo inteiro, e rápido? Pede 256 KB do meio (onde a URL sem "PO token" já é
+/// recusada) e mede: menos de ~100 KB/s não acompanha quem entra no meio da música.
+pub async fn probe_audio(http: &reqwest::Client, url: &str) -> bool {
+    let len = url
+        .split_once('?')
+        .and_then(|(_, q)| q.split('&').find_map(|kv| kv.strip_prefix("clen=")))
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0);
+    let start = len / 2;
+    let end = start + 256 * 1024 - 1;
+    let req = http.get(url).header(header::RANGE, format!("bytes={start}-{end}")).timeout(Duration::from_secs(4));
+    let Ok(res) = req.send().await else { return false };
+    if !res.status().is_success() {
+        return false;
+    }
+    let began = Instant::now();
+    match tokio::time::timeout(Duration::from_millis(2600), res.bytes()).await {
+        Ok(Ok(body)) => !body.is_empty() && began.elapsed() < Duration::from_millis(2600),
+        _ => false,
     }
 }
 

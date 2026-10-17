@@ -112,6 +112,32 @@ impl Tools {
         }
     }
 
+    /// Como `run`, mas com um cliente do YouTube escolhido (`player_client`): só alterna IPv4/IPv6
+    /// se o YouTube bloquear.
+    pub async fn run_client(&self, client: &str, args: &[&str], timeout: Duration) -> Result<Vec<u8>, String> {
+        let mut last = String::new();
+        for family in [None, Some("-4")] {
+            let mut cmd = self.ytdlp();
+            if let Some(f) = family {
+                cmd.arg(f);
+            }
+            cmd.args(["--extractor-args", &format!("youtube:player_client={client}")]).args(args);
+            let out = tokio::time::timeout(timeout, cmd.output())
+                .await
+                .map_err(|_| "o YouTube demorou demais para responder".to_string())?
+                .map_err(|e| format!("yt-dlp: {e}"))?;
+            if out.status.success() {
+                return Ok(out.stdout);
+            }
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            last = last_error(&stderr);
+            if !is_blocked(&stderr) {
+                break;
+            }
+        }
+        Err(last)
+    }
+
     pub fn describe(&self) -> String {
         let prog = self.program.display();
         let js = self.js_runtime.as_deref().unwrap_or("nenhum");
