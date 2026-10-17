@@ -1,5 +1,13 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.9.2 — 17/10/2026
+
+### Novidades
+- **Banner na grade do canal de voz**: o cartão de cada pessoa mostra a cor do banner do perfil dela, borrada atrás da foto.
+
+### Correções
+- **Canal de voz no tema do app**: a área da chamada (e a tela da chamada no celular) segue o tema claro ou escuro e a cena escolhida, em vez de ficar sempre azul escuro.
+
 ## 1.9.1 — 17/10/2026
 
 ### Novidades

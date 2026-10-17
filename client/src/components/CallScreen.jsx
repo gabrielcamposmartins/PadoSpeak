@@ -121,7 +121,7 @@ export default function CallScreen() {
   }
 
   return (
-    <div className="call-screen" role="dialog" aria-label={dm ? `Chamada com ${title}` : `Canal de voz ${title}`} data-sysbar="--call-top" data-sysbar-bottom="--call-bottom">
+    <div className="call-screen" role="dialog" aria-label={dm ? `Chamada com ${title}` : `Canal de voz ${title}`} data-sysbar="--cs-top" data-sysbar-bottom="--cs-bottom">
       <header className="cs-head">
         <button type="button" className="cs-ic" onClick={minimize} title="Minimizar (a chamada continua)" aria-label="Minimizar a chamada">
           <ChevronDown size={20} />

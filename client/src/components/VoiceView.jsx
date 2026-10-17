@@ -156,6 +156,8 @@ function Tile({ tile, focused, grid, onFocus }) {
     <div
       ref={ref}
       className={`tile${tile.speaking ? ' speaking' : ''}${tile.live ? ' streaming' : ''}${isScreen ? ' screen' : ''}`}
+      // A cor do banner do perfil (ou da foto, como no perfil) borrada atrás da pessoa.
+      style={tile.user && (tile.user.bannerColor || tile.user.avatarColor) ? { '--banner': tile.user.bannerColor || tile.user.avatarColor } : undefined}
       onClick={onFocus}
       onContextMenu={(e) => {
         if (!tile.user || !voice) return;

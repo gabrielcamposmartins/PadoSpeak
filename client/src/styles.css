@@ -120,11 +120,31 @@
   --addr: #fff;
   --logs: linear-gradient(180deg, #0c3a66 0%, #072747 100%);
   --logs-border: #5a9fcf;
-  --stage: radial-gradient(70% 60% at 80% 0%, rgba(140, 220, 255, 0.45) 0%, rgba(140, 220, 255, 0) 60%),
-    linear-gradient(180deg, #0d4f8a 0%, #093a68 60%, #0a3157 100%);
+  /* Área da chamada: vidro claro tingido pela cena escolhida (azul, turquesa, verde, cor do sistema). */
+  --stage: linear-gradient(180deg, rgba(255, 255, 255, 0.8) 0%, rgba(244, 250, 255, 0.66) 100%), var(--scene-bg);
   --stage-border: #6fb3df;
   --stage-shadow: 0 10px 30px rgba(10, 70, 120, 0.25);
+  --stage-ink: #0f3d61;
+  --stage-muted: #45708f;
+  --stage-line: rgba(16, 70, 120, 0.16);
+  --stage-dock: linear-gradient(180deg, rgba(255, 255, 255, 0.85), rgba(255, 255, 255, 0.55));
+  --stage-dock-border: rgba(255, 255, 255, 0.95);
+  --stage-dock-shadow: 0 8px 24px rgba(0, 30, 70, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.7);
   --tile-border: rgba(255, 255, 255, 0.55);
+  /* Cartão de cada pessoa: vidro em que entra a cor do banner do perfil. */
+  --tile-glass: rgba(255, 255, 255, 0.5);
+  --tile-mix: 30%;
+  /* Tela de chamada do celular (tema claro: o mesmo vidro da área da chamada, textos escuros). */
+  --cs-bg: var(--stage);
+  --cs-ink: #0f3d61;
+  --cs-top: #dcebf7;
+  --cs-bottom: #d6e9f6;
+  --cs-btn: radial-gradient(120% 80% at 50% 110%, rgba(140, 200, 240, 0.4) 0%, rgba(140, 200, 240, 0) 60%), rgba(255, 255, 255, 0.7);
+  --cs-btn-border: rgba(16, 90, 150, 0.3);
+  --cs-dock: rgba(255, 255, 255, 0.55);
+  --cs-dock-border: rgba(255, 255, 255, 0.95);
+  --cs-shadow: none;
+  --cs-bar-off: rgba(16, 70, 120, 0.25);
   --player: linear-gradient(180deg, #0f4f86 0%, #0b2f55 100%);
   --player-border: #7fbde4;
   --drop: linear-gradient(180deg, rgba(240, 250, 255, 0.9), rgba(220, 240, 252, 0.8));
@@ -315,11 +335,28 @@
   --addr: rgba(2, 12, 26, 0.6);
   --logs: linear-gradient(180deg, #041a30 0%, #020d1a 100%);
   --logs-border: rgba(127, 208, 255, 0.3);
-  --stage: radial-gradient(70% 60% at 80% 0%, rgba(90, 190, 255, 0.22) 0%, rgba(90, 190, 255, 0) 60%),
-    linear-gradient(180deg, #072443 0%, #04172d 60%, #03101f 100%);
+  --stage: linear-gradient(180deg, rgba(3, 12, 26, 0.5) 0%, rgba(3, 12, 26, 0.78) 100%), var(--scene-bg);
   --stage-border: rgba(127, 208, 255, 0.3);
   --stage-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  --stage-ink: #ffffff;
+  --stage-muted: #bfe3fa;
+  --stage-line: rgba(255, 255, 255, 0.15);
+  --stage-dock: linear-gradient(180deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0.08));
+  --stage-dock-border: rgba(255, 255, 255, 0.35);
+  --stage-dock-shadow: 0 8px 24px rgba(0, 20, 50, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.35);
   --tile-border: rgba(127, 208, 255, 0.3);
+  --tile-glass: rgba(6, 22, 44, 0.55);
+  --tile-mix: 38%;
+  --cs-bg: var(--call-bg);
+  --cs-ink: #ffffff;
+  --cs-top: var(--call-top);
+  --cs-bottom: var(--call-bottom);
+  --cs-btn: radial-gradient(120% 80% at 50% 110%, rgba(140, 225, 255, 0.55) 0%, rgba(140, 225, 255, 0) 60%), rgba(255, 255, 255, 0.16);
+  --cs-btn-border: rgba(255, 255, 255, 0.6);
+  --cs-dock: rgba(0, 25, 60, 0.3);
+  --cs-dock-border: rgba(255, 255, 255, 0.18);
+  --cs-shadow: 0 1px 4px rgba(0, 30, 70, 0.4);
+  --cs-bar-off: rgba(255, 255, 255, 0.35);
   --player: linear-gradient(180deg, #0c3d6a 0%, #061f3a 100%);
   --player-border: rgba(127, 208, 255, 0.45);
   --drop: rgba(10, 40, 75, 0.55);
@@ -492,11 +529,28 @@
     --addr: rgba(2, 12, 26, 0.6);
     --logs: linear-gradient(180deg, #041a30 0%, #020d1a 100%);
     --logs-border: rgba(127, 208, 255, 0.3);
-    --stage: radial-gradient(70% 60% at 80% 0%, rgba(90, 190, 255, 0.22) 0%, rgba(90, 190, 255, 0) 60%),
-      linear-gradient(180deg, #072443 0%, #04172d 60%, #03101f 100%);
+    --stage: linear-gradient(180deg, rgba(3, 12, 26, 0.5) 0%, rgba(3, 12, 26, 0.78) 100%), var(--scene-bg);
     --stage-border: rgba(127, 208, 255, 0.3);
     --stage-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+    --stage-ink: #ffffff;
+    --stage-muted: #bfe3fa;
+    --stage-line: rgba(255, 255, 255, 0.15);
+    --stage-dock: linear-gradient(180deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0.08));
+    --stage-dock-border: rgba(255, 255, 255, 0.35);
+    --stage-dock-shadow: 0 8px 24px rgba(0, 20, 50, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.35);
     --tile-border: rgba(127, 208, 255, 0.3);
+    --tile-glass: rgba(6, 22, 44, 0.55);
+    --tile-mix: 38%;
+    --cs-bg: var(--call-bg);
+    --cs-ink: #ffffff;
+    --cs-top: var(--call-top);
+    --cs-bottom: var(--call-bottom);
+    --cs-btn: radial-gradient(120% 80% at 50% 110%, rgba(140, 225, 255, 0.55) 0%, rgba(140, 225, 255, 0) 60%), rgba(255, 255, 255, 0.16);
+    --cs-btn-border: rgba(255, 255, 255, 0.6);
+    --cs-dock: rgba(0, 25, 60, 0.3);
+    --cs-dock-border: rgba(255, 255, 255, 0.18);
+    --cs-shadow: 0 1px 4px rgba(0, 30, 70, 0.4);
+    --cs-bar-off: rgba(255, 255, 255, 0.35);
     --player: linear-gradient(180deg, #0c3d6a 0%, #061f3a 100%);
     --player-border: rgba(127, 208, 255, 0.45);
     --drop: rgba(10, 40, 75, 0.55);
@@ -2524,7 +2578,7 @@ html.framed .overlay {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  color: #fff;
+  color: var(--stage-ink);
   background: var(--stage);
   position: relative;
 }
@@ -2534,7 +2588,7 @@ html.framed .overlay {
   gap: 10px;
   padding: 10px 14px;
   flex-wrap: wrap;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+  border-bottom: 1px solid var(--stage-line);
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.18), rgba(255, 255, 255, 0.03));
   flex: none;
 }
@@ -2549,19 +2603,19 @@ html.framed .overlay {
 }
 .stage-title span {
   font-size: 12px;
-  color: #bfe3fa;
+  color: var(--stage-muted);
 }
 .seg {
   display: flex;
   border-radius: 6px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.35);
+  border: 1px solid var(--stage-line);
 }
 .seg button {
   font-size: 12px;
-  color: #fff;
+  color: var(--stage-ink);
   padding: 5px 10px;
-  background: rgba(255, 255, 255, 0.08);
+  background: color-mix(in srgb, var(--stage-dock-border) 25%, transparent);
 }
 .seg button.on {
   color: #0f3d61;
@@ -2576,7 +2630,7 @@ html.framed .overlay {
   margin: 0 0 4px;
 }
 .stage-empty p {
-  color: #bfe3fa;
+  color: var(--stage-muted);
   margin: 0 0 14px;
 }
 .voice-stage {
@@ -2626,12 +2680,31 @@ html.framed .overlay {
   overflow: hidden;
   cursor: pointer;
   border-radius: 10px;
-  border: 1px solid var(--tile-border);
-  box-shadow: 0 6px 16px rgba(0, 30, 70, 0.35);
-  background:
-    radial-gradient(70% 80% at 50% 30%, rgba(140, 210, 255, 0.3) 0%, rgba(140, 210, 255, 0) 70%),
-    linear-gradient(180deg, #1a5a92, #0d3a66);
+  /* A cor do banner do perfil da pessoa (vem do VoiceView em --banner), sobre vidro fosco. */
+  --banner: #3a8ee0;
+  isolation: isolate;
+  border: 1px solid color-mix(in srgb, var(--banner) 45%, var(--tile-border));
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--banner) 30%, rgba(0, 30, 70, 0.25));
+  background: linear-gradient(
+    160deg,
+    color-mix(in srgb, var(--banner) var(--tile-mix), var(--tile-glass)),
+    color-mix(in srgb, var(--banner) calc(var(--tile-mix) - 12%), var(--tile-glass))
+  );
+  backdrop-filter: blur(18px) saturate(1.2);
   transition: box-shadow 0.15s;
+}
+/* O banner borrado atrás da foto, como um brilho. */
+.tile::before {
+  content: '';
+  position: absolute;
+  inset: -15%;
+  z-index: -1;
+  background:
+    radial-gradient(42% 46% at 50% 44%, color-mix(in srgb, var(--banner) 55%, #fff) 0%, transparent 100%),
+    radial-gradient(60% 60% at 50% 48%, var(--banner) 0%, transparent 72%);
+  filter: blur(26px);
+  opacity: 0.85;
+  pointer-events: none;
 }
 .tile::after {
   content: '';
@@ -2873,11 +2946,9 @@ html.framed .overlay {
   gap: 10px;
   padding: 8px 14px;
   border-radius: 34px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.38), rgba(255, 255, 255, 0.12));
-  border: 1px solid rgba(255, 255, 255, 0.5);
-  box-shadow:
-    0 8px 24px rgba(0, 20, 50, 0.35),
-    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  background: var(--stage-dock);
+  border: 1px solid var(--stage-dock-border);
+  box-shadow: var(--stage-dock-shadow);
 }
 .ctrl-group {
   display: flex;
@@ -2888,7 +2959,7 @@ html.framed .overlay {
   display: flex;
   flex-direction: column;
   font-size: 10px;
-  color: #dff3ff;
+  color: var(--stage-muted);
 }
 .quality select {
   width: auto;
@@ -9698,8 +9769,8 @@ a.downloading {
   z-index: 10000;
   display: flex;
   flex-direction: column;
-  color: #fff;
-  background: var(--call-bg);
+  color: var(--cs-ink);
+  background: var(--cs-bg);
   padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px);
 }
 /* As bordas na cor exata das barras do sistema */
@@ -9715,12 +9786,12 @@ a.downloading {
 .call-screen::before {
   top: 0;
   height: calc(env(safe-area-inset-top, 0px) + 3px);
-  background: var(--call-top);
+  background: var(--cs-top);
 }
 .call-screen::after {
   bottom: 0;
   height: calc(env(safe-area-inset-bottom, 0px) + 3px);
-  background: var(--call-bottom);
+  background: var(--cs-bottom);
 }
 .cs-head {
   flex: none;
@@ -9741,9 +9812,9 @@ a.downloading {
   border-radius: 50%;
   display: grid;
   place-items: center;
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.55);
-  background: rgba(255, 255, 255, 0.16);
+  color: var(--cs-ink);
+  border: 1px solid var(--cs-btn-border);
+  background: var(--cs-btn);
   cursor: pointer;
 }
 .cs-title {
@@ -9760,7 +9831,7 @@ a.downloading {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  text-shadow: 0 1px 4px rgba(0, 30, 70, 0.4);
+  text-shadow: var(--cs-shadow);
 }
 .cs-title > span {
   display: inline-flex;
@@ -9781,7 +9852,7 @@ a.downloading {
 .cs-quality i {
   width: 3px;
   border-radius: 1px;
-  background: rgba(255, 255, 255, 0.35);
+  background: var(--cs-bar-off);
 }
 .cs-quality i:nth-child(1) {
   height: 5px;
@@ -9815,10 +9886,6 @@ a.downloading {
 .call-screen .voice-stage {
   background: transparent;
 }
-.call-screen .tile {
-  background: rgba(0, 25, 60, 0.3);
-  border-color: rgba(255, 255, 255, 0.2);
-}
 /* No celular o volume de cada pessoa fica no menu (toque longo), não por cima do vídeo. */
 html .call-screen .tile .tile-tools,
 html[data-touch] .call-screen .tile-tools,
@@ -9835,7 +9902,7 @@ html[data-touch] .call-screen .tile-tools,
 }
 .cs-calling b {
   font-size: 24px;
-  text-shadow: 0 2px 6px rgba(0, 30, 70, 0.4);
+  text-shadow: var(--cs-shadow);
 }
 .cs-rings {
   position: relative;
@@ -9852,7 +9919,7 @@ html[data-touch] .call-screen .tile-tools,
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.6);
+  border: 2px solid var(--cs-btn-border);
   animation: cs-ring 2.2s ease-out infinite;
 }
 .cs-rings > span:nth-child(2) {
@@ -9905,8 +9972,8 @@ html[data-touch] .call-screen .tile-tools,
   margin: 6px 12px 12px;
   padding: 12px 6px 10px;
   border-radius: 24px;
-  background: rgba(0, 25, 60, 0.3);
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: var(--cs-dock);
+  border: 1px solid var(--cs-dock-border);
   position: relative;
   z-index: 5;
 }
@@ -9919,7 +9986,7 @@ html[data-touch] .call-screen .tile-tools,
   font: inherit;
   font-size: 11px;
   font-weight: 600;
-  color: #fff;
+  color: var(--cs-ink);
   background: none;
   border: 0;
   padding: 0;
@@ -9933,8 +10000,8 @@ html[data-touch] .call-screen .tile-tools,
   border-radius: 50%;
   display: grid;
   place-items: center;
-  background: radial-gradient(120% 80% at 50% 110%, rgba(140, 225, 255, 0.55) 0%, rgba(140, 225, 255, 0) 60%), rgba(255, 255, 255, 0.16);
-  border: 1px solid rgba(255, 255, 255, 0.6);
+  background: var(--cs-btn);
+  border: 1px solid var(--cs-btn-border);
   box-shadow:
     inset 0 0 8px rgba(255, 255, 255, 0.25),
     0 3px 8px rgba(0, 30, 70, 0.3);
