@@ -7,15 +7,31 @@ import { googleFlow, authOptions } from '../lib/google.js';
 
 /** Opções de entrada deste servidor ({ email, google }). */
 export function useAuthOptions(base) {
-  const [opts, setOpts] = useState({ email: false, google: false });
+  // Começa com as da última vez: o formulário já abre no tamanho certo (no app do Windows a janela tem a
+  // altura dele) em vez de crescer quando a resposta chega.
+  const key = `padospeak.authOptions:${base}`;
+  const [opts, setOpts] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem(key)) || { email: false, google: false };
+    } catch {
+      return { email: false, google: false };
+    }
+  });
   useEffect(() => {
     if (!base) return;
     let alive = true;
-    authOptions(base).then((o) => alive && setOpts(o));
+    authOptions(base).then((o) => {
+      if (!alive) return;
+      setOpts(o);
+      // Sem resposta (sem internet) vem tudo desligado: não apaga o que já se sabia.
+      try {
+        if (o.email || o.google) localStorage.setItem(key, JSON.stringify(o));
+      } catch {}
+    });
     return () => {
       alive = false;
     };
-  }, [base]);
+  }, [base, key]);
   return opts;
 }
 

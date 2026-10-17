@@ -1,5 +1,20 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.9.0 — 17/10/2026
+
+### Novidades
+- **Tela de entrada e carregamento no app do Windows**: enquanto você não entra, a janela tem só o tamanho do formulário. Ao abrir, aparece o ícone do PadoSpeak com o gorro girando e o que está carregando (procurando atualizações, abrindo o perfil, carregando mensagens). Depois de entrar, a janela vira a de sempre.
+- **Atualização antes de abrir**: o app procura versão nova antes de tudo (no máximo 3 segundos). Se houver, baixa e instala na tela de carregamento e só então abre, já atualizado. Quando o PadoSpeak abre junto com o Windows, a atualização acontece em silêncio, na bandeja.
+- **Jogando**: o status reconhece milhares de jogos a mais (a mesma lista de jogos que o Discord reconhece), além do Magilite.
+- **Sobreposição nos jogos** (app do Windows): fotos pequenas de quem está na chamada, em coluna à esquerda, acendendo quando a pessoa fala, e a música tocando no canto de cima. Vem desligada; ligue em Configurações → Atividade. Aparece com o jogo em janela ou em tela cheia sem bordas.
+- **Transmissão de tela**: com som ou sem som conforme a opção “Compartilhar áudio” do seletor, e o botão “Trocar” muda a janela ou a tela transmitida sem parar (quem assiste continua assistindo). No app do Windows, um dock por cima de tudo tem Trocar, Som, Parar e Ocultar, e não aparece na transmissão.
+- **Seu perfil**: clicar na sua foto abre o seu perfil, como os outros veem, com “Personalizar perfil” e “Editar sons”.
+- **Canal de voz em grade**: com mais de 4 pessoas, as fotos ficam bem maiores e se ajustam conforme entra mais gente.
+- **Sons rápidos**: sem a espera de 2 segundos entre um som e outro.
+
+### Correções
+- **Gerenciador de Tarefas**: ao reabrir o app logo depois de fechar (por exemplo, numa atualização), os processos do WebView2 não aparecem mais separados do PadoSpeak.
+
 ## 1.8.2 — 16/10/2026
 
 ### Novidades

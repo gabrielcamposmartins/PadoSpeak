@@ -4081,6 +4081,159 @@ html.framed .overlay {
   text-align: center;
 }
 
+/* Janela pequena do app do Windows (entrando, carregando, atualizando): o cartão é a própria janela,
+   com a barra de título dele no lugar da moldura. A altura da janela vem do cartão (veja appWindow.js). */
+html.compact .window-frame {
+  display: none;
+}
+html.compact .auth-page {
+  display: block;
+  padding: 0;
+  overflow: hidden;
+}
+html.compact .auth-card {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  display: flex;
+  flex-direction: column;
+}
+html.compact .auth-body {
+  --auth-pic: 96px;
+}
+/* Logo e título deixam o clique passar para a área de arrastar. */
+.card-frame > svg,
+.card-frame .tb-title {
+  pointer-events: none;
+}
+.card-frame {
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+.tb-caption {
+  display: flex;
+  gap: 4px;
+}
+.tb-min {
+  width: 30px;
+  height: 20px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  background: var(--gloss);
+  border: 1px solid var(--gloss-border);
+  color: var(--titlebar-ink);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+.tb-min:hover {
+  filter: brightness(1.05);
+}
+.tb-min:focus-visible,
+.card-frame .tb-close:focus-visible {
+  outline: 2px solid var(--brand-accent);
+  outline-offset: 1px;
+}
+
+/* ---------- Tela de carregamento ---------- */
+.boot-card {
+  display: flex;
+  flex-direction: column;
+}
+html:not(.compact) .boot-card .boot-body {
+  min-height: 420px;
+}
+.boot-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  padding: 28px;
+}
+/* Entrando: por cima do formulário (que continua montado e segura a altura do cartão). */
+.boot-body.over {
+  position: absolute;
+  inset: 30px 0 0;
+  z-index: 2;
+}
+.auth-card.loading .auth-body {
+  visibility: hidden;
+}
+.boot-logo {
+  width: 132px;
+  height: 132px;
+  overflow: visible;
+  filter: drop-shadow(0 10px 18px rgba(150, 30, 20, 0.28));
+}
+/* O gorro gira e encolhe no meio da volta (onde é mais rápido); três cópias atrasadas e borradas fazem o
+   blur de movimento, que só aparece enquanto ele está rápido. */
+.boot-hat,
+.boot-ghost {
+  --turn: 0.9s;
+  transform-origin: 32px 32px;
+  animation:
+    boot-spin var(--turn) cubic-bezier(0.65, 0, 0.35, 1) infinite,
+    boot-size var(--turn) ease-in-out infinite;
+  animation-delay: calc(var(--lag, 0s) - var(--turn));
+}
+.boot-ghost {
+  fill: #fff;
+}
+.boot-ghost.g1 {
+  --lag: 0.025s;
+  opacity: 0.38;
+}
+.boot-ghost.g2 {
+  --lag: 0.05s;
+  opacity: 0.22;
+}
+.boot-ghost.g3 {
+  --lag: 0.075s;
+  opacity: 0.11;
+}
+@keyframes boot-spin {
+  to {
+    rotate: 360deg;
+  }
+}
+@keyframes boot-size {
+  50% {
+    scale: 0.7;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .boot-ghost {
+    display: none;
+  }
+  .boot-hat {
+    animation: boot-size 2.4s ease-in-out infinite;
+  }
+}
+.boot-text {
+  margin: 0;
+  min-height: 3em;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+  text-align: center;
+}
+.boot-text small {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.boot-progress {
+  width: 220px;
+  margin-top: -10px;
+}
+
 /* ---------- Hostear ---------- */
 .host-page {
   height: 100%;
@@ -5227,36 +5380,6 @@ fieldset.plain {
   height: 28px;
   padding: 0 10px;
   font-size: 12px;
-}
-
-/* Atualização automática */
-.update-window {
-  position: fixed;
-  left: 20px;
-  bottom: 20px;
-  z-index: 110;
-  width: 300px;
-  border-radius: 8px;
-  overflow: hidden;
-  border: 1px solid var(--window-border);
-  background: var(--window);
-  box-shadow: var(--window-shadow);
-}
-.update-body {
-  display: flex;
-  gap: 10px;
-  padding: 10px 12px 12px;
-  font-size: 13px;
-  color: var(--text);
-}
-.update-body > div {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.update-body b {
-  color: var(--ink);
 }
 
 /* ---------- Stickers ---------- */
@@ -10222,14 +10345,14 @@ html[data-touch] .call-screen .tile-tools,
 }
 /* Telas baixas (notebook): o cartão inteiro cabe sem rolar — foto menor e menos espaço. */
 @media (max-height: 820px) {
-  .auth-body {
+  html:not(.compact) .auth-body {
     gap: 9px;
     padding: 14px 26px 16px;
   }
-  .auth-body .brand {
+  html:not(.compact) .auth-body .brand {
     font-size: 22px;
   }
-  .auth-body .field {
+  html:not(.compact) .auth-body .field {
     margin-bottom: 8px;
   }
   .auth-download {

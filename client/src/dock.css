@@ -1,0 +1,92 @@
+/* Dock da transmissão: uma pílula de vidro escuro no estilo Aero, com os botões em gel. */
+:root {
+  color-scheme: dark;
+  font: 13px/1.2 'Segoe UI', system-ui, sans-serif;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  user-select: none;
+}
+#dock {
+  height: 100%;
+}
+.dock {
+  box-sizing: border-box;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px 6px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(160, 215, 255, 0.45);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.18) 0%, rgba(255, 255, 255, 0.04) 48%, rgba(0, 0, 0, 0) 52%),
+    linear-gradient(180deg, #1d4f80 0%, #0b2c52 100%);
+  color: #eaf6ff;
+  cursor: default;
+}
+.dock-live {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #8fe36a;
+}
+.dock-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.dock-text b {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #8fe36a;
+}
+.dock-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #eaf6ff;
+  font-weight: 600;
+}
+.dock button {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(160, 215, 255, 0.5);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.08) 50%, rgba(255, 255, 255, 0.02) 51%, rgba(255, 255, 255, 0.12));
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.dock button:hover:not(:disabled) {
+  border-color: #bfe6ff;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.4), rgba(255, 255, 255, 0.14) 50%, rgba(255, 255, 255, 0.06) 51%, rgba(255, 255, 255, 0.2));
+}
+.dock button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.dock button.off {
+  color: #ffc1b5;
+}
+.dock button.stop {
+  border-color: #8e0f07;
+  background: linear-gradient(180deg, #ff9d8f, #e0392b 50%, #b3150b 51%, #c9271a);
+}
+.dock button.hide {
+  width: 30px;
+  padding: 0;
+  justify-content: center;
+}

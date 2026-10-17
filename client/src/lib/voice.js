@@ -777,56 +777,99 @@ export class VoiceClient {
     this.tuneSenders(peer);
   }
 
+  /**
+   * Pede ao sistema a tela/janela a transmitir. O som é sempre pedido: assim o seletor mostra a opção
+   * "Compartilhar áudio", e é ela que decide se a transmissão vai com som (veja `takeScreenAudio`).
+   */
+  async pickScreen(presetKey) {
+    const preset = SCREEN_PRESETS[presetKey];
+    const videoOpts = {
+      width: { ideal: preset.width, max: preset.width },
+      height: { ideal: preset.height, max: preset.height },
+      frameRate: { ideal: preset.fps, max: preset.fps },
+    };
+    const touch = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+    try {
+      return await navigator.mediaDevices.getDisplayMedia(
+        touch
+          ? // Celular/tablet (app instalado ou navegador): só o essencial, que todos aceitam.
+            { video: videoOpts, audio: true }
+          : {
+              video: videoOpts,
+              // restrictOwnAudio: o som desta página (as vozes da chamada) não entra na transmissão.
+              audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, restrictOwnAudio: true },
+              systemAudio: 'include',
+              // Chrome 141+: ao escolher uma janela, oferece o som só daquela janela.
+              windowAudio: 'window',
+              selfBrowserSurface: 'exclude',
+              surfaceSwitching: isTauri ? 'exclude' : 'include',
+            },
+      );
+    } catch (e) {
+      // Alguns aparelhos não capturam o áudio junto: tenta só a imagem.
+      if (!['TypeError', 'NotSupportedError', 'OverconstrainedError'].includes(e.name)) throw e;
+      return navigator.mediaDevices.getDisplayMedia({ video: videoOpts });
+    }
+  }
+
+  /**
+   * App do Windows: o som da janela escolhida (ou do sistema sem o PadoSpeak). Sempre capturado, mas só
+   * vai ligado se a pessoa escolheu transmitir com som — assim dá para ligar e desligar durante a
+   * transmissão sem escolher a janela de novo.
+   */
+  async nativeScreenAudio(video) {
+    try {
+      const audio = await startNativeScreenAudio(video);
+      if (audio.fallback)
+        this.onNotice?.('Não deu para separar o som desta janela: a transmissão leva o som do computador (sem o PadoSpeak).');
+      return audio;
+    } catch (e) {
+      console.warn('[voz] som da transmissão', e);
+      this.onNotice?.(`A transmissão vai sem som: ${e.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * O som da transmissão conforme a opção "Compartilhar áudio" do seletor (`stream` acabou de vir dele).
+   * No app do Windows o som do seletor é trocado pelo do próprio Windows (só a janela escolhida, ou o
+   * sistema sem o PadoSpeak), que é sempre capturado e vai desligado se a pessoa não marcou o som —
+   * assim dá para ligar depois, pelo botão ou pelo dock. Devolve `{ wants, native }`.
+   */
+  async takeScreenAudio(stream) {
+    const wants = stream.getAudioTracks().length > 0;
+    let native = null;
+    if (isTauri) {
+      for (const t of stream.getAudioTracks()) {
+        stream.removeTrack(t);
+        t.stop();
+      }
+      native = await this.nativeScreenAudio(stream.getVideoTracks()[0]);
+      if (native) stream.addTrack(native.track);
+    }
+    stream.getAudioTracks().forEach((t) => (t.enabled = wants));
+    return { wants, native };
+  }
+
+  /** Nome do que está sendo transmitido (título da janela ou "Tela inteira"). */
+  static screenLabel(video) {
+    const surface = video?.getSettings?.().displaySurface;
+    if (surface === 'monitor') return 'Tela inteira';
+    const label = (video?.label || '').replace(/^(window|screen|web-contents-media-stream):[^:]*:?\d*:?/, '').trim();
+    return label || (surface === 'browser' ? 'Aba do navegador' : 'Janela');
+  }
+
   async setScreen(on, presetKey = this.state.screenPreset) {
     if (on && !this.screen) {
       const preset = SCREEN_PRESETS[presetKey];
-      const videoOpts = {
-        width: { ideal: preset.width, max: preset.width },
-        height: { ideal: preset.height, max: preset.height },
-        frameRate: { ideal: preset.fps, max: preset.fps },
-      };
-      const touch = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
-      // App do Windows: o som vem do próprio Windows (só da janela, ou do sistema sem o PadoSpeak); o
-      // seletor só escolhe a imagem.
-      const native = isTauri;
-      try {
-        this.screen = await navigator.mediaDevices.getDisplayMedia(
-          native
-            ? { video: videoOpts, audio: false, selfBrowserSurface: 'exclude', surfaceSwitching: 'exclude' }
-            : touch
-              ? // Celular/tablet (app instalado ou navegador): só o essencial, que todos aceitam.
-                { video: videoOpts, audio: true }
-              : {
-                  video: videoOpts,
-                  // restrictOwnAudio: o som desta página (as vozes da chamada) não entra na transmissão.
-                  audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, restrictOwnAudio: true },
-                  systemAudio: 'include',
-                  // Chrome 141+: ao escolher uma janela, oferece o som só daquela janela.
-                  windowAudio: 'window',
-                  selfBrowserSurface: 'exclude',
-                  surfaceSwitching: 'include',
-                },
-        );
-      } catch (e) {
-        // Alguns aparelhos não capturam o áudio junto: tenta só a imagem.
-        if (!['TypeError', 'NotSupportedError', 'OverconstrainedError'].includes(e.name)) throw e;
-        this.screen = await navigator.mediaDevices.getDisplayMedia({ video: videoOpts });
-      }
-      if (native) {
-        try {
-          this.screenAudio = await startNativeScreenAudio(this.screen.getVideoTracks()[0]);
-          this.screen.addTrack(this.screenAudio.track);
-          if (this.screenAudio.fallback)
-            this.onNotice?.('Não deu para separar o som desta janela: a transmissão leva o som do computador (sem o PadoSpeak).');
-        } catch (e) {
-          console.warn('[voz] som da transmissão', e);
-          this.onNotice?.(`A transmissão vai sem som: ${e.message}`);
-        }
-      }
-      this.state.screenAudioMuted = false;
+      this.screen = await this.pickScreen(presetKey);
+      const { wants, native } = await this.takeScreenAudio(this.screen);
+      this.screenAudio = native;
+      this.state.screenAudioMuted = !wants;
       const [video] = this.screen.getVideoTracks();
       video.contentHint = preset.hint;
       video.onended = () => this.setScreen(false);
+      this.state.screenLabel = VoiceClient.screenLabel(video);
       this.state.screenPreset = presetKey;
       this.pushState({ screen: true, screenStreamId: this.screen.id });
       for (const peer of this.peers.values()) this.syncVideo(peer);
@@ -843,6 +886,52 @@ export class VoiceClient {
       this.screen = null;
       this.pushState({ screen: false, screenStreamId: null });
     }
+    this.changed();
+  }
+
+  /**
+   * Troca o que está sendo transmitido (outra janela, a tela inteira…) sem parar a transmissão: quem
+   * está assistindo continua assistindo, só a imagem (e o som) mudam.
+   */
+  async switchScreen() {
+    if (!this.screen) return;
+    const preset = SCREEN_PRESETS[this.state.screenPreset];
+    // O som da nova escolha também vem da opção "Compartilhar áudio" do seletor.
+    const next = await this.pickScreen(this.state.screenPreset);
+    const { wants, native } = await this.takeScreenAudio(next);
+    const [video] = next.getVideoTracks();
+    const [audio] = next.getAudioTracks();
+    if (!this.screen) {
+      // Parou enquanto escolhia.
+      next.getTracks().forEach((t) => t.stop());
+      native?.stop();
+      return;
+    }
+    video.contentHint = preset.hint;
+    video.onended = () => this.setScreen(false);
+    this.state.screenAudioMuted = !wants;
+    const [oldVideo] = this.screen.getVideoTracks();
+    const [oldAudio] = this.screen.getAudioTracks();
+    for (const peer of this.peers.values()) {
+      const { pc, senders } = peer;
+      if (pc.signalingState === 'closed') continue;
+      if (senders.screenVideo) await senders.screenVideo.replaceTrack(video).catch((e) => console.warn('[voz] trocar imagem', e));
+      if (senders.screenAudio) await senders.screenAudio.replaceTrack(audio || null).catch((e) => console.warn('[voz] trocar som', e));
+      else if (senders.screenVideo && audio) senders.screenAudio = pc.addTrack(audio, this.screen);
+    }
+    // O mesmo stream continua (quem recebe reconhece a transmissão pelo id): só as trilhas mudam.
+    for (const old of [oldVideo, oldAudio]) {
+      if (!old) continue;
+      old.onended = null;
+      this.screen.removeTrack(old);
+      if (old !== this.screenAudio?.track) old.stop();
+    }
+    this.screenAudio?.stop();
+    this.screenAudio = native;
+    this.screen.addTrack(video);
+    if (audio) this.screen.addTrack(audio);
+    this.state.screenLabel = VoiceClient.screenLabel(video);
+    this.peers.forEach((peer) => this.tuneSenders(peer));
     this.changed();
   }
 
@@ -1063,6 +1152,7 @@ export class VoiceClient {
       error: s.error,
       screenPreset: s.screenPreset,
       screenHasAudio: Boolean(this.screen?.getAudioTracks().length),
+      screenLabel: this.screen ? s.screenLabel || '' : '',
       screenAudioMuted: Boolean(s.screenAudioMuted),
       video: Boolean(this.camera),
       cameraFacing: s.cameraFacing || 'user',

@@ -9,6 +9,7 @@ import { unlockAudio } from './lib/sounds.js';
 import { unlockSoundboard, setSoundboardOutput } from './lib/soundboard.js';
 import { openFromUrl, initBackNavigation, setMyActivity, useStore } from './store.js';
 import { watchActivity, setCustomPrograms } from './lib/activity.js';
+import { setGameOverlay } from './lib/gameOverlay.js';
 import { onNotificationClick } from './lib/background.js';
 import { watchSystemBars } from './lib/systemBars.js';
 import { initExternalLinks } from './lib/externalLinks.js';
@@ -36,6 +37,8 @@ onNotificationClick(openFromUrl);
 // App do Windows: o jogo em foco vai para o status ("Jogando …").
 setCustomPrograms(useStore.getState().prefs.customGames);
 watchActivity(setMyActivity);
+// App do Windows: sobreposição com a chamada e a música por cima do jogo (se a pessoa ligou).
+setGameOverlay(useStore.getState().prefs.gameOverlay === true);
 // O iPhone só libera áudio dentro de um toque: o primeiro toque deixa os sons de aviso prontos.
 window.addEventListener('pointerdown', unlockAudio, { once: true, capture: true });
 window.addEventListener('pointerdown', unlockSoundboard, { once: true, capture: true });

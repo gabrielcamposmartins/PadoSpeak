@@ -264,8 +264,7 @@ export function SoundsModal({ slot = null, conn, embedded = false }) {
         )}
       </ul>
       <p className="sl-foot">
-        MP3, OGG, WAV ou M4A de até 5 segundos e 1 MB. O som fica na sua conta e aparece em todos os seus aparelhos. Na chamada, cada pessoa
-        pode tocar um som a cada 2 segundos.
+        MP3, OGG, WAV ou M4A de até 5 segundos e 1 MB. O som fica na sua conta e aparece em todos os seus aparelhos.
       </p>
     </div>
   );

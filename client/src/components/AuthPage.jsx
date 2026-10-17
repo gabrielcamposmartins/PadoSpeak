@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Download } from 'lucide-react';
 import { useStore, localAuthenticate, localRecover, localFromServer, connRegistry, knownProfiles, lastProfile } from '../store.js';
 import { GoogleButton, ForgotForm, useAuthOptions } from './AccountAuth.jsx';
@@ -13,7 +13,26 @@ import { useLoginLock, LoginLock } from './LoginLock.jsx';
 export const offerWindowsApp =
   !isDesktop && !isStandalone && !isTouch && typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent);
 import Logo from './Logo.jsx';
-import { SceneArt, TitleBar } from './Aero.jsx';
+import { SceneArt } from './Aero.jsx';
+import { CardTitleBar } from './WindowFrame.jsx';
+import { LoadingBody } from './Loading.jsx';
+import { setCompactHeight } from '../lib/appWindow.js';
+
+/** App do Windows: a janela é o cartão, então acompanha a altura do formulário (barra de título + corpo). */
+function useFitWindow() {
+  const ref = useRef(null);
+  useEffect(() => {
+    const body = ref.current;
+    if (!body) return;
+    const bar = body.parentElement.querySelector('.titlebar');
+    const fit = () => setCompactHeight((bar?.offsetHeight ?? 0) + body.offsetHeight);
+    const ro = new ResizeObserver(fit);
+    ro.observe(body);
+    fit();
+    return () => ro.disconnect();
+  }, []);
+  return ref;
+}
 
 /**
  * Entrada.
@@ -37,11 +56,15 @@ export default function AuthPage() {
   const lockout = useLoginLock(form.username);
   const locked = mode !== 'register' && lockout.locked;
 
+  const bootText = useStore((s) => s.bootText);
+  const bodyRef = useFitWindow();
+
   const update = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
   async function submit(e) {
     e.preventDefault();
     setError('');
+    useStore.setState({ bootText: null });
     setBusy(true);
     try {
       if (mode === 'reset') {
@@ -103,9 +126,11 @@ export default function AuthPage() {
   return (
     <div className="auth-page scene">
       <SceneArt wide />
-      <div className="auth-card window">
-        <TitleBar title="PadoSpeak" />
-        <div className="auth-body">
+      <div className={`auth-card window${busy ? ' loading' : ''}`}>
+        <CardTitleBar />
+        {/* Entrando: a tela de carregamento por cima, com o formulário ainda montado (volta se der erro). */}
+        {busy && <LoadingBody over text={bootText || 'Entrando…'} />}
+        <div className="auth-body" ref={bodyRef}>
           <div className="brand">
             <Logo size={40} />
             <span>

@@ -1,9 +1,11 @@
 import { useEffect } from 'react';
-import { AlertTriangle, Info, Download } from 'lucide-react';
+import { AlertTriangle, Info } from 'lucide-react';
 import { useStore, primaryConn, openFromUrl } from './store.js';
-import { isPanel } from './lib/env.js';
+import { isPanel, isTauri } from './lib/env.js';
+import { setWindowMode } from './lib/appWindow.js';
 import { useUpdate, runAutoUpdate } from './lib/update.js';
 import AuthPage from './components/AuthPage.jsx';
+import BootScreen from './components/Loading.jsx';
 import AdminPage from './components/Admin.jsx';
 import HostPage from './components/HostPage.jsx';
 import Shell from './components/Shell.jsx';
@@ -50,31 +52,18 @@ function Toast({ toast }) {
   );
 }
 
-/** Progresso da atualização automática (só aparece quando há versão nova). */
-function UpdateOverlay() {
-  const { stage, version, progress } = useUpdate();
-  if (stage !== 'downloading' && stage !== 'installing' && stage !== 'ready') return null;
-  return (
-    <div className="update-window window" role="status" aria-live="polite">
-      <TitleBar title="Atualizando o PadoSpeak" />
-      <div className="update-body">
-        <Download size={22} className="toast-ico" />
-        <div>
-          <b>Versão {version}</b>
-          <span>
-            {stage === 'downloading'
-              ? progress == null
-                ? 'Baixando…'
-                : `Baixando… ${Math.round(progress * 100)}%`
-              : 'Instalando — o app reabre sozinho.'}
-          </span>
-          <div className="np-progress">
-            <div style={{ width: `${Math.round((progress ?? 0.3) * 100)}%` }} />
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+/** O que a tela de carregamento diz: a atualização vem antes de tudo; depois, o passo da abertura. */
+function useBootStatus() {
+  const { stage, version, progress, total } = useUpdate();
+  const bootText = useStore((s) => s.bootText);
+  if (stage === 'checking') return { text: 'Procurando atualizações…' };
+  if (stage === 'downloading') {
+    const pct = progress == null ? null : Math.round(progress * 100);
+    const size = total ? ` de ${Math.round(total / 1048576)} MB` : '';
+    return { text: `Baixando a nova versão ${version}`, sub: pct == null ? 'Baixando…' : `${pct}%${size}`, progress: progress ?? 0 };
+  }
+  if (stage === 'installing' || stage === 'ready') return { text: 'Instalando a nova versão…', sub: 'O PadoSpeak reabre sozinho' };
+  return { text: bootText || (isTauri ? 'Iniciando…' : 'Conectando…') };
 }
 
 /** Contador de não lidas no ícone do app (barra de tarefas do Windows ou tela inicial do celular). */
@@ -108,20 +97,31 @@ export default function App() {
   // Meu perfil (o local no app desktop): enquanto ele existir, a tela principal fica montada.
   const loggedIn = useAcross(() => Boolean(primaryConn().getState().me));
 
+  const boot = useBootStatus();
+  // Baixando ou instalando uma versão nova: só a tela de carregamento (o app reabre em seguida).
+  const updating = ['downloading', 'installing', 'ready'].includes(useUpdate((s) => s.stage));
+  const loading = phase === 'boot' || updating;
+
   useEffect(() => {
-    useStore.getState().boot();
-    runAutoUpdate();
+    // O app só abre depois de saber se há versão nova (até 3 s); havendo, instala e reabre antes.
+    runAutoUpdate().then((updated) => updated || useStore.getState().boot());
   }, []);
+
+  // App do Windows: a janela é só o cartão enquanto ninguém entrou; depois, a janela grande.
+  const compact = loading || phase === 'auth';
+  useEffect(() => {
+    if (!isPanel) setWindowMode(compact ? 'compact' : 'full');
+  }, [compact]);
 
   return (
     <>
-      {phase === 'boot' && <div className="boot">Conectando…</div>}
-      {phase === 'auth' && <AuthPage />}
+      {loading && <BootScreen {...boot} />}
+      {phase === 'auth' && !updating && <AuthPage />}
       {phase === 'host' && (isPanel || loggedIn) && <HostPage />}
       {phase === 'admin' && loggedIn && <AdminPage />}
       {/* O app continua montado na página Hostear para não derrubar uma chamada de voz em andamento. */}
       {loggedIn && !isPanel && (
-        <div style={{ display: phase === 'app' ? 'contents' : 'none' }}>
+        <div style={{ display: phase === 'app' && !updating ? 'contents' : 'none' }}>
           <Shell />
         </div>
       )}
@@ -133,7 +133,6 @@ export default function App() {
       <DownloadsIndicator />
       {loggedIn && phase === 'app' && <SharedInbox />}
       {toast && <Toast key={toast.id} toast={toast} />}
-      <UpdateOverlay />
     </>
   );
 }

@@ -69,6 +69,7 @@ import {
   setMyActivity,
 } from '../store.js';
 import { currentActivity, listPrograms, setCustomPrograms } from '../lib/activity.js';
+import { setGameOverlay } from '../lib/gameOverlay.js';
 import { SoundsModal, UserSoundsModal, SoundSettings } from './SoundLibrary.jsx';
 import { GoogleButton, useAuthOptions, AccountSettings } from './AccountAuth.jsx';
 import VolumeSlider from './Volume.jsx';
@@ -1036,13 +1037,13 @@ function CustomPrograms() {
   );
 }
 
-function SettingsModal({ close }) {
+function SettingsModal({ close, tab: startTab }) {
   const prim = primaryConn();
   const me = prim((s) => s.me);
   const serverUrl = prim((s) => s.baseUrl);
   const accent = useStore((s) => s.prefs.accent || null);
   const saved = useStore((s) => s.prefs.devices) || {};
-  const [tab, setTab] = useState('aparencia');
+  const [tab, setTab] = useState(startTab || 'aparencia');
   const [devices, setDevices] = useState([]);
   const [choice, setChoice] = useState({ mic: '', camera: '', output: '', ...saved });
   const [rnnoise, setRnnoise] = useState(useStore.getState().prefs.noiseSuppression !== false);
@@ -1050,6 +1051,7 @@ function SettingsModal({ close }) {
   const [repeatAlerts, setRepeatAlerts] = useState(useStore.getState().prefs.repeatAlerts !== false);
   const [nearbyVisible, setNearbyVisible] = useState(useStore.getState().prefs.nearbyVisible !== false);
   const [shareActivity, setShareActivity] = useState(useStore.getState().prefs.shareActivity !== false);
+  const [gameOverlay, setGameOverlayOn] = useState(useStore.getState().prefs.gameOverlay === true);
   // App desktop: iniciar com o Windows (abre minimizado na bandeja).
   const [autostart, setAutostart] = useState(null);
   const [autostartOn, setAutostartOn] = useState(false);
@@ -1237,6 +1239,16 @@ function SettingsModal({ close }) {
               </span>
             </label>
             {shareActivity && <CustomPrograms />}
+            <label className="checkbox">
+              <input type="checkbox" checked={gameOverlay} onChange={(e) => setGameOverlayOn(e.target.checked)} />
+              <span>
+                Sobreposição nos jogos
+                <small className="check-hint">
+                  Durante uma chamada, mostra por cima do jogo as fotos de quem está nela (quem fala acende) e a música
+                  tocando. Vale para os mesmos jogos da atividade, no modo janela ou janela sem bordas.
+                </small>
+              </span>
+            </label>
           </>
         )}
         <div className="settings-sec">Vistos nas mensagens</div>
@@ -1441,6 +1453,10 @@ function SettingsModal({ close }) {
             if (shareActivity !== (st.prefs.shareActivity !== false)) {
               st.setAppearance({ shareActivity });
               setMyActivity(currentActivity());
+            }
+            if (gameOverlay !== (st.prefs.gameOverlay === true)) {
+              st.setAppearance({ gameOverlay });
+              setGameOverlay(gameOverlay);
             }
             if (nearbyVisible !== (st.prefs.nearbyVisible !== false)) {
               st.setAppearance({ nearbyVisible });
@@ -1699,11 +1715,6 @@ function ProfileCard({ close, userId }) {
       <div className="profile-banner" style={{ background: bannerBackground(user.bannerColor || user.avatarColor) }} />
       <div className="profile-head">
         <Avatar user={user} size={80} status={online ? undefined : 'off'} />
-        {isMe && (
-          <button className="btn secondary" onClick={() => openModal({ type: 'editProfile' })}>
-            Editar perfil
-          </button>
-        )}
       </div>
       <div className="profile-body">
         <h2>
@@ -1742,6 +1753,16 @@ function ProfileCard({ close, userId }) {
               ))}
             </div>
           </section>
+        )}
+        {isMe && (
+          <div className="profile-actions">
+            <button className="btn" onClick={() => openModal({ type: 'editProfile' })}>
+              <Palette size={16} /> Personalizar perfil
+            </button>
+            <button className="btn secondary" onClick={() => openModal({ type: 'settings', tab: 'sons' })}>
+              <Music2 size={16} /> Editar sons
+            </button>
+          </div>
         )}
         {!isMe && (
           <div className="profile-actions">

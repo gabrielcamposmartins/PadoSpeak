@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "share-dock",
+  "description": "Dock flutuante da transmissão: só conversa com a janela principal por eventos e pode ser arrastado",
+  "windows": ["share-dock"],
+  "permissions": ["core:event:default", "core:window:allow-start-dragging"]
+}

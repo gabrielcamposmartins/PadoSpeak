@@ -28,8 +28,6 @@ pub const MAX_PER_USER: i64 = 10;
 /// Botões do atalho: 3 por linha, de 1 a 3 linhas (escolhido em Configurações → Sons).
 pub const MIN_ROWS: i64 = 1;
 pub const MAX_ROWS: i64 = 3;
-/// Intervalo mínimo entre dois sons da mesma pessoa.
-pub const COOLDOWN_MS: i64 = 2_000;
 
 /// Ícones (desenhados no app) e cores de gel que um som pode ter.
 pub const ICONS: [&str; 10] = ["horn", "clap", "drum", "laugh", "cricket", "cloud", "bell", "star", "heart", "boom"];

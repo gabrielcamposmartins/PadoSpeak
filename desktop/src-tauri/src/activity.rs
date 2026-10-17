@@ -1,6 +1,6 @@
 //! Jogo em foco ("Jogando Counter-Strike 2"): a cada 3 s olha a janela em foco e tenta reconhecer o
-//! jogo pelo executável — lista de jogos conhecidos, ou pela pasta de instalação (Steam, Epic, Riot,
-//! Xbox, GOG, Ubisoft, EA). O jogo continua valendo enquanto o processo existir (voltar para o PadoSpeak
+//! jogo pelo executável — lista de jogos conhecidos, pela pasta de instalação (Steam, Epic, Riot,
+//! Xbox, GOG, Ubisoft, EA) ou pela lista de jogos detectáveis do Discord (`games.tsv`, ~10 mil jogos). O jogo continua valendo enquanto o processo existir (voltar para o PadoSpeak
 //! no meio da partida não apaga o status); outro jogo em foco toma o lugar.
 //! Também vale qualquer programa que a pessoa escolheu em Configurações (`activity_custom_set`).
 //! Só o nome do jogo sai daqui: nada de títulos de janela ou outros programas.
@@ -37,6 +37,13 @@ pub struct Watcher {
 
 pub type Shared = Arc<Watcher>;
 
+impl Activity {
+    /// Processo do jogo.
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+}
+
 impl Watcher {
     pub fn set_custom(&self, list: Vec<Custom>) {
         let list = list
@@ -59,6 +66,7 @@ const KNOWN: &[(&str, &str)] = &[
     ("pokersoul.exe", "Pokeru"),
     ("speedoru.exe", "Speedoru"),
     ("speedoru.console.exe", "Speedoru"),
+    ("magilite.exe", "Magilite"),
     ("cs2.exe", "Counter-Strike 2"),
     ("csgo.exe", "Counter-Strike: Global Offensive"),
     ("hl2.exe", "Half-Life 2"),
@@ -234,6 +242,16 @@ pub fn exe_of(pid: u32) -> Option<String> {
     win::exe_of(pid)
 }
 
+/// Janela em foco agora: (identificador da janela, processo).
+pub fn foreground_window() -> Option<(isize, u32)> {
+    win::foreground_window()
+}
+
+/// Retângulo de uma janela na tela, em pixels: (esquerda, topo, direita, baixo).
+pub fn window_rect(hwnd: isize) -> Option<(i32, i32, i32, i32)> {
+    win::window_rect(hwnd)
+}
+
 /// Programa com janela aberta, para a pessoa escolher em Configurações.
 #[derive(Serialize, Debug)]
 pub struct Program {
@@ -323,6 +341,9 @@ pub fn identify(exe: &str, title: &str) -> Option<String> {
             return Some(name);
         }
     }
+    if let Some(name) = detectable_name(&path) {
+        return Some(name.to_string());
+    }
     for marker in STORE_DIRS {
         if let Some(i) = path.find(marker) {
             let folder = exe[i + marker.len()..].split(['\\', '/']).next().unwrap_or_default();
@@ -332,6 +353,30 @@ pub fn identify(exe: &str, title: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Jogos detectáveis do Discord (gerado por scripts/detectable-games.mjs): `fim do caminho\tnome`.
+const GAMES_TSV: &str = include_str!("games.tsv");
+
+/// Nome do jogo pela lista do Discord. Vale o fim de caminho mais comprido que bate
+/// (`garrysmod\hl2.exe` antes de `hl2.exe`). `path` em minúsculas e com `\`.
+fn detectable_name(path: &str) -> Option<&'static str> {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+    static INDEX: OnceLock<HashMap<&'static str, Vec<(&'static str, &'static str)>>> = OnceLock::new();
+    let index = INDEX.get_or_init(|| {
+        let mut index: HashMap<_, Vec<_>> = HashMap::new();
+        for (end, name) in GAMES_TSV.lines().filter(|l| !l.starts_with('#')).filter_map(|l| l.split_once('\t')) {
+            index.entry(file_name(end)).or_default().push((end, name));
+        }
+        index
+    });
+    index
+        .get(file_name(path))?
+        .iter()
+        .filter(|(end, _)| path == *end || path.strip_suffix(end).is_some_and(|rest| rest.ends_with('\\')))
+        .max_by_key(|(end, _)| end.len())
+        .map(|(_, name)| *name)
 }
 
 fn pretty(folder: &str) -> String {
@@ -387,9 +432,29 @@ mod win {
     };
     use windows::core::BOOL;
     use windows::Win32::Foundation::{HWND, LPARAM};
+    use windows::Win32::Foundation::RECT;
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetForegroundWindow, GetWindow, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, GW_OWNER,
+        EnumWindows, GetForegroundWindow, GetWindow, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+        GW_OWNER,
     };
+
+    pub fn foreground_window() -> Option<(isize, u32)> {
+        unsafe {
+            let hwnd = GetForegroundWindow();
+            if hwnd.is_invalid() {
+                return None;
+            }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            (pid != 0).then_some((hwnd.0 as isize, pid))
+        }
+    }
+
+    pub fn window_rect(hwnd: isize) -> Option<(i32, i32, i32, i32)> {
+        let mut r = RECT::default();
+        unsafe { GetWindowRect(HWND(hwnd as *mut _), &mut r).ok()? };
+        (r.right > r.left && r.bottom > r.top).then_some((r.left, r.top, r.right, r.bottom))
+    }
 
     /// Janelas principais visíveis: (processo, título).
     pub fn windows() -> Vec<(u32, String)> {
@@ -461,6 +526,12 @@ mod win {
     pub fn foreground() -> Option<(u32, String, String)> {
         None
     }
+    pub fn foreground_window() -> Option<(isize, u32)> {
+        None
+    }
+    pub fn window_rect(_hwnd: isize) -> Option<(i32, i32, i32, i32)> {
+        None
+    }
     pub fn alive(_pid: u32) -> bool {
         false
     }
@@ -488,6 +559,13 @@ mod tests {
         assert_eq!(id(r"D:\Jogos\PokerSoul\pokersoul.exe").as_deref(), Some("Pokeru"));
         assert_eq!(id(r"C:\Users\ana\AppData\Local\Programs\Speedoru\Speedoru.exe").as_deref(), Some("Speedoru"));
         assert_eq!(id(r"C:\Users\ana\AppData\Local\Programs\Speedoru\Speedoru.console.exe").as_deref(), Some("Speedoru"));
+        assert_eq!(id(r"C:\Users\ana\AppData\Local\Magilite\game\Magilite.exe").as_deref(), Some("Magilite"));
+        assert_eq!(id(r"C:\Users\ana\AppData\Local\Magilite\MagiliteLauncher.exe"), None);
+        // Fora das lojas: a lista do Discord (pelo executável, ou com a pasta quando o nome é comum).
+        assert_eq!(id(r"D:\Jogos\Hearts of Iron IV\hoi4.exe").as_deref(), Some("Hearts of Iron IV"));
+        assert_eq!(id(r"D:\Jogos\World of Warcraft\_retail_\Wow.exe").as_deref(), Some("World of Warcraft"));
+        assert_eq!(id(r"D:\Jogos\Qualquer\game.exe"), None);
+        assert_eq!(id(r"D:\Jogos\Qualquer\client.exe"), None);
         // Não são jogos.
         assert_eq!(id(r"C:\Program Files\Google\Chrome\Application\chrome.exe"), None);
         assert_eq!(id(r"C:\Riot Games\Riot Client\RiotClientUx.exe"), None);

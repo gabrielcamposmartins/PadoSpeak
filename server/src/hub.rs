@@ -125,8 +125,6 @@ struct HubState {
     activities: HashMap<String, (Value, ConnId)>,
     /// Horários dos últimos "chamar atenção" de cada usuário (limite por minuto).
     nudges: HashMap<String, VecDeque<i64>>,
-    /// Último som rápido de cada usuário (um a cada `sounds::COOLDOWN_MS`).
-    sound_last: HashMap<String, i64>,
     /// Nó local: a presença vai para todos os conectados (perfil do PC e convidados da rede).
     lan_mode: bool,
     /// Canais privados → (servidor, quem pode ver). Canal fora daqui é público.
@@ -1668,11 +1666,7 @@ impl Hub {
                     return err("Som não encontrado");
                 };
                 let now = crate::now_ms();
-                let s = &mut *self.state.lock().unwrap();
-                if s.sound_last.get(&user.id).is_some_and(|t| now - t < crate::sounds::COOLDOWN_MS) {
-                    return err("Espere um pouquinho para tocar outro som");
-                }
-                s.sound_last.insert(user.id.clone(), now);
+                let s = &*self.state.lock().unwrap();
                 let msg = event("sound:play", json!({ "channelId": channel_id, "by": user, "sound": sound, "at": now }));
                 for p in s.voice.get(&channel_id).into_iter().flatten() {
                     Self::send_to(s, &p.peer_id, msg.clone());

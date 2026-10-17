@@ -30,6 +30,7 @@ import {
   Download,
   Gamepad2,
   WifiOff,
+  RefreshCw,
 } from 'lucide-react';
 import { useStore, primaryConn, setStatusEverywhere, connRegistry, usePerms } from '../store.js';
 import { isDesktop, DOWNLOAD_URL } from '../lib/env.js';
@@ -171,7 +172,7 @@ export function ProfileBar({ onMenu }) {
           <Menu size={20} />
         </button>
       )}
-      <Avatar user={me} base={base} size={62} status={frame} speaking={voice?.speaking.me} onClick={() => openModal({ type: 'editProfile' })} />
+      <Avatar user={me} base={base} size={62} status={frame} speaking={voice?.speaking.me} onClick={() => openModal({ type: 'profile', userId: me.id })} />
       <div className="pb-text">
         <div className="pb-name">
           <button className="pb-me" onClick={() => openModal({ type: 'editProfile' })} title="Editar perfil">
@@ -688,6 +689,16 @@ export function VoiceStatus() {
         >
           <MonitorUp size={16} />
         </button>
+        )}
+        {!isTouch && voice.screen && (
+          <button
+            className="gloss"
+            onClick={() => vc.getState().switchScreen()}
+            title="Trocar a transmissão: outra janela ou a tela inteira, sem parar"
+            aria-label="Trocar a transmissão"
+          >
+            <RefreshCw size={16} />
+          </button>
         )}
         <button
           className="gloss"

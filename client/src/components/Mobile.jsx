@@ -168,7 +168,7 @@ function MePage() {
   return (
     <div className="m-me">
       <div className="m-me-card glass">
-        <Avatar user={me} base={base} size={72} status={info.cls} onClick={() => openModal({ type: 'editProfile' })} />
+        <Avatar user={me} base={base} size={72} status={info.cls} onClick={() => openModal({ type: 'profile', userId: me.id })} />
         <div className="m-me-text">
           <b className={colorClass(me.nameColor)} style={colorStyle(me.nameColor)}>
             <FormattedText text={me.displayName} size={18} />
@@ -187,7 +187,7 @@ function MePage() {
         <button className="m-row" onClick={() => openModal({ type: 'editProfile' })}>
           <Pencil size={20} className="ico-purple" />
           <span>
-            <b>Editar perfil</b>
+            <b>Personalizar perfil</b>
             <small>Foto, nome, mensagem pessoal e cores</small>
           </span>
         </button>

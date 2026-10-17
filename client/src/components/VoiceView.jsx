@@ -19,6 +19,7 @@ import {
   SwitchCamera,
   EyeOff,
   WifiOff,
+  RefreshCw,
 } from 'lucide-react';
 import { useStore } from '../store.js';
 import { useConn } from './conn.jsx';
@@ -127,7 +128,7 @@ function useShortSide(ref) {
   return side;
 }
 
-function Tile({ tile, focused, onFocus }) {
+function Tile({ tile, focused, grid, onFocus }) {
   const [rendered, setRendered] = useState(null);
   const [menu, setMenu] = useState(null);
   const voice = useConn()((s) => s.voice);
@@ -135,7 +136,10 @@ function Tile({ tile, focused, onFocus }) {
   // Card grande (coluna da grade ou foco): foto 2,5× maior, sem passar de 55% do lado menor.
   const side = useShortSide(ref);
   const baseSize = focused ? 96 : 54;
-  const avatarSize = side >= 280 ? Math.round(Math.min(baseSize * 2.5, side * 0.55)) : baseSize;
+  const fitted = side >= 280 ? Math.round(Math.min(baseSize * 2.5, side * 0.55)) : baseSize;
+  // Na grade com mais de 4 pessoas a foto é 2,5× maior, mas sempre cabendo no card com espaço para o
+  // nome embaixo: com mais gente na chamada os cards encolhem e a foto encolhe junto.
+  const avatarSize = grid && side ? Math.max(baseSize, Math.round(Math.min(fitted * 2.5, side * 0.6, side - 70))) : fitted;
   const { setPeerVolume, setStreamAudio, setScreenAudioMuted, watchPeer } = useConn().getState();
   const name = plain(tile.user?.displayName) || 'alguém';
   const kind = tile.kind === 'screen' ? 'screen' : 'camera';
@@ -533,7 +537,7 @@ export default function VoiceView({ channel, variant }) {
         ) : (
           <div className="voice-grid">
             {tiles.map((t) => (
-              <Tile key={t.id} tile={t} onFocus={() => setFocusId(t.id)} />
+              <Tile key={t.id} tile={t} grid={connectedCount > 4} onFocus={() => setFocusId(t.id)} />
             ))}
           </div>
         )}
@@ -585,15 +589,40 @@ export default function VoiceView({ channel, variant }) {
             >
               {voice.screen ? <MonitorOff /> : <MonitorUp />}
             </button>
-            {voice.screen && voice.screenHasAudio && (
+            {voice.screen && (
               <button
-                className={`ball${voice.screenAudioMuted ? ' red' : ''}`}
-                onClick={() => store.setScreenAudioMuted(!voice.screenAudioMuted)}
-                title={voice.screenAudioMuted ? 'Enviar áudio da transmissão' : 'Silenciar áudio da transmissão'}
+                className="ball"
+                onClick={store.switchScreen}
+                title="Trocar a transmissão: outra janela ou a tela inteira, sem parar"
+                aria-label="Trocar a transmissão"
               >
-                {voice.screenAudioMuted ? <VolumeX /> : <Volume2 />}
+                <RefreshCw />
               </button>
             )}
+            {voice.screen &&
+              (() => {
+                // O som começa como foi escolhido no seletor ("Compartilhar áudio"); aqui liga e desliga.
+                const noTrack = !voice.screenHasAudio;
+                const on = voice.screenHasAudio && !voice.screenAudioMuted;
+                return (
+                  <button
+                    className={`ball${on ? '' : ' red'}`}
+                    onClick={() => store.setScreenAudioMuted(!voice.screenAudioMuted)}
+                    disabled={noTrack}
+                    aria-pressed={on}
+                    aria-label={on ? 'Transmissão com som' : 'Transmissão sem som'}
+                    title={
+                      noTrack
+                        ? 'Esta transmissão está sem som. Para ter som, use Trocar e marque “Compartilhar áudio” no seletor.'
+                        : on
+                          ? 'Com som: clique para transmitir sem som'
+                          : 'Sem som: clique para transmitir com som'
+                    }
+                  >
+                    {on ? <Volume2 /> : <VolumeX />}
+                  </button>
+                );
+              })()}
             <label className="quality">
               Qualidade
               <select

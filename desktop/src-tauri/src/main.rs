@@ -6,6 +6,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod activity;
+mod overlay;
 mod screen_audio;
 mod solo_keys;
 
@@ -136,6 +137,89 @@ fn activity_get(watcher: State<'_, activity::Shared>) -> Option<activity::Activi
 #[tauri::command]
 fn activity_custom_set(watcher: State<'_, activity::Shared>, list: Vec<activity::Custom>) {
     watcher.set_custom(list);
+}
+
+/// Ao reabrir logo depois de fechar (atualização, abrir de novo pela bandeja), o navegador do WebView2
+/// da execução anterior pode ainda estar terminando. A janela nova se pendura nele, mas o "pai" dele já
+/// saiu, e o Gerenciador de Tarefas mostra os processos do WebView2 separados do PadoSpeak. Espera (até
+/// 5 s) ele soltar o perfil: enquanto roda, ele mantém `EBWebView\lockfile` aberto com exclusividade.
+/// Só chega aqui a instância única (o plugin single-instance já encerrou as outras), então um lockfile
+/// preso é de uma execução que está fechando; numa abertura normal ele está livre e não há espera.
+fn wait_previous_webview(identifier: &str) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let Some(base) = std::env::var_os("LOCALAPPDATA") else { return };
+        let lock = PathBuf::from(base).join(identifier).join("EBWebView").join("lockfile");
+        let start = std::time::Instant::now();
+        while lock.exists() && start.elapsed() < std::time::Duration::from_secs(5) {
+            if std::fs::OpenOptions::new().read(true).write(true).share_mode(0).open(&lock).is_ok() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = identifier;
+}
+
+/// Dock flutuante da transmissão (dock.html): sempre por cima, sem ícone na barra de tarefas e fora da
+/// própria captura (quem transmite a tela inteira não transmite o dock).
+#[tauri::command]
+fn share_dock_open(app: AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("share-dock") {
+        let _ = w.show();
+        return Ok(());
+    }
+    let (w, h) = (500.0, 52.0);
+    let mut b = tauri::WebviewWindowBuilder::new(&app, "share-dock", tauri::WebviewUrl::App("dock.html".into()))
+        .title("PadoSpeak — transmissão")
+        .inner_size(w, h)
+        .resizable(false)
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .content_protected(true)
+        .focused(false);
+    // Todas as janelas do WebView2 precisam dos mesmos argumentos do navegador.
+    if let Some(args) = app.config().app.windows.iter().find(|c| c.label == "main").and_then(|c| c.additional_browser_args.clone()) {
+        b = b.additional_browser_args(&args);
+    }
+    // Embaixo, no meio da tela onde está o PadoSpeak (acima da barra de tarefas).
+    let monitor = app
+        .get_webview_window("main")
+        .and_then(|m| m.current_monitor().ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten());
+    if let Some(m) = monitor {
+        let scale = m.scale_factor();
+        let pos = m.position().to_logical::<f64>(scale);
+        let size = m.size().to_logical::<f64>(scale);
+        b = b.position(pos.x + (size.width - w) / 2.0, pos.y + size.height - h - 64.0);
+    }
+    b.build().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn share_dock_close(app: AppHandle) {
+    if let Some(w) = app.get_webview_window("share-dock") {
+        let _ = w.close();
+    }
+}
+
+/// Aberto pela inicialização do Windows (só na bandeja): a atualização acontece em silêncio, sem janela.
+/// O instalador reabre o app com os mesmos argumentos, então depois de atualizar ele volta para a bandeja.
+#[tauri::command]
+fn launched_hidden() -> bool {
+    std::env::args().any(|a| a == AUTOSTART_ARG)
+}
+
+/// Sobreposição nos jogos: ligada quando a pessoa quer e está numa chamada (aparece com o jogo em foco).
+#[tauri::command]
+fn overlay_set(overlay: State<'_, overlay::Shared>, on: bool) {
+    overlay.set(on);
 }
 
 /// Atalhos de voz que são uma tecla modificadora sozinha ("ControlRight"…): avisa a janela a cada toque.
@@ -305,6 +389,11 @@ fn main() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
+            // A janela principal é criada aqui (e não pela configuração) para antes esperar o WebView2
+            // de uma execução anterior terminar de fechar (veja `wait_previous_webview`).
+            wait_previous_webview(&app.config().identifier);
+            let main_config = app.config().app.windows.iter().find(|w| w.label == "main").cloned().ok_or("janela principal sem configuração")?;
+            tauri::WebviewWindowBuilder::from_config(app.handle(), &main_config)?.build()?;
             // Banco Turso/libSQL e certificados ficam na pasta de dados do app (ou em DATA_DIR).
             let data_dir: std::path::PathBuf = match std::env::var("DATA_DIR") {
                 Ok(dir) if !dir.is_empty() => dir.into(),
@@ -325,7 +414,9 @@ fn main() {
             };
             apply_autostart(&autostart);
             app.manage(autostart);
-            app.manage(activity::spawn(app.handle().clone()));
+            let games = activity::spawn(app.handle().clone());
+            app.manage(overlay::spawn(app.handle().clone(), games.clone()));
+            app.manage(games);
             app.manage(solo_keys::spawn(app.handle().clone()));
             app.manage(screen_audio::ScreenAudio::default());
             build_tray(app)?;
@@ -345,7 +436,7 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, local_node, notify_windows, autostart_get, autostart_set, open_url, activity_get, activity_custom_set, activity_programs, solo_keys_set, screen_audio::screen_audio_start, screen_audio::screen_audio_stop])
+        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, local_node, notify_windows, autostart_get, autostart_set, open_url, activity_get, activity_custom_set, activity_programs, solo_keys_set, share_dock_open, share_dock_close, overlay_set, launched_hidden, screen_audio::screen_audio_start, screen_audio::screen_audio_stop])
         .build(tauri::generate_context!())
         .expect("erro ao iniciar o PadoSpeak");
 

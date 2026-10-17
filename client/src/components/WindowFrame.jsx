@@ -2,7 +2,7 @@
 // maximizar/restaurar e fechar ficam aqui, no mesmo visual Aero do resto do app.
 import { useEffect, useState } from 'react';
 import { isTauri } from '../lib/env.js';
-import { MiniLogo } from './Aero.jsx';
+import { MiniLogo, TitleBar } from './Aero.jsx';
 
 let current;
 const appWindow = () => (current ??= import('@tauri-apps/api/window').then((m) => m.getCurrentWindow()));
@@ -74,5 +74,33 @@ export default function WindowFrame() {
         </button>
       </div>
     </header>
+  );
+}
+
+/**
+ * Barra de título do cartão (entrada e carregamento). No app do Windows a janela é o próprio cartão, então
+ * ela arrasta a janela e tem minimizar e fechar (fechar vai para a bandeja, como na janela grande).
+ */
+export function CardTitleBar() {
+  if (!isTauri) return <TitleBar title="PadoSpeak" />;
+  return (
+    <div className="titlebar card-frame" data-tauri-drag-region>
+      <MiniLogo />
+      <span className="tb-title">PadoSpeak</span>
+      <div className="tb-caption">
+        <button type="button" className="tb-min" title="Minimizar" aria-label="Minimizar" onClick={act((w) => w.minimize())}>
+          <Glyph kind="min" />
+        </button>
+        <button
+          type="button"
+          className="tb-close"
+          title="Fechar (o PadoSpeak continua na bandeja, perto do relógio)"
+          aria-label="Fechar"
+          onClick={act((w) => w.close())}
+        >
+          <Glyph kind="close" />
+        </button>
+      </div>
+    </div>
   );
 }

@@ -1,13 +1,15 @@
 // Tamanho da tela: celular (uma tela por vez, abas embaixo), tablet na vertical (lista em gaveta) ou
-// desktop (o layout de sempre, também no iPad na horizontal). O app desktop nunca fica abaixo de 940 px.
+// desktop (o layout de sempre, também no iPad na horizontal). O app do Windows é sempre desktop: ele só
+// fica estreito na janela pequena de entrada e carregamento, que não é o app.
 import { useSyncExternalStore } from 'react';
+import { isTauri } from './env.js';
 
 const media = (q) => (typeof window !== 'undefined' && window.matchMedia ? window.matchMedia(q) : null);
 const phone = media('(max-width: 640px)');
 const tablet = media('(max-width: 939px)');
 
 /** 'phone' | 'tablet' | 'desktop' */
-export const currentLayout = () => (phone?.matches ? 'phone' : tablet?.matches ? 'tablet' : 'desktop');
+export const currentLayout = () => (isTauri ? 'desktop' : phone?.matches ? 'phone' : tablet?.matches ? 'tablet' : 'desktop');
 
 function subscribe(cb) {
   phone?.addEventListener('change', cb);

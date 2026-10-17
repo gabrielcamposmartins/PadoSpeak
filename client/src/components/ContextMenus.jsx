@@ -56,7 +56,10 @@ export function UserMenu({ x, y, user, onClose }) {
           Ver perfil
         </Item>
         <Item icon={Pencil} onClick={act(() => openModal({ type: 'editProfile' }))}>
-          Editar perfil
+          Personalizar perfil
+        </Item>
+        <Item icon={Music2} onClick={act(() => openModal({ type: 'settings', tab: 'sons' }))}>
+          Editar sons
         </Item>
       </PointMenu>
     );

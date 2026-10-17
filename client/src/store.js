@@ -9,6 +9,8 @@ import { haptic, stopHaptic } from './lib/haptics.js';
 import { playSoundboard, preloadSound, stopSoundboard, setSoundboardOutput } from './lib/soundboard.js';
 import { shakeWindow, flashTaskbar } from './lib/attention.js';
 import { systemNotify, showAppWindow, appHasFocus } from './lib/background.js';
+import { syncShareDock } from './lib/shareDock.js';
+import { syncGameOverlay } from './lib/gameOverlay.js';
 import { currentLayout, isStandalone, isTouch } from './lib/layout.js';
 import { plain, mentionsUser } from './lib/text.js';
 import { syncPush, disablePush } from './lib/pwa.js';
@@ -223,6 +225,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
     kind, // server | local | peer
     baseUrl,
     phase: isPanel ? 'host' : 'boot', // boot | auth | app | host (só no principal)
+    bootText: null, // o que a tela de carregamento diz (abrindo o perfil, carregando mensagens…)
     serverUrl: baseUrl,
     /** Situação do servidor de comunidade no app desktop: off | connecting | online | unreachable | login | mismatch */
     serverStatus: 'off',
@@ -330,6 +333,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
       if (isDesktop) return bootDesktop();
       if (!token) return set({ phase: 'auth' });
       try {
+        set({ bootText: 'Abrindo sua conta…' });
         const me = await api.get('/api/me');
         await get().enterApp(me);
       } catch (e) {
@@ -410,6 +414,8 @@ export function createConnStore({ key, kind, base, primary = false }) {
     },
 
     async enterApp(me) {
+      // Tela de carregamento (abrindo o app ou entrando): o passo que está acontecendo.
+      if (ui().getState().phase !== 'app') ui().setState({ bootText: 'Carregando mensagens…' });
       const [config, guilds, friends, dms] = await Promise.all([
         api.get('/api/config'),
         api.get('/api/guilds'),
@@ -1490,10 +1496,17 @@ export function createConnStore({ key, kind, base, primary = false }) {
           if (!snap.channelId) {
             voiceClient = null;
             set({ voice: null });
+            syncShareDock(null);
             if (snap.error) notify(snap.error, 'info');
             return;
           }
           set({ voice: snap });
+          // App do Windows: dock flutuante enquanto transmite (Trocar, Som, Parar, Ocultar).
+          syncShareDock(snap, {
+            switch: () => get().switchScreen(),
+            audio: () => get().setScreenAudioMuted(!get().voice?.screenAudioMuted),
+            stop: () => get().toggleScreen(),
+          });
         },
       });
       voiceClient = client;
@@ -1595,6 +1608,17 @@ export function createConnStore({ key, kind, base, primary = false }) {
         await voiceClient.setScreen(!voiceClient.screen, preset);
       } catch (e) {
         if (e.name !== 'NotAllowedError') notify(`Compartilhamento de tela: ${e.message}`);
+      }
+    },
+    /** Transmitir outra janela (ou a tela inteira) sem parar a transmissão. */
+    async switchScreen() {
+      if (!voiceClient?.screen) return;
+      // O seletor do Windows abre junto da janela do PadoSpeak: ela vem para a frente.
+      await showAppWindow();
+      try {
+        await voiceClient.switchScreen();
+      } catch (e) {
+        if (e.name !== 'NotAllowedError') notify(`Trocar a transmissão: ${e.message}`);
       }
     },
     setScreenPreset: (preset) => voiceClient?.setScreenPreset(preset),
@@ -1812,6 +1836,32 @@ export function createConnStore({ key, kind, base, primary = false }) {
       sinkId: u.prefs.devices?.output || '',
       streamUrl: s.musicUrl,
       serverNow: () => Date.now() + s.serverOffset,
+    });
+  });
+
+  // ---------- Sobreposição nos jogos (app do Windows): quem está na chamada e a música ----------
+  store.subscribe((s, prev) => {
+    if (!s.voice && !prev.voice) return;
+    if (s.voice === prev.voice && s.music === prev.music && s.me === prev.me) return;
+    const v = s.voice;
+    if (!v) return syncGameOverlay(null);
+    const src = (url) => (url ? (/^https?:/.test(url) ? url : s.baseUrl + url) : null);
+    const person = (id, u, speaking, muted, deafened) => ({
+      id,
+      name: plain(u?.displayName) || u?.username || '?',
+      src: src(u?.avatarUrl),
+      color: u?.avatarColor || null,
+      speaking: Boolean(speaking),
+      muted: Boolean(muted),
+      deafened: Boolean(deafened),
+    });
+    const cur = s.music[v.channelId]?.current;
+    syncGameOverlay({
+      music: cur?.track ? { title: cur.track.title, artist: cur.track.artist || null, paused: cur.pausedAt != null } : null,
+      people: [
+        person('me', s.me, v.speaking?.me, v.muted, v.deafened),
+        ...v.peers.map((p) => person(p.peerId, p.user, v.speaking?.[p.peerId], p.muted || p.serverMuted, p.deafened)),
+      ],
     });
   });
 
@@ -2212,6 +2262,7 @@ async function bootDesktop() {
   const local = connRegistry.get('local') || createConnStore({ key: 'local', kind: 'local', base: url });
   if (local.getState().baseUrl !== url) local.getState().setBase(url);
   try {
+    useStore.setState({ bootText: 'Abrindo seu perfil…' });
     const me = await createApi(
       () => url,
       () => loadToken(url),
