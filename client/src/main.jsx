@@ -38,7 +38,7 @@ onNotificationClick(openFromUrl);
 setCustomPrograms(useStore.getState().prefs.customGames);
 watchActivity(setMyActivity);
 // App do Windows: sobreposição com a chamada e a música por cima do jogo (se a pessoa ligou).
-setGameOverlay(useStore.getState().prefs.gameOverlay === true);
+setGameOverlay(useStore.getState().prefs.gameOverlay === true, useStore.getState().prefs.gameOverlayCorner);
 // O iPhone só libera áudio dentro de um toque: o primeiro toque deixa os sons de aviso prontos.
 window.addEventListener('pointerdown', unlockAudio, { once: true, capture: true });
 window.addEventListener('pointerdown', unlockSoundboard, { once: true, capture: true });

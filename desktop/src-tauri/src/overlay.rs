@@ -20,28 +20,33 @@ const WIDTH: f64 = 360.0;
 pub struct Overlay {
     /// A pessoa ligou a opção e está numa chamada.
     on: AtomicBool,
+    /// Do lado direito da tela (escolhido em Configurações; o canto de cima ou de baixo é da página).
+    right: AtomicBool,
 }
 
 pub type Shared = Arc<Overlay>;
 
 impl Overlay {
-    pub fn set(&self, on: bool) {
+    pub fn set(&self, on: bool, right: bool) {
         self.on.store(on, Ordering::Relaxed);
+        self.right.store(right, Ordering::Relaxed);
     }
 }
 
-/// Faixa da sobreposição (x, y, largura, altura em pixels) na tela onde está o centro do jogo.
-/// `monitors`: (x, y, largura, altura, escala) de cada tela.
-fn strip(game: (i32, i32, i32, i32), monitors: &[(i32, i32, u32, u32, f64)]) -> Option<(i32, i32, u32, u32)> {
+/// Faixa da sobreposição (x, y, largura, altura em pixels) na tela onde está o centro do jogo, à esquerda
+/// ou à direita (`right`). `monitors`: (x, y, largura, altura, escala) de cada tela.
+fn strip(game: (i32, i32, i32, i32), monitors: &[(i32, i32, u32, u32, f64)], right: bool) -> Option<(i32, i32, u32, u32)> {
     let (cx, cy) = ((game.0 + game.2) / 2, (game.1 + game.3) / 2);
     let inside = |m: &&(i32, i32, u32, u32, f64)| cx >= m.0 && cy >= m.1 && cx < m.0 + m.2 as i32 && cy < m.1 + m.3 as i32;
     let m = monitors.iter().find(inside).or(monitors.first())?;
     // Jogo em janela menor que a tela: a faixa fica dentro da janela do jogo.
     let left = game.0.max(m.0);
+    let edge = game.2.min(m.0 + m.2 as i32);
     let top = game.1.max(m.1);
     let bottom = game.3.min(m.1 + m.3 as i32);
-    let width = ((WIDTH * m.4).round() as u32).min(m.2);
-    (bottom > top).then_some((left, top, width, (bottom - top) as u32))
+    let width = ((WIDTH * m.4).round() as u32).min(m.2).min((edge - left).max(0) as u32);
+    let x = if right { edge - width as i32 } else { left };
+    (bottom > top && width > 0).then_some((x, top, width, (bottom - top) as u32))
 }
 
 /// Retângulo da janela do jogo, se ele está em foco agora.
@@ -98,6 +103,25 @@ fn show(w: &WebviewWindow, (x, y, width, height): (i32, i32, u32, u32)) {
     let _ = w.show();
 }
 
+/// Esconde pelo próprio Windows, como foi mostrada (`show`). O `hide()` do Tauri não servia: a janela
+/// nasceu invisível e foi mostrada por fora dele, então ele achava que ela já estava escondida e não
+/// fazia nada (a sobreposição ficava por cima de tudo depois do primeiro jogo).
+fn conceal(w: &WebviewWindow) {
+    #[cfg(windows)]
+    if let Ok(h) = w.hwnd() {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{IsWindowVisible, ShowWindow, SW_HIDE};
+        let hwnd = HWND(h.0);
+        unsafe {
+            if IsWindowVisible(hwnd).as_bool() {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            }
+        }
+        return;
+    }
+    let _ = w.hide();
+}
+
 /// Põe (de novo) por cima de tudo, sem tirar o foco do jogo: jogos em tela cheia se colocam por cima.
 fn raise(w: &WebviewWindow) {
     #[cfg(windows)]
@@ -119,6 +143,7 @@ pub fn spawn(app: AppHandle, games: activity::Shared) -> Shared {
         .name("sobreposição".into())
         .spawn(move || {
             let mut last_game = None;
+            let mut last_right = false;
             let mut shown: Option<(i32, i32, u32, u32)> = None;
             let mut tick: u32 = 0;
             loop {
@@ -134,9 +159,10 @@ pub fn spawn(app: AppHandle, games: activity::Shared) -> Shared {
                     continue;
                 }
                 let game = focused_game(&games);
+                let right = me.right.load(Ordering::Relaxed);
                 let place = match game {
-                    // A janela do jogo não mexeu: mesma faixa.
-                    Some(g) if last_game == Some(g) && shown.is_some() => shown,
+                    // A janela do jogo não mexeu (nem o lado escolhido): mesma faixa.
+                    Some(g) if last_game == Some(g) && right == last_right && shown.is_some() => shown,
                     Some(g) => {
                         let monitors: Vec<_> = app
                             .available_monitors()
@@ -144,11 +170,12 @@ pub fn spawn(app: AppHandle, games: activity::Shared) -> Shared {
                             .iter()
                             .map(|m| (m.position().x, m.position().y, m.size().width, m.size().height, m.scale_factor()))
                             .collect();
-                        strip(g, &monitors)
+                        strip(g, &monitors, right)
                     }
                     None => None,
                 };
                 last_game = game;
+                last_right = right;
                 match place {
                     Some(rect) if shown != Some(rect) => {
                         if let Some(w) = build(&app) {
@@ -156,9 +183,12 @@ pub fn spawn(app: AppHandle, games: activity::Shared) -> Shared {
                             shown = Some(rect);
                         }
                     }
-                    None if shown.take().is_some() => {
+                    // Sem jogo em foco: some. Confere a janela de verdade a cada passada (e não só quando
+                    // acabou de sair do jogo), para nunca ficar por cima de outro programa.
+                    None => {
+                        shown = None;
                         if let Some(w) = app.get_webview_window(LABEL) {
-                            let _ = w.hide();
+                            conceal(&w);
                         }
                     }
                     // Mesma faixa: a cada segundo, de volta por cima (o jogo em tela cheia pode ter passado à frente).
@@ -184,10 +214,13 @@ mod tests {
     #[test]
     fn faixa_na_tela_do_jogo() {
         // Jogo em tela cheia (sem bordas) na primeira tela.
-        assert_eq!(strip((0, 0, 1920, 1080), TELAS), Some((0, 0, 360, 1080)));
+        assert_eq!(strip((0, 0, 1920, 1080), TELAS, false), Some((0, 0, 360, 1080)));
         // Na segunda tela, com escala de 150%: a faixa acompanha a escala.
-        assert_eq!(strip((1920, 0, 4480, 1440), TELAS), Some((1920, 0, 540, 1440)));
+        assert_eq!(strip((1920, 0, 4480, 1440), TELAS, false), Some((1920, 0, 540, 1440)));
         // Jogo em janela: a faixa fica dentro dela.
-        assert_eq!(strip((200, 100, 1480, 820), TELAS), Some((200, 100, 360, 720)));
+        assert_eq!(strip((200, 100, 1480, 820), TELAS, false), Some((200, 100, 360, 720)));
+        // Do lado direito: encostada na borda direita do jogo.
+        assert_eq!(strip((0, 0, 1920, 1080), TELAS, true), Some((1560, 0, 360, 1080)));
+        assert_eq!(strip((200, 100, 1480, 820), TELAS, true), Some((1120, 100, 360, 720)));
     }
 }

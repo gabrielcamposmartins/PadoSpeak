@@ -227,8 +227,8 @@ fn launched_hidden() -> bool {
 
 /// Sobreposição nos jogos: ligada quando a pessoa quer e está numa chamada (aparece com o jogo em foco).
 #[tauri::command]
-fn overlay_set(overlay: State<'_, overlay::Shared>, on: bool) {
-    overlay.set(on);
+fn overlay_set(overlay: State<'_, overlay::Shared>, on: bool, right: Option<bool>) {
+    overlay.set(on, right.unwrap_or(false));
 }
 
 /// Atalhos de voz que são uma tecla modificadora sozinha ("ControlRight"…): avisa a janela a cada toque.

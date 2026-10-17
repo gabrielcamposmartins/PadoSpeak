@@ -26,7 +26,7 @@ import { useConn } from './conn.jsx';
 import { plain } from '../lib/text.js';
 import { SCREEN_PRESETS } from '../lib/voice.js';
 import Avatar from './Avatar.jsx';
-import { EmojiText } from './Emotes.jsx';
+import { FormattedText } from './Emotes.jsx';
 import { useServerPing } from './hooks.js';
 import { useLayout, isTouch } from '../lib/layout.js';
 import { MobileBack } from './Mobile.jsx';
@@ -251,7 +251,7 @@ function Tile({ tile, focused, grid, onFocus }) {
             : tile.self
               ? 'Você'
               : tile.user?.displayName
-                ? <EmojiText text={tile.user.displayName} size={14} />
+                ? <FormattedText text={tile.user.displayName} size={14} />
                 : 'Conectando…'}
         </span>
       </span>

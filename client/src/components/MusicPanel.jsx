@@ -19,6 +19,7 @@ import { useStore } from '../store.js';
 import { MusicPlayer } from '../lib/music.js';
 import { plain } from '../lib/text.js';
 import VolumeSlider from './Volume.jsx';
+import { FormattedText } from './Emotes.jsx';
 
 const fmt = (sec) => {
   if (!Number.isFinite(sec)) return '--:--';
@@ -94,7 +95,7 @@ function TrackSection({ icon: Icon, title, tracks, canAdd, empty, extra }) {
                   <span className="mq-title">{t.title}</span>
                   <span className="mq-sub">
                     <Source track={t} />
-                    {plain(t.addedBy?.displayName) || t.artist}
+                    {t.addedBy?.displayName ? <FormattedText text={t.addedBy.displayName} size={13} /> : t.artist}
                     {t.durationMs ? ` · ${fmt(t.durationMs / 1000)}` : ''}
                     {extra?.(t)}
                   </span>
@@ -182,7 +183,11 @@ function NowPlaying({ state }) {
       <div className="np-body">
         <div className="np-src">
           <Source track={track} />
-          {track.addedBy && <span>adicionado por {plain(track.addedBy.displayName)}</span>}
+          {track.addedBy && (
+            <span>
+              adicionado por <FormattedText text={track.addedBy.displayName} size={13} />
+            </span>
+          )}
         </div>
         <div className="np-title-row">
           <a className="np-title" href={track.pageUrl} target="_blank" rel="noreferrer" title={track.title}>
@@ -352,7 +357,7 @@ export default function MusicPanel() {
                         <span className="mq-title">{t.title}</span>
                         <span className="mq-sub">
                           <Source track={t} />
-                          {plain(t.addedBy?.displayName) || t.artist}
+                          {t.addedBy?.displayName ? <FormattedText text={t.addedBy.displayName} size={13} /> : t.artist}
                           {t.durationMs ? ` · ${fmt(t.durationMs / 1000)}` : ''}
                         </span>
                       </div>

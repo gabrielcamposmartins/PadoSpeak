@@ -1,5 +1,14 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.9.4 — 17/10/2026
+
+### Novidades
+- **Canto da sobreposição**: em Configurações → Funcionalidade, escolha numa telinha em qual canto da tela do jogo a sobreposição aparece (superior ou inferior, esquerdo ou direito).
+
+### Correções
+- **Sobreposição só nos jogos**: ela ficava por cima de tudo depois do primeiro jogo. Agora aparece só com o jogo em foco (inclusive os programas que você adicionou) e some ao trocar de janela.
+- **Nomes com cor e emoticons**: a sobreposição e os cartões da voz mostravam o código da cor no nome; agora mostram a cor e os emoticons, também no balão do ícone do servidor e em “adicionado por” da música.
+
 ## 1.9.3 — 17/10/2026
 
 ### Novidades

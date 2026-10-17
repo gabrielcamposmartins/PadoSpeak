@@ -604,6 +604,50 @@ function HiddenProfile() {
   );
 }
 
+const OVERLAY_CORNERS = [
+  ['tl', 'Canto superior esquerdo'],
+  ['tr', 'Canto superior direito'],
+  ['bl', 'Canto inferior esquerdo'],
+  ['br', 'Canto inferior direito'],
+];
+
+/** Onde a sobreposição fica na tela do jogo: clique num dos cantos da telinha. */
+function OverlayCornerPicker({ value, onChange }) {
+  const label = OVERLAY_CORNERS.find(([id]) => id === value)?.[1];
+  return (
+    <div className="ovp">
+      <div className="ovp-screen" role="radiogroup" aria-label="Posição da sobreposição na tela do jogo">
+        {OVERLAY_CORNERS.map(([id, name]) => (
+          <button
+            key={id}
+            type="button"
+            role="radio"
+            aria-checked={value === id}
+            className={`ovp-spot ovp-${id}${value === id ? ' on' : ''}`}
+            title={name}
+            aria-label={name}
+            onClick={() => onChange(id)}
+          >
+            {value === id ? (
+              <span className="ovp-mini" aria-hidden="true">
+                <i className="ovp-song" />
+                <i className="ovp-who" />
+                <i className="ovp-who talk" />
+                <i className="ovp-who" />
+              </span>
+            ) : (
+              <span className="ovp-dot" aria-hidden="true" />
+            )}
+          </button>
+        ))}
+      </div>
+      <small className="check-hint">
+        <b>{label}</b> · clique num canto da tela para mudar.
+      </small>
+    </div>
+  );
+}
+
 /** Configurações → Conta: quem eu bloqueei (desbloquear daqui). */
 function BlockedUsers() {
   const prim = primaryConn();
@@ -1127,6 +1171,7 @@ function SettingsModal({ close, tab: startTab }) {
   const [nearbyVisible, setNearbyVisible] = useState(useStore.getState().prefs.nearbyVisible !== false);
   const [shareActivity, setShareActivity] = useState(useStore.getState().prefs.shareActivity !== false);
   const [gameOverlay, setGameOverlayOn] = useState(useStore.getState().prefs.gameOverlay === true);
+  const [overlayCorner, setOverlayCorner] = useState(useStore.getState().prefs.gameOverlayCorner || 'tl');
   // App desktop: iniciar com o Windows (abre minimizado na bandeja).
   const [autostart, setAutostart] = useState(null);
   const [autostartOn, setAutostartOn] = useState(false);
@@ -1324,6 +1369,7 @@ function SettingsModal({ close, tab: startTab }) {
                 </small>
               </span>
             </label>
+            {gameOverlay && <OverlayCornerPicker value={overlayCorner} onChange={setOverlayCorner} />}
           </>
         )}
         <div className="settings-sec">Vistos nas mensagens</div>
@@ -1530,9 +1576,9 @@ function SettingsModal({ close, tab: startTab }) {
               st.setAppearance({ shareActivity });
               setMyActivity(currentActivity());
             }
-            if (gameOverlay !== (st.prefs.gameOverlay === true)) {
-              st.setAppearance({ gameOverlay });
-              setGameOverlay(gameOverlay);
+            if (gameOverlay !== (st.prefs.gameOverlay === true) || overlayCorner !== (st.prefs.gameOverlayCorner || 'tl')) {
+              st.setAppearance({ gameOverlay, gameOverlayCorner: overlayCorner });
+              setGameOverlay(gameOverlay, overlayCorner);
             }
             if (nearbyVisible !== (st.prefs.nearbyVisible !== false)) {
               st.setAppearance({ nearbyVisible });

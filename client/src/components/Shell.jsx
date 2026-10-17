@@ -273,7 +273,7 @@ function GuildTip({ guild, anchor }) {
           {list.map((p) => (
             <span key={p.peerId} className="guild-tip-person">
               <Avatar user={p.user} base={base} size={20} />
-              <span className="guild-tip-who">{plain(p.user.displayName) || p.user.username}</span>
+              <span className="guild-tip-who">{p.user.displayName ? <FormattedText text={p.user.displayName} size={14} /> : p.user.username}</span>
               {p.screen && <span className="live">AO VIVO</span>}
               {(p.muted || p.serverMuted) && <MicOff size={12} className="guild-tip-ico" aria-label="microfone desligado" />}
               {p.deafened && <HeadphoneOff size={12} className="guild-tip-ico" aria-label="som desligado" />}

@@ -21,6 +21,28 @@ body {
   gap: 12px;
   max-width: calc(100% - 32px);
 }
+/* Lado direito: tudo encostado na direita, o nome à esquerda da foto. */
+.ov-tr,
+.ov-br {
+  inset: 16px 16px 16px auto;
+  align-items: flex-end;
+}
+.ov-tr .ov-person,
+.ov-br .ov-person,
+.ov-tr .ov-music,
+.ov-br .ov-music {
+  flex-direction: row-reverse;
+}
+.ov-tr .ov-people,
+.ov-br .ov-people {
+  align-items: flex-end;
+}
+/* Embaixo: a música fica no canto e as fotos sobem a partir dela. */
+.ov-bl,
+.ov-br {
+  flex-direction: column-reverse;
+  justify-content: flex-start;
+}
 .ov-music {
   max-width: 100%;
   box-sizing: border-box;
@@ -86,6 +108,10 @@ body {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9), 0 0 6px rgba(0, 0, 0, 0.6);
   opacity: 0.8;
   transition: opacity 0.15s, color 0.15s;
+}
+/* Nome com cor escolhida pela pessoa (FormattedText). */
+.ov-name .tc {
+  color: var(--tc);
 }
 .ov-name svg.emote {
   vertical-align: -3px;

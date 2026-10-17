@@ -5,8 +5,10 @@
 import { isTauri } from './env.js';
 
 let enabled = false;
+let corner = 'tl';
 let state = null;
 let on = null;
+let side = null;
 let sent = '';
 let listening = false;
 
@@ -22,20 +24,24 @@ async function push() {
     });
   }
   const want = enabled && Boolean(state);
-  if (want !== on) {
+  const right = corner.endsWith('r');
+  if (want !== on || right !== side) {
     on = want;
-    invoke('overlay_set', { on: want }).catch((e) => console.warn('[sobreposição]', e));
+    side = right;
+    invoke('overlay_set', { on: want, right }).catch((e) => console.warn('[sobreposição]', e));
   }
-  const json = JSON.stringify(state);
+  const view = state && { ...state, corner };
+  const json = JSON.stringify(view);
   if (want && json !== sent) {
     sent = json;
-    emitTo('game-overlay', 'overlay-state', state).catch(() => {});
+    emitTo('game-overlay', 'overlay-state', view).catch(() => {});
   }
 }
 
-/** A opção de Configurações → Funcionalidade. */
-export function setGameOverlay(pref) {
+/** A opção de Configurações → Funcionalidade, e o canto da tela (tl, tr, bl, br). */
+export function setGameOverlay(pref, where) {
   enabled = Boolean(pref);
+  if (['tl', 'tr', 'bl', 'br'].includes(where)) corner = where;
   push();
 }
 

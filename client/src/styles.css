@@ -5057,6 +5057,108 @@ fieldset.plain {
   color: var(--muted);
   font-size: 12px;
 }
+/* Configurações: canto da sobreposição numa telinha de jogo (16:9), com os quatro cantos clicáveis. */
+.ovp {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 0 10px 28px;
+}
+.ovp-screen {
+  position: relative;
+  width: 240px;
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+  border: 3px solid #1c2a3a;
+  box-shadow: 0 4px 12px rgba(0, 30, 70, 0.25);
+  background:
+    radial-gradient(40% 50% at 70% 35%, rgba(255, 215, 150, 0.85) 0%, rgba(255, 215, 150, 0) 70%),
+    linear-gradient(180deg, #f6a25b 0%, #c8644e 45%, #5a3a5e 75%, #2b2440 100%);
+  overflow: hidden;
+}
+.ovp-spot {
+  position: absolute;
+  width: 46%;
+  height: 46%;
+  padding: 6px;
+  display: flex;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+.ovp-tl { left: 0; top: 0; align-items: flex-start; justify-content: flex-start; }
+.ovp-tr { right: 0; top: 0; align-items: flex-start; justify-content: flex-end; }
+.ovp-bl { left: 0; bottom: 0; align-items: flex-end; justify-content: flex-start; }
+.ovp-br { right: 0; bottom: 0; align-items: flex-end; justify-content: flex-end; }
+.ovp-spot:hover:not(.on) {
+  background: rgba(255, 255, 255, 0.18);
+}
+.ovp-spot:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: -2px;
+}
+.ovp-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px dashed rgba(255, 255, 255, 0.85);
+}
+/* O modelinho da sobreposição: a música e três fotos (uma falando). */
+.ovp-mini {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.ovp-bl .ovp-mini,
+.ovp-br .ovp-mini {
+  flex-direction: column-reverse;
+}
+.ovp-tr .ovp-mini,
+.ovp-br .ovp-mini {
+  align-items: flex-end;
+}
+.ovp-mini i {
+  display: block;
+  border-radius: 2px;
+}
+.ovp-song {
+  width: 44px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.95);
+  margin-bottom: 2px;
+}
+/* Cada pessoa: a foto e um tracinho no lugar do nome (o nome fica do lado de dentro da tela). */
+.ovp-mini .ovp-who {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.ovp-tr .ovp-mini .ovp-who,
+.ovp-br .ovp-mini .ovp-who {
+  flex-direction: row-reverse;
+}
+.ovp-who::before {
+  content: '';
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.8);
+  background: #3a8ee0;
+}
+.ovp-who::after {
+  content: '';
+  width: 16px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.85);
+}
+.ovp-who.talk::before {
+  border-color: #6fe03b;
+  box-shadow: 0 0 5px #6fe03b;
+}
+
 /* Configurações → Conta → Esconder meu perfil de: o usuário e o botão na mesma linha. */
 .hidden-add {
   display: flex;

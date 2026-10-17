@@ -5,7 +5,7 @@
 import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Music2, Pause, MicOff, HeadphoneOff } from 'lucide-react';
-import { EmojiText } from './components/Emotes.jsx';
+import { FormattedText } from './components/Emotes.jsx';
 import './overlay.css';
 
 /** Até quantas fotos na coluna (o resto vira "+N"), menos se a tela for baixa: cada foto ocupa 29 px. */
@@ -36,7 +36,7 @@ function Person({ p }) {
           </span>
         )}
       </span>
-      <span className="ov-name">{p.display ? <EmojiText text={p.display} size={14} /> : p.name}</span>
+      <span className="ov-name">{p.display ? <FormattedText text={p.display} size={14} /> : p.name}</span>
     </li>
   );
 }
@@ -46,8 +46,10 @@ export function GameOverlay({ state }) {
   if (!state) return null;
   const people = state.people || [];
   const extra = people.length - fit;
+  // Canto escolhido em Configurações: tl, tr, bl ou br (o app do Windows já põe a faixa do lado certo).
+  const corner = ['tl', 'tr', 'bl', 'br'].includes(state.corner) ? state.corner : 'tl';
   return (
-    <div className="ov">
+    <div className={`ov ov-${corner}`}>
       {state.music && (
         <div className={`ov-music${state.music.paused ? ' paused' : ''}`}>
           {state.music.paused ? <Pause size={14} /> : <Music2 size={14} />}
