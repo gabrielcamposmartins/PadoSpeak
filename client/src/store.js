@@ -322,6 +322,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
     goAdmin: () => ui().setState({ phase: 'admin' }),
     leaveAdmin: () => ui().setState({ phase: 'app' }),
     adminOverview: (days) => api.get(`/api/admin/overview?days=${days}`),
+    adminGuildMembers: (guildId) => api.get(`/api/admin/guilds/${guildId}/members`),
     adminViewers: () => api.get('/api/admin/viewers'),
     grantAdmin: (username) => api.put('/api/admin/viewers', { username }),
     revokeAdmin: (userId) => api.del(`/api/admin/viewers/${userId}`),
@@ -1295,8 +1296,9 @@ export function createConnStore({ key, kind, base, primary = false }) {
       if (message) notify(message, 'info');
     },
 
-    async createChannel(guildId, name, type) {
-      const ch = await api.post(`/api/guilds/${guildId}/channels`, { name, type });
+    /** Cria um canal; `privateUsers` (lista de ids) cria já privado, só para essas pessoas (e admins). */
+    async createChannel(guildId, name, type, privateUsers = null) {
+      const ch = await api.post(`/api/guilds/${guildId}/channels`, { name, type, ...(privateUsers ? { private: true, users: privateUsers } : {}) });
       set((s) => {
         const g = s.guildData[guildId];
         if (!g || g.channels.some((c) => c.id === ch.id)) return {};
@@ -1305,6 +1307,23 @@ export function createConnStore({ key, kind, base, primary = false }) {
     },
 
     deleteChannel: (channelId) => api.del(`/api/channels/${channelId}`).catch((e) => notify(e.message)),
+    /** Nova ordem dos canais de um tipo (arrastando na lista): muda já aqui e salva no servidor. */
+    async orderChannels(guildId, type, ids) {
+      set((s) => {
+        const g = s.guildData[guildId];
+        if (!g) return {};
+        const rank = new Map(ids.map((id, i) => [id, i]));
+        const mine = g.channels.filter((c) => c.type === type).sort((a, b) => (rank.get(a.id) ?? 1e9) - (rank.get(b.id) ?? 1e9));
+        const channels = g.channels.map((c) => (c.type === type ? mine.shift() : c));
+        return { guildData: { ...s.guildData, [guildId]: { ...g, channels } } };
+      });
+      try {
+        await api.put(`/api/guilds/${guildId}/channel-order`, { type, ids });
+      } catch (e) {
+        notify(e.message);
+        await get().loadGuild(guildId);
+      }
+    },
     /** Renomeia um canal. */
     async updateChannel(channelId, name) {
       get()._upsertChannel(await api.patch(`/api/channels/${channelId}`, { name }));
@@ -1503,7 +1522,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
           set({ voice: snap });
           // App do Windows: dock flutuante enquanto transmite (Trocar, Som, Parar, Ocultar).
           syncShareDock(snap, {
-            switch: () => get().switchScreen(),
+            switch: () => get().askSwitchScreen(),
             audio: () => get().setScreenAudioMuted(!get().voice?.screenAudioMuted),
             stop: () => get().toggleScreen(),
           });
@@ -1609,6 +1628,22 @@ export function createConnStore({ key, kind, base, primary = false }) {
       } catch (e) {
         if (e.name !== 'NotAllowedError') notify(`Compartilhamento de tela: ${e.message}`);
       }
+    },
+    /**
+     * "Trocar" pelo dock do app do Windows: o seletor de tela só abre com um clique na própria janela do
+     * PadoSpeak (o clique no dock, que é outra janela, não vale), então ela vem para a frente e pergunta.
+     */
+    async askSwitchScreen() {
+      if (!voiceClient?.screen) return;
+      await showAppWindow();
+      ui().getState().openModal({
+        type: 'confirm',
+        title: 'Trocar a transmissão',
+        text: 'Escolha outra janela ou a tela inteira. Quem está assistindo continua assistindo.',
+        confirmLabel: 'Escolher',
+        tone: '',
+        action: () => get().switchScreen(),
+      });
     },
     /** Transmitir outra janela (ou a tela inteira) sem parar a transmissão. */
     async switchScreen() {

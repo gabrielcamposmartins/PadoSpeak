@@ -307,7 +307,7 @@ function ChannelModal({ close, guildId, channelType, channelId }) {
   const alwaysSees = (m) => m.id === ownerId || (memberPerms[m.id] & PERM.ADMIN) !== 0;
   const { busy, error, run } = useAction(async () => {
     const st = useStore.getState();
-    if (!editing) return st.createChannel(guildId, name, type);
+    if (!editing) return st.createChannel(guildId, name, type, perms.admin && isPrivate ? [...allowed] : null);
     if (name.trim() !== channel.name) await st.updateChannel(channelId, name);
     const before = new Set(access || []);
     const changed =
@@ -347,7 +347,7 @@ function ChannelModal({ close, guildId, channelType, channelId }) {
             required
           />
         </label>
-        {editing && perms.admin && (
+        {perms.admin && (
           <div className="channel-access">
             <label className="checkbox">
               <input type="checkbox" checked={isPrivate} onChange={(e) => setPrivate(e.target.checked)} />
@@ -466,7 +466,8 @@ function InviteModal({ close, guild }) {
   );
 }
 
-function ConfirmModal({ close, title, text, action }) {
+/** `confirmLabel`/`tone`: texto e cor do botão (vermelho por padrão, para excluir e sair). */
+function ConfirmModal({ close, title, text, action, confirmLabel = 'Confirmar', tone = 'red' }) {
   const { busy, error, run } = useAction(action, close);
   return (
     <>
@@ -479,8 +480,8 @@ function ConfirmModal({ close, title, text, action }) {
         <button className="btn ghost" onClick={close}>
           Cancelar
         </button>
-        <button className="btn red" onClick={run} disabled={busy} autoFocus>
-          Confirmar
+        <button className={`btn ${tone}`} onClick={run} disabled={busy} autoFocus>
+          {confirmLabel}
         </button>
       </div>
     </>
@@ -2994,10 +2995,13 @@ function describe(e, channelName) {
     case 'settings.channel_create':
       return (
         <>
-          {a} criou o canal {d.type === 'voice' ? '🔊 ' : '#'}
+          {a} criou o canal {d.private ? 'privado ' : ''}
+          {d.type === 'voice' ? '🔊 ' : '#'}
           {d.name}
         </>
       );
+    case 'settings.channel_order':
+      return <>{a} mudou a ordem dos canais de {d.type === 'voice' ? 'voz' : 'texto'}</>;
     case 'settings.channel_delete':
       return (
         <>

@@ -8,6 +8,15 @@ let hidden = false; // "Ocultar": some até a próxima transmissão
 let listening = false;
 let actions = {};
 let state = null;
+let barHidden = false; // a barra de compartilhamento do WebView2 está sendo escondida
+
+/** Enquanto transmite, a barra "Parar compartilhamento / Ocultar" do WebView2 fica escondida: o dock é o
+ * aviso de que a transmissão está no ar (mesmo depois de "Ocultar" o dock, ela não volta). */
+function hideWebviewBar(on) {
+  if (barHidden === on) return;
+  barHidden = on;
+  tauri().then(({ invoke }) => invoke('share_bar_hide', { on }).catch(() => {}));
+}
 
 async function tauri() {
   const [{ invoke }, { emitTo, listen }] = await Promise.all([import('@tauri-apps/api/core'), import('@tauri-apps/api/event')]);
@@ -46,8 +55,10 @@ export async function syncShareDock(snap, acts) {
     hidden = false;
     state = null;
     close();
+    hideWebviewBar(false);
     return;
   }
+  hideWebviewBar(true);
   state = { label: snap.screenLabel || 'Tela', hasAudio: Boolean(snap.screenHasAudio), audioMuted: Boolean(snap.screenAudioMuted) };
   await listenOnce();
   const { invoke, emitTo } = await tauri();

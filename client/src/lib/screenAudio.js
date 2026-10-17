@@ -1,5 +1,5 @@
 // Som da transmissão de tela no app do Windows: o próprio Windows captura (veja
-// desktop/src-tauri/src/screen_audio.rs) e o áudio chega aqui em pedaços de 20 ms (PCM 16 bits, 48 kHz,
+// desktop/src-tauri/src/screen_audio.rs) e o áudio chega aqui em pedaços de 50 ms (PCM 16 bits, 48 kHz,
 // estéreo). Um AudioWorklet toca esses pedaços numa trilha que vai junto com o vídeo da tela.
 // - Janela escolhida → só o som daquele programa.
 // - Tela inteira → o som do sistema menos o do PadoSpeak (quem assiste não ouve a própria voz de volta).
@@ -16,9 +16,9 @@ class PcmFeed extends AudioWorkletProcessor {
     this.port.onmessage = (e) => {
       const pcm = new Int16Array(e.data);
       const cap = this.buf.length;
-      // Atrasou demais (aba em segundo plano, por exemplo): descarta o mais antigo e fica perto de 60 ms.
+      // Atrasou demais (aba em segundo plano, por exemplo): descarta o mais antigo e fica perto de 75 ms.
       if (this.size + pcm.length > cap * 0.3) {
-        const drop = Math.min(this.size, this.size + pcm.length - 5760);
+        const drop = Math.min(this.size, this.size + pcm.length - 7200);
         this.read = (this.read + drop) % cap;
         this.size -= drop;
       }
@@ -33,9 +33,9 @@ class PcmFeed extends AudioWorkletProcessor {
   process(_inputs, outputs) {
     const [l, r] = outputs[0];
     const cap = this.buf.length;
-    // Começa com 40 ms guardados, para não picotar quando um pedaço atrasa um pouco.
+    // Começa com 75 ms guardados (um pedaço e meio), para não picotar quando um pedaço atrasa um pouco.
     if (!this.started) {
-      if (this.size < 3840) return true;
+      if (this.size < 7200) return true;
       this.started = true;
     }
     for (let i = 0; i < l.length; i++) {

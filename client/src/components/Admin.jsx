@@ -1,7 +1,7 @@
 // Painel do administrador do app: usuários, servidores, tempo de uso por plataforma e os dias e
 // horários de mais acesso. Só o dono do app (e quem ele liberar) vê.
-import { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, RefreshCw, Users, Server, MessageSquare, Clock, Radio, UserPlus, X, Search } from 'lucide-react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
+import { ArrowLeft, RefreshCw, Users, Server, MessageSquare, Clock, Radio, UserPlus, X, Search, ChevronDown } from 'lucide-react';
 import { useStore } from '../store.js';
 import Avatar, { UserName } from './Avatar.jsx';
 import { SceneArt } from './Aero.jsx';
@@ -278,7 +278,48 @@ function UsersTable({ users, now }) {
   );
 }
 
+/** Integrantes de um servidor, abertos embaixo da linha dele (carregados na primeira vez). */
+function GuildMembers({ guildId }) {
+  const [list, setList] = useState(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    useStore
+      .getState()
+      .adminGuildMembers(guildId)
+      .then(setList)
+      .catch((e) => setError(e.message));
+  }, [guildId]);
+  if (error) return <p className="error-text">{error}</p>;
+  if (!list) return <p className="adm-members-empty">Carregando integrantes…</p>;
+  if (!list.length) return <p className="adm-members-empty">Nenhum integrante.</p>;
+  return (
+    <ul className="adm-members">
+      {list.map((m) => (
+        <li key={m.user.id}>
+          <Avatar user={m.user} size={24} frame={false} status={m.online ? undefined : 'off'} />
+          <span className="adm-member-name">
+            <UserName user={m.user} />
+            <small>@{m.user.username}</small>
+          </span>
+          {m.role && <span className="chip">{m.role}</span>}
+          <small className="adm-member-since" title="Entrou no servidor">
+            {m.online && <b className="adm-online">online · </b>}desde {fmtDate(m.joinedAt)}
+          </small>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function GuildsTable({ guilds, base, now }) {
+  const [open, setOpen] = useState(() => new Set());
+  const toggle = (id) =>
+    setOpen((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   return (
     <div className="adm-table-wrap">
       <table className="adm-table">
@@ -296,9 +337,20 @@ function GuildsTable({ guilds, base, now }) {
         </thead>
         <tbody>
           {guilds.map((g) => (
-            <tr key={g.id}>
+            <Fragment key={g.id}>
+            <tr>
               <td>
                 <span className="adm-who">
+                  <button
+                    type="button"
+                    className="adm-expand"
+                    aria-expanded={open.has(g.id)}
+                    aria-label={`${open.has(g.id) ? 'Esconder' : 'Ver'} os integrantes de ${g.name}`}
+                    title={open.has(g.id) ? 'Esconder os integrantes' : 'Ver os integrantes'}
+                    onClick={() => toggle(g.id)}
+                  >
+                    <ChevronDown size={14} />
+                  </button>
                   <span className={`gel guild guild-icon adm-gicon${g.iconUrl ? ' has-img' : ''}`} style={{ '--c': g.iconColor }}>
                     {g.iconUrl ? <img src={base + g.iconUrl} alt="" /> : <span>{g.name.slice(0, 2).toUpperCase()}</span>}
                   </span>
@@ -315,6 +367,14 @@ function GuildsTable({ guilds, base, now }) {
               <td>{g.lastMessageAt ? fmtAgo(g.lastMessageAt, now) : '—'}</td>
               <td>{fmtDate(g.createdAt)}</td>
             </tr>
+            {open.has(g.id) && (
+              <tr className="adm-members-row">
+                <td colSpan={8}>
+                  <GuildMembers guildId={g.id} />
+                </td>
+              </tr>
+            )}
+            </Fragment>
           ))}
         </tbody>
       </table>

@@ -7,6 +7,7 @@
 
 mod activity;
 mod overlay;
+mod share_bar;
 mod screen_audio;
 mod solo_keys;
 
@@ -165,8 +166,10 @@ fn wait_previous_webview(identifier: &str) {
 
 /// Dock flutuante da transmissão (dock.html): sempre por cima, sem ícone na barra de tarefas e fora da
 /// própria captura (quem transmite a tela inteira não transmite o dock).
+/// `async`: um comando síncrono roda na thread principal, e criar uma janela lá trava no Windows (o dock
+/// ficava uma barra branca e a janela do PadoSpeak parava de responder).
 #[tauri::command]
-fn share_dock_open(app: AppHandle) -> Result<(), String> {
+async fn share_dock_open(app: AppHandle) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("share-dock") {
         let _ = w.show();
         return Ok(());
@@ -203,10 +206,16 @@ fn share_dock_open(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn share_dock_close(app: AppHandle) {
+async fn share_dock_close(app: AppHandle) {
     if let Some(w) = app.get_webview_window("share-dock") {
         let _ = w.close();
     }
+}
+
+/// Transmitindo: esconde a barra de compartilhamento do WebView2 (o dock do PadoSpeak faz o papel dela).
+#[tauri::command]
+fn share_bar_hide(bar: State<'_, share_bar::ShareBar>, on: bool) {
+    bar.set(on);
 }
 
 /// Aberto pela inicialização do Windows (só na bandeja): a atualização acontece em silêncio, sem janela.
@@ -419,6 +428,7 @@ fn main() {
             app.manage(games);
             app.manage(solo_keys::spawn(app.handle().clone()));
             app.manage(screen_audio::ScreenAudio::default());
+            app.manage(share_bar::ShareBar::default());
             build_tray(app)?;
             // Aberto pela inicialização do Windows: fica só na bandeja; senão mostra a janela.
             if !std::env::args().any(|a| a == AUTOSTART_ARG) {
@@ -436,7 +446,7 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, local_node, notify_windows, autostart_get, autostart_set, open_url, activity_get, activity_custom_set, activity_programs, solo_keys_set, share_dock_open, share_dock_close, overlay_set, launched_hidden, screen_audio::screen_audio_start, screen_audio::screen_audio_stop])
+        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, local_node, notify_windows, autostart_get, autostart_set, open_url, activity_get, activity_custom_set, activity_programs, solo_keys_set, share_dock_open, share_dock_close, share_bar_hide, overlay_set, launched_hidden, screen_audio::screen_audio_start, screen_audio::screen_audio_stop])
         .build(tauri::generate_context!())
         .expect("erro ao iniciar o PadoSpeak");
 

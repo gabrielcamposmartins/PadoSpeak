@@ -29,6 +29,7 @@ pub fn router() -> Router<Arc<App>> {
     Router::new()
         .route("/api/admin/access", get(access))
         .route("/api/admin/overview", get(overview))
+        .route("/api/admin/guilds/{id}/members", get(guild_members))
         .route("/api/admin/viewers", get(viewers).put(grant))
         .route("/api/admin/viewers/{id}", delete(revoke))
 }
@@ -228,6 +229,35 @@ async fn overview(State(app): AppState, AuthUser(me, _): AuthUser, Query(q): Que
 }
 
 /// Quem pode ver o painel além do dono.
+/// Integrantes de um servidor (aba Servidores do painel): quem é, desde quando, dono/admin e se está online.
+async fn guild_members(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    require_view(&app, &me).await?;
+    let sql = format!(
+        "SELECT {USER_COLS}, m.joined_at, m.perms, g.owner_id FROM guild_members m          JOIN users u ON u.id = m.user_id JOIN guilds g ON g.id = m.guild_id          WHERE m.guild_id = ?1 ORDER BY m.joined_at"
+    );
+    let base = crate::models::USER_COLS_LEN;
+    let rows = app
+        .db
+        .query_all(&sql, [id.as_str()], |r| {
+            Ok((user_from_row(r)?, r.get::<i64>(base)?, r.get::<i64>(base + 1)?, r.get::<String>(base + 2)?))
+        })
+        .await?;
+    let members: Vec<Value> = rows
+        .into_iter()
+        .map(|(u, joined, perms, owner)| {
+            let role = if u.id == owner {
+                Some("dono")
+            } else if perms & crate::api::perm::ADMIN != 0 {
+                Some("admin")
+            } else {
+                None
+            };
+            json!({ "user": u, "joinedAt": joined, "role": role, "online": app.hub.is_online(&u.id) })
+        })
+        .collect();
+    Ok(Json(json!(members)))
+}
+
 async fn viewers(State(app): AppState, AuthUser(me, _): AuthUser) -> ApiResult<Json<Value>> {
     require_view(&app, &me).await?;
     let sql = format!("SELECT {USER_COLS}, a.granted_at FROM app_admins a JOIN users u ON u.id = a.user_id ORDER BY a.granted_at");

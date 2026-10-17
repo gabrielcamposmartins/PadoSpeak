@@ -331,6 +331,7 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/guilds/{id}/sound-mutes/{user_id}", axum::routing::put(set_sound_mute))
         .route("/api/me/notify", get(all_notify))
         .route("/api/guilds/{id}/channels", post(create_channel))
+        .route("/api/guilds/{id}/channel-order", axum::routing::put(order_channels))
         .route("/api/channels/{id}", delete(delete_channel).patch(update_channel))
         .route("/api/channels/{id}/access", axum::routing::put(set_channel_access))
         .route("/api/channels/{id}/messages", get(list_messages))
@@ -623,8 +624,6 @@ async fn list_guilds(State(app): AppState, AuthUser(user, _): AuthUser) -> ApiRe
 #[derive(Deserialize)]
 struct NameBody {
     name: String,
-    #[serde(default, rename = "type")]
-    kind: Option<String>,
 }
 
 async fn create_guild(
@@ -1128,13 +1127,28 @@ async fn leave_guild(State(app): AppState, AuthUser(user, _): AuthUser, Path(id)
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Deserialize)]
+struct CreateChannelBody {
+    name: String,
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
+    /// Já nasce privado: só `users`, o dono e os admins veem (só administradores escolhem).
+    #[serde(default)]
+    private: bool,
+    #[serde(default)]
+    users: Vec<String>,
+}
+
 async fn create_channel(
     State(app): AppState,
     AuthUser(user, _): AuthUser,
     Path(id): Path<String>,
-    Json(body): Json<NameBody>,
+    Json(body): Json<CreateChannelBody>,
 ) -> ApiResult<(StatusCode, Json<Channel>)> {
     require_perm(&app, &id, &user.id, perm::CHANNELS, "Você não tem permissão para criar canais").await?;
+    if body.private {
+        require_perm(&app, &id, &user.id, perm::ADMIN, "Apenas administradores criam canais privados").await?;
+    }
     let g = member_guild(&app, &id, &user.id).await?;
     let kind = if body.kind.as_deref() == Some("voice") { "voice" } else { "text" };
     let mut name: String = body.name.trim().chars().take(32).collect();
@@ -1149,19 +1163,74 @@ async fn create_channel(
         guild_id: id.clone(),
         name,
         kind: kind.to_string(),
-        position: g.channels.iter().filter(|c| c.kind == kind).count() as i64,
-        private: false,
+        // No fim da lista (a maior posição + 1: depois de reordenar, as posições não são 0..n).
+        position: g.channels.iter().filter(|c| c.kind == kind).map(|c| c.position + 1).max().unwrap_or(0),
+        private: body.private,
         announce_join: true,
     };
-    app.db
-        .execute(
-            "INSERT INTO channels (id, guild_id, name, type, position, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            libsql::params![channel.id.as_str(), id.as_str(), channel.name.as_str(), kind, channel.position, crate::now_ms()],
+    let conn = app.db.conn().await?;
+    let tx = conn.transaction().await?;
+    tx.execute(
+        "INSERT INTO channels (id, guild_id, name, type, position, private, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        libsql::params![channel.id.as_str(), id.as_str(), channel.name.as_str(), kind, channel.position, body.private as i64, crate::now_ms()],
+    )
+    .await?;
+    if body.private {
+        for u in body.users.iter().take(500) {
+            // Só membros do servidor entram na lista.
+            tx.execute(
+                "INSERT OR IGNORE INTO channel_access (channel_id, user_id)                  SELECT ?1, user_id FROM guild_members WHERE guild_id = ?2 AND user_id = ?3",
+                [channel.id.as_str(), id.as_str(), u.as_str()],
+            )
+            .await?;
+        }
+    }
+    tx.commit().await?;
+    app.audit(
+        crate::audit::Entry::new(&id, "settings.channel_create", &user.id)
+            .channel(&channel.id)
+            .detail(json!({ "name": channel.name, "type": channel.kind, "private": body.private })),
+    );
+    if body.private {
+        // Canal privado: só quem pode ver recebe (recarregando a lista de canais), nunca o aviso para todos.
+        refresh_audiences(&app, Some(&id)).await?;
+        app.hub.to_guild(&id, "guild:refresh", json!({ "guildId": id }));
+    } else {
+        app.hub.to_guild(&id, "channel:created", &channel);
+    }
+    Ok((StatusCode::CREATED, Json(channel)))
+}
+
+#[derive(Deserialize)]
+struct OrderBody {
+    #[serde(rename = "type")]
+    kind: String,
+    /// Os canais desse tipo, na ordem nova.
+    ids: Vec<String>,
+}
+
+/// Reordena os canais de texto ou de voz (arrastando na lista; quem pode gerenciar canais).
+async fn order_channels(
+    State(app): AppState,
+    AuthUser(user, _): AuthUser,
+    Path(id): Path<String>,
+    Json(body): Json<OrderBody>,
+) -> ApiResult<StatusCode> {
+    require_perm(&app, &id, &user.id, perm::CHANNELS, "Você não tem permissão para reordenar canais").await?;
+    let kind = if body.kind == "voice" { "voice" } else { "text" };
+    let conn = app.db.conn().await?;
+    let tx = conn.transaction().await?;
+    for (pos, channel_id) in body.ids.iter().take(500).enumerate() {
+        tx.execute(
+            "UPDATE channels SET position = ?1 WHERE id = ?2 AND guild_id = ?3 AND type = ?4",
+            libsql::params![pos as i64, channel_id.as_str(), id.as_str(), kind],
         )
         .await?;
-    app.hub.to_guild(&id, "channel:created", &channel);
-    app.audit(crate::audit::Entry::new(&id, "settings.channel_create", &user.id).channel(&channel.id).detail(json!({ "name": channel.name, "type": channel.kind })));
-    Ok((StatusCode::CREATED, Json(channel)))
+    }
+    tx.commit().await?;
+    app.audit(crate::audit::Entry::new(&id, "settings.channel_order", &user.id).detail(json!({ "type": kind })));
+    app.hub.to_guild(&id, "guild:refresh", json!({ "guildId": id }));
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn delete_channel(State(app): AppState, AuthUser(user, _): AuthUser, Path(id): Path<String>) -> ApiResult<StatusCode> {

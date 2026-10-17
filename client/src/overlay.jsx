@@ -1,5 +1,6 @@
 // Sobreposição nos jogos (app do Windows): janela transparente por cima do jogo, que não recebe cliques.
-// Mostra a música tocando no canto de cima e as fotos de quem está na chamada em coluna, à esquerda.
+// Mostra a música tocando no canto de cima e as fotos de quem está na chamada em coluna, à esquerda, com o
+// nome ao lado de cada foto.
 // Conversa com a janela principal por eventos (veja lib/gameOverlay.js e desktop/src-tauri/src/overlay.rs).
 import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -23,15 +24,18 @@ function useFit() {
 function Person({ p }) {
   const [broken, setBroken] = useState(false);
   return (
-    <li className={`ov-person${p.speaking ? ' talk' : ''}`} title={p.name}>
-      <span className="ov-pic" style={{ '--c': p.color || '#3a8ee0' }}>
-        {p.src && !broken ? <img src={p.src} alt="" onError={() => setBroken(true)} /> : (p.name || '?').slice(0, 1).toUpperCase()}
-      </span>
-      {(p.deafened || p.muted) && (
-        <span className="ov-mute" aria-label={p.deafened ? 'ensurdecido' : 'silenciado'}>
-          {p.deafened ? <HeadphoneOff size={7} strokeWidth={3} /> : <MicOff size={7} strokeWidth={3} />}
+    <li className={`ov-person${p.speaking ? ' talk' : ''}`}>
+      <span className="ov-face">
+        <span className="ov-pic" style={{ '--c': p.color || '#3a8ee0' }}>
+          {p.src && !broken ? <img src={p.src} alt="" onError={() => setBroken(true)} /> : (p.name || '?').slice(0, 1).toUpperCase()}
         </span>
-      )}
+        {(p.deafened || p.muted) && (
+          <span className="ov-mute" aria-label={p.deafened ? 'ensurdecido' : 'silenciado'}>
+            {p.deafened ? <HeadphoneOff size={7} strokeWidth={3} /> : <MicOff size={7} strokeWidth={3} />}
+          </span>
+        )}
+      </span>
+      <span className="ov-name">{p.name}</span>
     </li>
   );
 }

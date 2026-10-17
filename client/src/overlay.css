@@ -62,9 +62,34 @@ body {
   min-height: 0;
 }
 .ov-person {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+}
+.ov-face {
   position: relative;
+  flex: none;
   width: 24px;
   height: 24px;
+}
+/* Nome ao lado da foto: sem fundo, com sombra para ler sobre qualquer cena (como a música). */
+.ov-name {
+  min-width: 0;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9), 0 0 6px rgba(0, 0, 0, 0.6);
+  opacity: 0.8;
+  transition: opacity 0.15s, color 0.15s;
+}
+.ov-person.talk .ov-name {
+  opacity: 1;
+  color: #b9f59a;
 }
 .ov-pic {
   box-sizing: border-box;

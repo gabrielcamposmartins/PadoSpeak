@@ -2,8 +2,10 @@
 //! fotos de quem está na chamada (em coluna, à esquerda) e a música tocando (no canto de cima). Aparece
 //! só enquanto o jogo detectado para a atividade (veja `activity.rs`) está em foco, na tela dele.
 //! O conteúdo vem da janela principal por eventos (overlay.html, veja client/src/lib/gameOverlay.js).
-//! Jogos em tela cheia exclusiva desenham por cima de qualquer janela: lá ela não aparece (no modo
-//! janela sem bordas, o padrão da maioria dos jogos, aparece).
+//! Em tela cheia ela aparece nos jogos que usam a tela cheia otimizada do Windows 10/11 (a maioria dos
+//! DirectX 11/12): como alguns jogos se colocam por cima de novo, ela se recoloca por cima a cada segundo.
+//! A tela cheia exclusiva antiga (DirectX 9, ou com a otimização desligada) não deixa nenhuma janela por
+//! cima; só injetando código no jogo, o que os anti-cheats punem, então não fazemos.
 use crate::activity;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -86,17 +88,28 @@ fn show(w: &WebviewWindow, (x, y, width, height): (i32, i32, u32, u32)) {
     #[cfg(windows)]
     if let Ok(h) = w.hwnd() {
         use windows::Win32::Foundation::HWND;
-        use windows::Win32::UI::WindowsAndMessaging::{
-            SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOWNOACTIVATE,
-        };
-        let hwnd = HWND(h.0);
+        use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
         unsafe {
-            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-            let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            let _ = ShowWindow(HWND(h.0), SW_SHOWNOACTIVATE);
         }
+        raise(w);
         return;
     }
     let _ = w.show();
+}
+
+/// Põe (de novo) por cima de tudo, sem tirar o foco do jogo: jogos em tela cheia se colocam por cima.
+fn raise(w: &WebviewWindow) {
+    #[cfg(windows)]
+    if let Ok(h) = w.hwnd() {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
+        unsafe {
+            let _ = SetWindowPos(HWND(h.0), Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = w;
 }
 
 pub fn spawn(app: AppHandle, games: activity::Shared) -> Shared {
@@ -107,8 +120,10 @@ pub fn spawn(app: AppHandle, games: activity::Shared) -> Shared {
         .spawn(move || {
             let mut last_game = None;
             let mut shown: Option<(i32, i32, u32, u32)> = None;
+            let mut tick: u32 = 0;
             loop {
                 std::thread::sleep(Duration::from_millis(250));
+                tick = tick.wrapping_add(1);
                 if !me.on.load(Ordering::Relaxed) {
                     // Opção desligada ou fora da chamada: fecha a janela (libera a memória dela).
                     if let Some(w) = app.get_webview_window(LABEL) {
@@ -144,6 +159,12 @@ pub fn spawn(app: AppHandle, games: activity::Shared) -> Shared {
                     None if shown.take().is_some() => {
                         if let Some(w) = app.get_webview_window(LABEL) {
                             let _ = w.hide();
+                        }
+                    }
+                    // Mesma faixa: a cada segundo, de volta por cima (o jogo em tela cheia pode ter passado à frente).
+                    Some(_) if tick % 4 == 0 => {
+                        if let Some(w) = app.get_webview_window(LABEL) {
+                            raise(&w);
                         }
                     }
                     _ => {}

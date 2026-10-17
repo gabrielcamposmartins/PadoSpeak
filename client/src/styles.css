@@ -1539,6 +1539,48 @@ html.framed .overlay {
   flex: 1;
   min-width: 0;
 }
+/* Arrastar canais para reordenar: o canal arrastado fica apagado e uma linha mostra onde ele cai. */
+.row.channel.dragging {
+  opacity: 0.45;
+}
+.row.channel.drop-before {
+  box-shadow: inset 0 2px 0 var(--brand-accent);
+}
+.row.channel.drop-after {
+  box-shadow: inset 0 -2px 0 var(--brand-accent);
+}
+/* O título da lista recolhe e mostra (a setinha vira para o lado quando recolhida). */
+.grp-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.grp-toggle:hover .grp-title {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.grp-toggle:focus-visible {
+  outline: 2px solid var(--brand-accent);
+  outline-offset: 2px;
+}
+.grp-chevron {
+  flex: none;
+  transition: rotate 0.15s;
+}
+.grp-toggle[aria-expanded='false'] .grp-chevron {
+  rotate: -90deg;
+}
 .grp-add {
   display: inline-flex;
   color: var(--group);
@@ -4171,36 +4213,10 @@ html:not(.compact) .boot-card .boot-body {
   overflow: visible;
   filter: drop-shadow(0 10px 18px rgba(150, 30, 20, 0.28));
 }
-/* O gorro gira e encolhe no meio da volta (onde é mais rápido); três cópias atrasadas e borradas fazem o
-   blur de movimento, que só aparece enquanto ele está rápido. */
-.boot-hat,
-.boot-ghost {
-  --turn: 0.9s;
+/* O gorro diminui e volta ao tamanho, sem parar (sem animação para quem pediu menos movimento). */
+.boot-hat {
   transform-origin: 32px 32px;
-  animation:
-    boot-spin var(--turn) cubic-bezier(0.65, 0, 0.35, 1) infinite,
-    boot-size var(--turn) ease-in-out infinite;
-  animation-delay: calc(var(--lag, 0s) - var(--turn));
-}
-.boot-ghost {
-  fill: #fff;
-}
-.boot-ghost.g1 {
-  --lag: 0.025s;
-  opacity: 0.38;
-}
-.boot-ghost.g2 {
-  --lag: 0.05s;
-  opacity: 0.22;
-}
-.boot-ghost.g3 {
-  --lag: 0.075s;
-  opacity: 0.11;
-}
-@keyframes boot-spin {
-  to {
-    rotate: 360deg;
-  }
+  animation: boot-size 0.9s ease-in-out infinite;
 }
 @keyframes boot-size {
   50% {
@@ -4208,11 +4224,8 @@ html:not(.compact) .boot-card .boot-body {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .boot-ghost {
-    display: none;
-  }
   .boot-hat {
-    animation: boot-size 2.4s ease-in-out infinite;
+    animation: none;
   }
 }
 .boot-text {
@@ -8637,6 +8650,76 @@ button.receipt.read:hover {
 .adm-online {
   color: var(--ico-green);
 }
+/* Servidores: a setinha abre os integrantes embaixo da linha. */
+.adm-expand {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.adm-expand:hover {
+  background: var(--row-hover);
+  color: var(--ink);
+}
+.adm-expand svg {
+  transition: rotate 0.15s;
+  rotate: -90deg;
+}
+.adm-expand[aria-expanded='true'] svg {
+  rotate: 0deg;
+}
+.adm-expand:focus-visible {
+  outline: 2px solid var(--brand-accent);
+  outline-offset: 1px;
+}
+.adm-table tbody tr.adm-members-row:hover {
+  background: none;
+}
+.adm-members-row > td {
+  padding: 4px 8px 10px 38px;
+  white-space: normal;
+}
+.adm-members {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 4px 16px;
+}
+.adm-members li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 3px 0;
+}
+.adm-member-name {
+  display: grid;
+  min-width: 0;
+}
+.adm-member-name > * {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.adm-members .chip {
+  font-size: 11px;
+}
+.adm-member-since {
+  margin-left: auto;
+  white-space: nowrap;
+}
+.adm-members-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
 .adm-gicon {
   width: 28px;
   height: 28px;
@@ -10640,6 +10723,8 @@ html[data-touch] .sb-x {
   display: grid;
   place-items: center;
   flex: none;
+  /* A linha alinha pelo topo (nome e recado em duas linhas); o X fica no meio da altura. */
+  align-self: center;
   width: 22px;
   height: 22px;
   margin-left: 4px;

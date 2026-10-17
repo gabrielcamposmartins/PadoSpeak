@@ -53,6 +53,7 @@ import SoundPanel from './SoundPanel.jsx';
 import { FormattedText, Floating } from './Emotes.jsx';
 import { plain } from '../lib/text.js';
 import { useVoicePerson, voiceDropProps } from './VoiceMenus.jsx';
+import { GroupHeader, useCollapsed } from './Group.jsx';
 
 const NO_PERMS = {};
 const openProfile = (userId) => useStore.getState().openModal({ type: 'profile', userId });
@@ -460,6 +461,9 @@ function VoiceMemberRow({ p, channelId, guildId, speaking, watch, trouble }) {
 }
 
 /** Canal de voz na lista: entra ao clicar e recebe quem for arrastado para ele (mover). */
+/** Tipo do arrastar de canais (para não se confundir com arrastar pessoas entre canais de voz). */
+const DRAG_CHANNEL = 'application/x-padospeak-channel';
+
 function VoiceChannelRow({ c, active, children }) {
   const [over, setOver] = useState(false);
   return (
@@ -473,14 +477,51 @@ function ChannelGroup({ title, type, list, canManage, guildId, activeId }) {
   const { selectTextChannel, joinVoice, openModal, deleteChannel } = useStore.getState();
   const alerts = useStore((s) => s.alerts);
   const [menu, setMenu] = useState(null); // { channel, x, y }: notificações do canal (botão direito)
+  const inVoice = useStore((s) => s.voice?.channelId);
+  const [collapsed, toggle] = useCollapsed(`${type}:${guildId}`);
+  // Recolhida: continua aparecendo o canal aberto e o canal de voz em que você está.
+  const rows = collapsed ? list.filter((c) => c.id === activeId || c.id === inVoice) : list;
+  // Quem gerencia canais arrasta para reordenar (dentro da mesma lista, texto ou voz).
+  const [drag, setDrag] = useState(null); // canal sendo arrastado
+  const [drop, setDrop] = useState(null); // { id, after }: onde ele vai cair
+  const canDrag = canManage && !collapsed && !isTouch;
+  const dragProps = (c) =>
+    canDrag
+      ? {
+          draggable: true,
+          onDragStart: (e) => {
+            e.dataTransfer.setData(DRAG_CHANNEL, c.id);
+            e.dataTransfer.effectAllowed = 'move';
+            setDrag(c.id);
+          },
+          onDragOver: (e) => {
+            if (!drag || ![...e.dataTransfer.types].includes(DRAG_CHANNEL)) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            const r = e.currentTarget.getBoundingClientRect();
+            const after = e.clientY > r.top + r.height / 2;
+            if (drop?.id !== c.id || drop.after !== after) setDrop({ id: c.id, after });
+          },
+          onDrop: (e) => {
+            if (!drag || !drop) return;
+            e.preventDefault();
+            const ids = list.map((x) => x.id).filter((id) => id !== drag);
+            const at = ids.indexOf(drop.id);
+            ids.splice(at < 0 ? ids.length : at + (drop.after ? 1 : 0), 0, drag);
+            if (ids.some((id, i) => id !== list[i].id)) useStore.getState().orderChannels(guildId, type, ids);
+            setDrag(null);
+            setDrop(null);
+          },
+          onDragEnd: () => {
+            setDrag(null);
+            setDrop(null);
+          },
+        }
+      : {};
   return (
     <>
       {menu && <ChannelMenu x={menu.x} y={menu.y} channel={menu.channel} guildId={guildId} onClose={() => setMenu(null)} />}
-      <div className="grp">
-        <ChevronDown size={12} />
-        <span className="grp-title">
-          {title} ({list.length})
-        </span>
+      <GroupHeader title={`${title} (${list.length})`} collapsed={collapsed} onToggle={toggle}>
         {canManage && (
           <button
             className="grp-add"
@@ -491,13 +532,17 @@ function ChannelGroup({ title, type, list, canManage, guildId, activeId }) {
             <Plus size={14} />
           </button>
         )}
-      </div>
-      {list.map((c) => {
+      </GroupHeader>
+      {rows.map((c) => {
         const Wrap = type === 'voice' ? VoiceChannelRow : 'div';
         return (
         <Wrap key={c.id} {...(type === 'voice' ? { c } : {})}>
           <button
-            className={`row channel${activeId === c.id ? ' sel active' : ''}`}
+            className={`row channel${activeId === c.id ? ' sel active' : ''}${drag === c.id ? ' dragging' : ''}${
+              drop?.id === c.id && drag !== c.id ? (drop.after ? ' drop-after' : ' drop-before') : ''
+            }`}
+            title={canDrag ? 'Arraste para mudar a ordem' : undefined}
+            {...dragProps(c)}
             onClick={() => (type === 'text' ? selectTextChannel(c.id) : joinVoice(c.id))}
             onContextMenu={
               type === 'text'
@@ -764,6 +809,8 @@ function MemberList({ onClose, overlay = true }) {
   const online = useStore((s) => s.online);
   const on = members.filter((m) => online[m.id]);
   const off = members.filter((m) => !online[m.id]);
+  const [onCollapsed, toggleOn] = useCollapsed('members:online');
+  const [offCollapsed, toggleOff] = useCollapsed('members:offline');
   return (
     <aside className={`members glass${onClose && overlay ? ' members-over' : ''}${onClose && !overlay ? ' members-side' : ''}`} aria-label="Membros">
       <div className="panel-head">
@@ -775,20 +822,12 @@ function MemberList({ onClose, overlay = true }) {
         )}
       </div>
       <div className="members-list">
-        <div className="grp">
-          <ChevronDown size={12} />
-          <span className="grp-title">Online ({on.length})</span>
-        </div>
-        {on.map((m) => (
+        <GroupHeader title={`Online (${on.length})`} collapsed={onCollapsed} onToggle={toggleOn} />
+        {!onCollapsed && on.map((m) => (
           <MemberRow key={m.id} m={m} isOn ownerId={guild?.ownerId} admin={(memberPerms[m.id] & 1) !== 0} />
         ))}
-        {off.length > 0 && (
-          <div className="grp">
-            <ChevronDown size={12} />
-            <span className="grp-title">Offline ({off.length})</span>
-          </div>
-        )}
-        {off.map((m) => (
+        {off.length > 0 && <GroupHeader title={`Offline (${off.length})`} collapsed={offCollapsed} onToggle={toggleOff} />}
+        {!offCollapsed && off.map((m) => (
           <MemberRow key={m.id} m={m} isOn={false} ownerId={guild?.ownerId} admin={(memberPerms[m.id] & 1) !== 0} />
         ))}
       </div>

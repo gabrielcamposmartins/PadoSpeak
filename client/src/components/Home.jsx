@@ -8,7 +8,6 @@ import {
   X,
   UserPlus,
   AtSign,
-  ChevronDown,
   UserRound,
   Wifi,
   Server,
@@ -29,6 +28,7 @@ import { useLayout } from '../lib/layout.js';
 import { MobileBack } from './Mobile.jsx';
 import { plain } from '../lib/text.js';
 import { ConnProvider, useConn, useConnKey } from './conn.jsx';
+import { GroupHeader, useCollapsed } from './Group.jsx';
 import { LATEST_NOTES } from './Modals.jsx';
 
 /** Referência estável: seletores do zustand não podem devolver um array novo a cada leitura. */
@@ -189,14 +189,14 @@ function DmRow({ dm, active }) {
 }
 
 /** Conversas diretas de uma conexão (servidor, perfil local ou PC da rede). */
-function ConnDms() {
+function ConnDms({ collapsed }) {
   const useC = useConn();
   const conn = useConnKey();
   const dms = useC((s) => s.dms);
   const view = useStore((s) => s.view);
-  return dms.map((dm) => (
-    <DmRow key={dm.id} dm={dm} active={view?.type === 'dm' && view.channelId === dm.id && (view.conn || 'server') === conn} />
-  ));
+  const isActive = (dm) => view?.type === 'dm' && view.channelId === dm.id && (view.conn || 'server') === conn;
+  // Recolhida: só a conversa aberta continua na lista.
+  return (collapsed ? dms.filter(isActive) : dms).map((dm) => <DmRow key={dm.id} dm={dm} active={isActive(dm)} />);
 }
 
 function FriendOrbRow({ entry }) {
@@ -363,24 +363,22 @@ export function HomeSidebar() {
   const incoming = all.filter((f) => f.status === 'incoming');
   const mates = all.filter((f) => f.status === 'friend');
   const shown = tab === 'online' ? mates.filter((f) => online[f.user.id]) : mates;
+  const [reqCollapsed, toggleReq] = useCollapsed('friend-requests');
+  const [dmsCollapsed, toggleDms] = useCollapsed('dms');
+  const [friendsCollapsed, toggleFriends] = useCollapsed('friends');
   return (
     <>
       <FriendTabs />
       <div className="channel-list home-list">
         {incoming.length > 0 && (
           <>
-            <div className="grp">
-              <ChevronDown size={12} />
-              <span className="grp-title">Pedidos de amizade ({incoming.length})</span>
-            </div>
-            {incoming.map((f) => (
+            <GroupHeader title={`Pedidos de amizade (${incoming.length})`} collapsed={reqCollapsed} onToggle={toggleReq} />
+            {!reqCollapsed && incoming.map((f) => (
               <RequestRow key={f.user.id} entry={f} />
             ))}
           </>
         )}
-        <div className="grp">
-          <ChevronDown size={12} />
-          <span className="grp-title">Conversas ({dmCount})</span>
+        <GroupHeader title={`Conversas (${dmCount})`} collapsed={dmsCollapsed} onToggle={toggleDms}>
           <button
             className="grp-add"
             title="Nova conversa"
@@ -389,25 +387,24 @@ export function HomeSidebar() {
           >
             <Plus size={14} />
           </button>
-        </div>
-        {dmCount === 0 && <p className="home-empty-dm">Suas conversas aparecem aqui.</p>}
+        </GroupHeader>
+        {dmCount === 0 && !dmsCollapsed && <p className="home-empty-dm">Suas conversas aparecem aqui.</p>}
         {connKeys.map((k) => (
           <ConnProvider key={k} conn={k}>
-            <ConnDms />
+            <ConnDms collapsed={dmsCollapsed} />
           </ConnProvider>
         ))}
         <LanSection />
         <NearbySection />
-        <div className="grp">
-          <ChevronDown size={12} />
-          <span className="grp-title">
-            {tab === 'online' ? 'Amigos online' : 'Amigos'} ({shown.length})
-          </span>
-        </div>
-        {shown.length === 0 && (
+        <GroupHeader
+          title={`${tab === 'online' ? 'Amigos online' : 'Amigos'} (${shown.length})`}
+          collapsed={friendsCollapsed}
+          onToggle={toggleFriends}
+        />
+        {!friendsCollapsed && shown.length === 0 && (
           <p className="home-empty-dm">{tab === 'online' ? 'Nenhum amigo online agora.' : 'Nenhum amigo ainda.'}</p>
         )}
-        {shown.map((f) => (
+        {!friendsCollapsed && shown.map((f) => (
           <FriendOrbRow key={f.user.id} entry={f} />
         ))}
       </div>

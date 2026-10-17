@@ -23,7 +23,7 @@ import { useStore, sendSticker, sendFile, sendVoice, usePerms } from '../store.j
 import { FileView, UploadList, parseFile, parseVoice, isBlockedFile, VoiceNote, ExpiresTag } from './Files.jsx';
 import { StickerPicker, MessageSticker, parseSticker } from './Stickers.jsx';
 import FormatTools, { formatKey } from './FormatTools.jsx';
-import { AttachTray, oversized, CAPTION_MAX, CameraCapture, VoiceRecorder, requestMic } from './Compose.jsx';
+import { AttachTray, oversized, CAPTION_MAX, CameraCapture, VoiceRecorder, requestMic, fromPhoneCamera } from './Compose.jsx';
 import AttachSheet from './AttachSheet.jsx';
 import { addRecent } from '../lib/recent.js';
 import { useConn, useConnKey } from './conn.jsx';
@@ -677,6 +677,10 @@ export default function ChatView({ channel, variant = 'channel' }) {
   // Marca (ou desmarca) um anexo como NSFW antes de enviar: chega borrado para todos, no privado e nos canais.
   const toggleNsfw = (i) => setAttach((a) => a.map((it, j) => (j === i ? { ...it, nsfw: !it.nsfw } : it)));
   const [camera, setCamera] = useState(false);
+  const cameraInput = useRef(null);
+  // No celular e no tablet a câmera é a do próprio aparelho (com o zoom, o flash e a tela cheia dele);
+  // no computador, a câmera do PadoSpeak.
+  const openCamera = () => (isTouch ? cameraInput.current?.click() : setCamera(true));
   const [recording, setRecording] = useState(false);
   const connKey = useConnKey();
   const listRef = useRef(null);
@@ -930,7 +934,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
       channelId={channel.id}
       target={dm ? channel.name : `#${channel.name}`}
       onFiles={sendFiles}
-      onCamera={() => setCamera(true)}
+      onCamera={openCamera}
       onSticker={(sticker) => addAttach([{ kind: 'sticker', sticker }])}
     />
   );
@@ -1076,7 +1080,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
         className="gloss compose-ico"
         title="Câmera: tirar foto ou gravar vídeo"
         aria-label="Câmera"
-        onClick={() => setCamera(true)}
+        onClick={openCamera}
       >
         <Camera size={17} className="ico-blue" />
       </button>
@@ -1154,6 +1158,22 @@ export default function ChatView({ channel, variant = 'channel' }) {
             setCamera(false);
             addAttach([{ kind: 'file', file }]);
             addRecent([file], 'câmera');
+          }}
+        />
+      )}
+      {isTouch && (
+        <input
+          ref={cameraInput}
+          type="file"
+          accept="image/*,video/*"
+          capture="environment"
+          hidden
+          onChange={(e) => {
+            const files = [...(e.target.files || [])].map(fromPhoneCamera);
+            e.target.value = '';
+            if (!files.length) return;
+            addAttach(files.map((file) => ({ kind: 'file', file })));
+            addRecent(files, 'câmera');
           }}
         />
       )}

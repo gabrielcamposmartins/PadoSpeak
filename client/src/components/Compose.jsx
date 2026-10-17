@@ -193,6 +193,13 @@ export function mediaError(e, what = 'câmera') {
 
 const VIDEO_MAX_MS = 3 * 60 * 1000;
 
+/** Foto ou vídeo da câmera do celular: ganha o mesmo nome da câmera do PadoSpeak (foto-AAAAMMDD-HHMMSS.jpg). */
+export function fromPhoneCamera(file) {
+  const kind = file.type.startsWith('video/') ? 'video' : 'foto';
+  const ext = (file.name.match(/\.(\w+)$/)?.[1] || (kind === 'video' ? 'mp4' : 'jpg')).toLowerCase();
+  return new File([file], `${kind}-${stamp()}.${ext}`, { type: file.type, lastModified: file.lastModified });
+}
+
 /**
  * Câmera para tirar uma foto ou gravar um vídeo e mandar na conversa. `onDone(file)` com o
  * resultado (vai para a prévia antes de enviar).

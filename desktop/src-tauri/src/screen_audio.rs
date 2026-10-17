@@ -4,7 +4,7 @@
 //! - **tela inteira**: o som do sistema todo **menos o do PadoSpeak** (as vozes da chamada não voltam
 //!   para quem assiste). O som do app sai do processo do WebView2 (msedgewebview2.exe, filho do app),
 //!   que para o Windows não faz parte da "árvore" do app: é ele que fica de fora.
-//! O áudio (48 kHz, estéreo, 16 bits) vai para a página em pedaços de 20 ms por um canal do Tauri; lá
+//! O áudio (48 kHz, estéreo, 16 bits) vai para a página em pedaços de 50 ms por um canal do Tauri; lá
 //! um AudioWorklet vira a trilha de áudio da transmissão (client/src/lib/screenAudio.js).
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,11 +17,14 @@ pub struct ScreenAudio(Arc<AtomicU64>);
 
 const RATE: usize = 48_000;
 const CHANNELS: usize = 2;
-/// 20 ms por pedaço.
-const CHUNK_FRAMES: usize = RATE / 50;
+/// 50 ms por pedaço: cada pedaço passa pela thread principal (que é a das janelas) para chegar à página;
+/// com 20 ms eram 50 por segundo e a janela do PadoSpeak pesava durante a transmissão com som.
+const CHUNK_FRAMES: usize = RATE / 20;
 
+/// `async`: esperar o Windows aceitar a captura (até 5 s) não pode segurar a thread principal, que é a
+/// das janelas (o PadoSpeak inteiro travava ao transmitir uma janela com som).
 #[tauri::command]
-pub fn screen_audio_start(
+pub async fn screen_audio_start(
     state: tauri::State<'_, ScreenAudio>,
     hwnd: Option<u64>,
     title: Option<String>,
@@ -37,8 +40,11 @@ pub fn screen_audio_start(
         .name("som-da-transmissao".into())
         .spawn(move || capture(pid, include, gen, current, on_data, ready_tx))
         .map_err(|e| e.to_string())?;
-    // Espera o Windows aceitar (ou recusar) antes de responder.
-    ready_rx.recv_timeout(std::time::Duration::from_secs(5)).map_err(|_| "O Windows não respondeu".to_string())??;
+    // Espera o Windows aceitar (ou recusar) antes de responder, numa thread de espera.
+    tauri::async_runtime::spawn_blocking(move || ready_rx.recv_timeout(std::time::Duration::from_secs(5)))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|_| "O Windows não respondeu".to_string())??;
     Ok(json!({ "mode": if include { "window" } else { "system" }, "source": label }))
 }
 
@@ -48,6 +54,11 @@ pub fn screen_audio_stop(state: tauri::State<'_, ScreenAudio>) {
 }
 
 /// Processo alvo: o dono da janela (incluir) ou o WebView2 do PadoSpeak (excluir, para a tela inteira).
+/// O processo principal do WebView2 deste app (é dele a barra de "compartilhando", veja `share_bar.rs`).
+pub fn webview_pid() -> Option<u32> {
+    win::webview_pid()
+}
+
 fn target(hwnd: Option<u64>) -> Result<(u32, bool, String), String> {
     match hwnd {
         Some(h) => {

@@ -3,10 +3,19 @@
 ## 1.9.1 — 17/10/2026
 
 ### Novidades
+- **Câmera no celular**: o botão Câmera abre a câmera do próprio celular (com o zoom, o flash e a tela cheia dela). A foto ou o vídeo volta para a caixa da conversa, pronto para enviar.
+- **Listas que encolhem**: clique no título para recolher ou mostrar Conversas, Amigos online, Pedidos de amizade, Canais de texto, Canais de voz e Membros. Com os canais recolhidos, continuam aparecendo o canal aberto e o canal de voz em que você está.
+- **Ordem dos canais**: quem pode gerenciar canais arrasta um canal com o mouse para mudar a ordem, e todos veem a ordem nova na hora.
+- **Canal privado ao criar**: “Canal privado”, com a escolha de quem vê, também está no formulário de criar canal.
+- **Sobreposição nos jogos**: o nome aparece ao lado de cada foto, e ela também aparece nos jogos em tela cheia do Windows 10 e 11 (na tela cheia exclusiva antiga, use “tela cheia sem bordas” no jogo).
 - **Sons rápidos de qualquer duração**: o limite de 5 segundos saiu e cada som pode ter até 5 MB.
+- **Tela de carregamento**: o gorro não gira mais, só pulsa.
 
 ### Correções
+- **Transmissão de uma janela com som no app do Windows**: o app não trava mais, aparece só o dock do PadoSpeak (sem a barra branca embaixo) e o “Trocar” do dock volta a funcionar.
+- **Música que às vezes não tocava**: quando o áudio de uma faixa falha (o YouTube recusou, a conexão caiu), o app tenta de novo sozinho e volta na posição certa.
 - **Seu perfil no app do Windows**: clicar na sua foto no canto de cima abre o seu perfil em vez de “Usuário não encontrado”.
+- **Conversas**: o X para tirar uma conversa da lista fica no meio da linha.
 
 ## 1.9.0 — 17/10/2026
 
