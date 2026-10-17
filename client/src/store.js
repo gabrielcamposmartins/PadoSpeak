@@ -1045,7 +1045,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
         console.warn('[sons]', e);
       }
     },
-    /** Envia um som (até 5 s e 1 MB) com nome, ícone e cor; entra no primeiro botão livre do atalho. */
+    /** Envia um som (até 5 MB) com nome, ícone e cor; entra no primeiro botão livre do atalho. */
     async uploadSound(file, { name, icon, tone, durationMs }) {
       const q = new URLSearchParams({ name, icon, tone, durationMs: String(Math.round(durationMs)) });
       const snd = await api.post(`/api/sounds?${q}`, file);
@@ -2214,6 +2214,17 @@ export const getConn = (key) => (key && connRegistry.get(key)) || useStore;
 
 /** Onde mora o meu perfil: o nó local no app desktop, o servidor no navegador. */
 export const primaryConn = () => (isDesktop ? connRegistry.get('local') || useStore : useStore);
+
+/**
+ * Meu perfil (clicar na própria foto). No app do Windows a foto é a do perfil deste PC, mas o perfil
+ * completo (com os sons) é o da conta no servidor; sem conexão com o servidor, abre o deste PC.
+ */
+export function openMyProfile() {
+  const server = useStore.getState();
+  const prim = primaryConn().getState();
+  if (server.me) server.openModal({ type: 'profile', userId: server.me.id, conn: server.key });
+  else if (prim.me) server.openModal({ type: 'profile', userId: prim.me.id, conn: prim.key });
+}
 
 // Exposto para diagnóstico pelo DevTools.
 globalThis.__padospeakStore = useStore;

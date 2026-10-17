@@ -8,11 +8,14 @@ import { SoundIcon, SOUND_ICONS, SOUND_TONES } from './SoundIcons.jsx';
 import { playSoundboard, audioDuration } from '../lib/soundboard.js';
 import { plain } from '../lib/text.js';
 
-const MAX_BYTES = 1024 * 1024;
-const MAX_SECONDS = 5;
+const MAX_BYTES = 5 * 1024 * 1024;
 /** Sons no atalho: 3 linhas de 3. */
 const BOARD_MAX = 9;
-const fmtSec = (ms) => `${(ms / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1, minimumFractionDigits: 1 })} s`;
+/** 2,4 s; a partir de um minuto, 1:05. */
+const fmtSec = (ms) =>
+  ms >= 60000
+    ? `${Math.floor(ms / 60000)}:${String(Math.round((ms % 60000) / 1000)).padStart(2, '0')}`
+    : `${(ms / 1000).toLocaleString('pt-BR', { maximumFractionDigits: 1, minimumFractionDigits: 1 })} s`;
 
 function useVolume() {
   return useStore((s) => s.prefs.soundboardVolume ?? 0.8);
@@ -115,11 +118,9 @@ export function SoundsModal({ slot = null, conn, embedded = false }) {
     e.target.value = '';
     setError('');
     if (!file) return;
-    if (file.size > MAX_BYTES) return setError(`“${file.name}” tem ${(file.size / 1048576).toFixed(1)} MB. O máximo é 1 MB.`);
+    if (file.size > MAX_BYTES) return setError(`“${file.name}” tem ${(file.size / 1048576).toFixed(1)} MB. O máximo é 5 MB.`);
     try {
       const seconds = await audioDuration(file);
-      if (seconds > MAX_SECONDS + 0.25)
-        return setError(`“${file.name}” tem ${seconds.toFixed(1)} s. O máximo é ${MAX_SECONDS} s: corte o áudio e envie de novo.`);
       setPending({ file, durationMs: seconds * 1000 });
     } catch {
       setError(`Não deu para ler “${file.name}”. Use um áudio MP3, OGG, WAV ou M4A.`);
@@ -183,7 +184,7 @@ export function SoundsModal({ slot = null, conn, embedded = false }) {
         />
       )}
       {sounds.length === 0 && !pending && (
-        <p className="sl-empty">Nenhum som ainda. Envie um áudio de até 5 segundos, ou copie de alguém: quando uma pessoa toca um som na chamada, aparece “Copiar para mim”.</p>
+        <p className="sl-empty">Nenhum som ainda. Envie um áudio de até 5 MB, ou copie de alguém: quando uma pessoa toca um som na chamada, aparece “Copiar para mim”.</p>
       )}
       <ul className="sl-list">
         {sounds.map((snd) =>
@@ -264,7 +265,7 @@ export function SoundsModal({ slot = null, conn, embedded = false }) {
         )}
       </ul>
       <p className="sl-foot">
-        MP3, OGG, WAV ou M4A de até 5 segundos e 1 MB. O som fica na sua conta e aparece em todos os seus aparelhos.
+        MP3, OGG, WAV ou M4A de até 5 MB, de qualquer duração. O som fica na sua conta e aparece em todos os seus aparelhos.
       </p>
     </div>
   );

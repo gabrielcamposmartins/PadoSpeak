@@ -1,5 +1,5 @@
-//! Sons rápidos: cada pessoa tem uma biblioteca de até 10 sons curtos (MP3, OGG, WAV ou M4A, até 5 s e
-//! 1 MB) e escolhe quais ficam nos botões do atalho (6 ou 9, em 2 ou 3 linhas). Na chamada, tocar um som
+//! Sons rápidos: cada pessoa tem uma biblioteca de até 10 sons (MP3, OGG, WAV ou M4A, de qualquer duração
+//! e até 5 MB) e escolhe quais ficam nos botões do atalho (6 ou 9, em 2 ou 3 linhas). Na chamada, tocar um som
 //! (`sound:play` no WebSocket, ver `hub.rs`) faz todos do canal ouvirem. Dá para copiar o som de outra
 //! pessoa para a sua biblioteca.
 //!
@@ -19,10 +19,8 @@ use std::sync::Arc;
 type AppState = State<Arc<App>>;
 type ApiResult<T> = Result<T, ApiError>;
 
-/// Tamanho máximo de um som.
-pub const MAX_SOUND: usize = 1024 * 1024;
-/// Duração máxima (contada pelo app ao enviar).
-pub const MAX_DURATION_MS: i64 = 5_000;
+/// Tamanho máximo de um som (a duração é livre).
+pub const MAX_SOUND: usize = 5 * 1024 * 1024;
 /// Sons na biblioteca de cada pessoa.
 pub const MAX_PER_USER: i64 = 10;
 /// Botões do atalho: 3 por linha, de 1 a 3 linhas (escolhido em Configurações → Sons).
@@ -201,11 +199,12 @@ async fn upload(
     body: Bytes,
 ) -> ApiResult<(StatusCode, Json<Sound>)> {
     if body.is_empty() || body.len() > MAX_SOUND {
-        return Err(bad("O som deve ter até 1 MB"));
+        return Err(bad("O som deve ter até 5 MB"));
     }
     let mime = sniff_audio(&body).ok_or_else(|| bad("Use um áudio MP3, OGG, WAV ou M4A"))?;
-    if q.duration_ms <= 0 || q.duration_ms > MAX_DURATION_MS + 250 {
-        return Err(bad("O som deve ter até 5 segundos"));
+    // A duração (contada pelo app ao enviar) só aparece na biblioteca.
+    if q.duration_ms <= 0 {
+        return Err(bad("Não deu para ler a duração do som"));
     }
     if count(&app, &me.id).await? >= MAX_PER_USER {
         return Err(bad("Sua biblioteca já tem 10 sons: apague um para enviar outro"));
@@ -217,7 +216,7 @@ async fn upload(
         name: name.unwrap_or_else(|| "Som".into()),
         icon: icon.unwrap_or_default(),
         tone: tone.unwrap_or_default(),
-        duration_ms: q.duration_ms.min(MAX_DURATION_MS),
+        duration_ms: q.duration_ms,
         url: String::new(),
     };
     app.db

@@ -7,7 +7,7 @@ import { useStore, usePerms } from '../store.js';
 import Avatar, { UserName, usePresence, STATUS_INFO } from './Avatar.jsx';
 import { FormattedText, Floating } from './Emotes.jsx';
 import VolumeSlider from './Volume.jsx';
-import { useVoiceConn } from './conn.jsx';
+import { useVoiceConn, useConnKey } from './conn.jsx';
 import { plain } from '../lib/text.js';
 
 /** Tipo usado no arrastar e soltar de pessoas entre canais de voz. */
@@ -95,6 +95,7 @@ export function VoiceMemberMenu({ x, y, p, channelId, guildId, onClose }) {
   const others = channels.filter((c) => c.type === 'voice' && c.id !== channelId);
   // Volume desta pessoa para mim (até 200%): só quando estou na mesma chamada.
   const voiceConn = useVoiceConn();
+  const connKey = useConnKey();
   const volume = voiceConn((s) => (s.voice?.channelId === channelId ? s.voice.peers.find((x) => x.peerId === p.peerId)?.volume : undefined));
   return (
     <PointMenu x={x} y={y} onClose={onClose} label={`Opções de ${name}`}>
@@ -102,7 +103,7 @@ export function VoiceMemberMenu({ x, y, p, channelId, guildId, onClose }) {
         <Avatar user={p.user} size={22} frame={false} />
         <UserName user={p.user} />
       </div>
-      <Item icon={UserRound} onClick={act(() => st.openModal({ type: 'profile', userId: p.user.id }))}>
+      <Item icon={UserRound} onClick={act(() => st.openModal({ type: 'profile', userId: p.user.id, conn: connKey }))}>
         Ver perfil
       </Item>
       {!self && volume !== undefined && (
@@ -162,6 +163,7 @@ export function QuickProfile({ anchorRef, user, onClose }) {
   const status = usePresence(user.id);
   const fresh = useStore((s) => s.users[user.id]) || user;
   const me = useStore((s) => s.me?.id);
+  const connKey = useConnKey();
   const st = useStore.getState();
   const info = STATUS_INFO[{ on: 'online', away: 'away', busy: 'busy' }[status]];
   return (
@@ -203,7 +205,7 @@ export function QuickProfile({ anchorRef, user, onClose }) {
             aria-label="Perfil completo"
             onClick={() => {
               onClose();
-              st.openModal({ type: 'profile', userId: user.id });
+              st.openModal({ type: 'profile', userId: user.id, conn: connKey });
             }}
           >
             <UserRound size={15} />

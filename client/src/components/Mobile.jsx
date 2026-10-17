@@ -19,7 +19,7 @@ import {
   CircleAlert,
   ChartColumn,
 } from 'lucide-react';
-import { useStore, primaryConn, localLogout } from '../store.js';
+import { useStore, primaryConn, localLogout, openMyProfile } from '../store.js';
 import { isDesktop } from '../lib/env.js';
 import { unreadTotal, useAcross } from './conn.jsx';
 import Avatar from './Avatar.jsx';
@@ -168,7 +168,7 @@ function MePage() {
   return (
     <div className="m-me">
       <div className="m-me-card glass">
-        <Avatar user={me} base={base} size={72} status={info.cls} onClick={() => openModal({ type: 'profile', userId: me.id })} />
+        <Avatar user={me} base={base} size={72} status={info.cls} onClick={openMyProfile} />
         <div className="m-me-text">
           <b className={colorClass(me.nameColor)} style={colorStyle(me.nameColor)}>
             <FormattedText text={me.displayName} size={18} />

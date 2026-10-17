@@ -1,5 +1,13 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.9.1 — 17/10/2026
+
+### Novidades
+- **Sons rápidos de qualquer duração**: o limite de 5 segundos saiu e cada som pode ter até 5 MB.
+
+### Correções
+- **Seu perfil no app do Windows**: clicar na sua foto no canto de cima abre o seu perfil em vez de “Usuário não encontrado”.
+
 ## 1.9.0 — 17/10/2026
 
 ### Novidades

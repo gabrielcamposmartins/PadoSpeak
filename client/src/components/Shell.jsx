@@ -32,7 +32,7 @@ import {
   WifiOff,
   RefreshCw,
 } from 'lucide-react';
-import { useStore, primaryConn, setStatusEverywhere, connRegistry, usePerms } from '../store.js';
+import { useStore, primaryConn, setStatusEverywhere, connRegistry, usePerms, openMyProfile } from '../store.js';
 import { isDesktop, DOWNLOAD_URL } from '../lib/env.js';
 import { offerWindowsApp } from './AuthPage.jsx';
 import { ConnProvider, useAcross, useVoiceConn } from './conn.jsx';
@@ -172,7 +172,7 @@ export function ProfileBar({ onMenu }) {
           <Menu size={20} />
         </button>
       )}
-      <Avatar user={me} base={base} size={62} status={frame} speaking={voice?.speaking.me} onClick={() => openModal({ type: 'profile', userId: me.id })} />
+      <Avatar user={me} base={base} size={62} status={frame} speaking={voice?.speaking.me} onClick={openMyProfile} />
       <div className="pb-text">
         <div className="pb-name">
           <button className="pb-me" onClick={() => openModal({ type: 'editProfile' })} title="Editar perfil">
