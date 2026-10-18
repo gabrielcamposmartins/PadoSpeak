@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import {
   Hash,
   TriangleAlert,
@@ -27,8 +27,6 @@ import {
   Mic,
   Timer,
   Check,
-  ChevronLeft,
-  ChevronRight,
   Settings2,
   Users,
   Bell,
@@ -46,7 +44,6 @@ import {
   SkipBack,
   Pause,
   ListX,
-  ChevronDown,
   MicOff,
   PhoneOff,
   Monitor,
@@ -55,6 +52,7 @@ import {
   SquarePlus,
   CircleCheck,
   Gamepad2,
+  EyeOff,
   Plus,
   Music2,
   KeyRound,
@@ -75,7 +73,7 @@ import {
   setMyActivity,
 } from '../store.js';
 import { currentActivity, listPrograms, setCustomPrograms } from '../lib/activity.js';
-import { setGameOverlay } from '../lib/gameOverlay.js';
+import { setGameOverlay, setOverlayBlocked } from '../lib/gameOverlay.js';
 import { SoundsModal, UserSoundsModal, SoundSettings } from './SoundLibrary.jsx';
 import { GoogleButton, useAuthOptions, AccountSettings } from './AccountAuth.jsx';
 import VolumeSlider from './Volume.jsx';
@@ -654,6 +652,78 @@ function OverlayCornerPicker({ value, onChange }) {
   );
 }
 
+/**
+ * Jogos sem sobreposição: vale na hora. Pelo nome que aparece no status, então entram tanto os jogos
+ * reconhecidos sozinhos quanto os programas adicionados para o status.
+ */
+function OverlayBlocklist() {
+  const list = useStore((s) => s.prefs.overlayBlocked) || [];
+  const custom = useStore((s) => s.prefs.customGames) || [];
+  const [name, setName] = useState('');
+  const listId = useId();
+  const has = (n) => list.some((x) => x.toLowerCase() === n.trim().toLowerCase());
+  const save = (next) => {
+    useStore.getState().setAppearance({ overlayBlocked: next });
+    setOverlayBlocked(next);
+  };
+  const add = (n) => {
+    const nm = n.trim().slice(0, 80);
+    if (!nm || has(nm)) return;
+    save([...list, nm].sort((a, b) => a.localeCompare(b, 'pt-BR', { sensitivity: 'base' })));
+    setName('');
+  };
+  // Sugestões: o jogo aberto agora e os programas adicionados para o status.
+  const now = currentActivity()?.name;
+  const ideas = [...new Set([now, ...custom.map((c) => c.name)].filter(Boolean))].filter((n) => !has(n));
+  return (
+    <div className="block-list overlay-block">
+      <div className="block-title">Não mostrar a sobreposição em{list.length ? ` (${list.length})` : ''}</div>
+      {list.map((n) => (
+        <div className="block-row" key={n}>
+          <EyeOff size={15} aria-hidden="true" />
+          <span className="nm">{n}</span>
+          <button type="button" className="gloss mini" title="Tirar da lista" aria-label={`Mostrar a sobreposição em ${n} de novo`} onClick={() => save(list.filter((x) => x !== n))}>
+            <X size={13} />
+          </button>
+        </div>
+      ))}
+      <form
+        className="overlay-block-add"
+        onSubmit={(e) => {
+          e.preventDefault();
+          add(name);
+        }}
+      >
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          list={listId}
+          placeholder="Nome do jogo, como aparece no status"
+          aria-label="Jogo sem sobreposição"
+        />
+        <datalist id={listId}>
+          {ideas.map((n) => (
+            <option key={n} value={n} />
+          ))}
+        </datalist>
+        <button type="submit" className="btn" disabled={!name.trim() || has(name)}>
+          <Plus size={14} /> Adicionar
+        </button>
+      </form>
+      {ideas.length > 0 && (
+        <div className="overlay-block-ideas">
+          {ideas.map((n) => (
+            <button key={n} type="button" className="chip" onClick={() => add(n)} title={`Não mostrar a sobreposição em ${n}`}>
+              <Plus size={12} aria-hidden="true" /> {n}
+              {n === now && <small> · aberto agora</small>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Configurações → Conta: quem eu bloqueei (desbloquear daqui). */
 function BlockedUsers() {
   const prim = primaryConn();
@@ -1188,9 +1258,10 @@ function SettingsModal({ close, tab: startTab, focus }) {
   const [shareActivity, setShareActivity] = useState(useStore.getState().prefs.shareActivity !== false);
   const [gameOverlay, setGameOverlayOn] = useState(useStore.getState().prefs.gameOverlay === true);
   const [overlayCorner, setOverlayCorner] = useState(useStore.getState().prefs.gameOverlayCorner || 'tl');
-  // App desktop: iniciar com o Windows (abre minimizado na bandeja).
+  // App desktop: iniciar com o Windows (com a janela aberta, ou só na bandeja).
   const [autostart, setAutostart] = useState(null);
   const [autostartOn, setAutostartOn] = useState(false);
+  const [autostartTray, setAutostartTray] = useState(false);
   useEffect(() => {
     if (!isTauri) return;
     import('@tauri-apps/api/core')
@@ -1198,6 +1269,7 @@ function SettingsModal({ close, tab: startTab, focus }) {
       .then((a) => {
         setAutostart(a);
         setAutostartOn(a.enabled);
+        setAutostartTray(Boolean(a.tray));
       })
       .catch(() => {});
   }, []);
@@ -1388,6 +1460,7 @@ function SettingsModal({ close, tab: startTab, focus }) {
               </span>
             </label>
             {gameOverlay && <OverlayCornerPicker value={overlayCorner} onChange={setOverlayCorner} />}
+            {gameOverlay && <OverlayBlocklist />}
           </>
         )}
         <div className="settings-sec">Vistos nas mensagens</div>
@@ -1430,9 +1503,18 @@ function SettingsModal({ close, tab: startTab, focus }) {
               <input type="checkbox" checked={autostartOn} onChange={(e) => setAutostartOn(e.target.checked)} />
               <span>
                 Iniciar o PadoSpeak com o Windows
-                <small className="check-hint">Abre minimizado na bandeja, perto do relógio, para receber mensagens e chamadas.</small>
+                <small className="check-hint">Abre a janela do PadoSpeak quando você entra no Windows.</small>
               </span>
             </label>
+            {autostartOn && (
+              <label className="checkbox sub-check">
+                <input type="checkbox" checked={autostartTray} onChange={(e) => setAutostartTray(e.target.checked)} />
+                <span>
+                  Abrir só na bandeja
+                  <small className="check-hint">Sem mostrar a janela: fica perto do relógio, recebendo mensagens e chamadas.</small>
+                </span>
+              </label>
+            )}
           </>
         )}
       </section>
@@ -1602,9 +1684,9 @@ function SettingsModal({ close, tab: startTab, focus }) {
               st.setAppearance({ nearbyVisible });
               st.lanHello();
             }
-            if (autostart?.available && autostartOn !== autostart.enabled)
+            if (autostart?.available && (autostartOn !== autostart.enabled || (autostartOn && autostartTray !== Boolean(autostart.tray))))
               import('@tauri-apps/api/core')
-                .then(({ invoke }) => invoke('autostart_set', { on: autostartOn }))
+                .then(({ invoke }) => invoke('autostart_set', { on: autostartOn, tray: autostartTray }))
                 .catch((e) => st.notify(`Iniciar com o Windows: ${e}`));
             st.setWatchPrefs(watch);
             if (rnnoise !== (st.prefs.noiseSuppression !== false)) st.setNoiseSuppression(rnnoise);
@@ -2686,7 +2768,8 @@ const PERM_OPTIONS = [
   { bit: PERM.DISCONNECT, flag: 'disconnect', label: 'Desconectar da voz', hint: 'Tira alguém do canal de voz', icon: PhoneOff },
   { bit: PERM.MOVE, flag: 'move', label: 'Mover entre canais', hint: 'Move alguém para outro canal de voz', icon: ArrowRightLeft },
   { bit: PERM.MUSIC_ADD, flag: 'musicAdd', label: 'Pôr músicas na fila', hint: 'Adiciona músicas do YouTube e do Spotify', icon: ListPlus },
-  { bit: PERM.MUSIC_PAUSE, flag: 'musicPause', label: 'Pausar e retomar', hint: 'Pausa a música para todos do canal', icon: Pause },
+  { bit: PERM.SOUNDS, flag: 'sounds', label: 'Tocar efeitos sonoros', hint: 'Usa os sons rápidos nos canais de voz', icon: Volume2 },
+  { bit: PERM.MUSIC_PAUSE_OTHERS, flag: 'musicPauseOthers', label: 'Pausar música de outros', hint: 'Pausa e retoma a música que outra pessoa pôs', icon: Pause },
   { bit: PERM.MUSIC_SKIP_OTHERS, flag: 'musicSkipOthers', label: 'Pular música de outros', hint: 'Pula a música que outra pessoa pôs', icon: SkipForward },
   { bit: PERM.MUSIC_REMOVE_OTHERS, flag: 'musicRemoveOthers', label: 'Tirar da fila música de outros', hint: 'Remove da fila a música que outra pessoa pôs', icon: ListX },
   { bit: PERM.MUSIC_RESTART_OTHERS, flag: 'musicRestartOthers', label: 'Recomeçar música de outros', hint: 'Volta ao início a música que outra pessoa pôs', icon: RotateCcw },
@@ -2697,15 +2780,15 @@ const opt = (bit) => PERM_OPTIONS.find((o) => o.bit === bit);
 /** As permissões em categorias, para a tela de permissões. */
 const PERM_GROUPS = [
   { id: 'geral', title: 'Geral', icon: Settings2, perms: [PERM.ADMIN, PERM.INVITE, PERM.CHANNELS].map(opt) },
-  { id: 'voz', title: 'Voz', icon: Mic, perms: [PERM.MUTE, PERM.DISCONNECT, PERM.MOVE].map(opt) },
+  { id: 'voz', title: 'Voz', icon: Mic, perms: [PERM.MUTE, PERM.DISCONNECT, PERM.MOVE, PERM.SOUNDS].map(opt) },
   {
     id: 'musica',
     title: 'Música',
     icon: Music2,
-    note: 'Pular, tirar da fila e recomeçar as próprias músicas: todos podem.',
+    note: 'Pausar, pular, tirar da fila e recomeçar as próprias músicas: todos podem.',
     perms: [
       PERM.MUSIC_ADD,
-      PERM.MUSIC_PAUSE,
+      PERM.MUSIC_PAUSE_OTHERS,
       PERM.MUSIC_SKIP_OTHERS,
       PERM.MUSIC_REMOVE_OTHERS,
       PERM.MUSIC_RESTART_OTHERS,
@@ -2758,34 +2841,38 @@ function PermGroups({ bits, onToggle, disabled, admin = false, adminLocked = fal
     </div>
   );
 }
-const PAGE = 6;
+const ALL_BITS = PERM_OPTIONS.reduce((n, o) => n | o.bit, 0);
 
 /**
- * Permissões: o padrão vale para todo mundo (começa só com "convidar"); quem é adicionado à lista
- * ganha permissões personalizadas, e tirar da lista volta ao padrão.
+ * Permissões: à esquerda "Todos os membros" (o padrão) e as pessoas em ordem alfabética; à direita,
+ * as permissões de quem está escolhido. Mudar algo de quem usa o padrão personaliza só para essa
+ * pessoa, e "Voltar ao padrão" desfaz.
  */
 function GuildMembers({ guildId, perms: mine }) {
   const guild = useStore((s) => s.guilds.find((g) => g.id === guildId));
   const members = useStore((s) => s.guildData[guildId]?.members) || [];
   const custom = useStore((s) => s.guildData[guildId]?.perms) || {};
   const [busy, setBusy] = useState(null);
-  const [page, setPage] = useState(0);
-  const [adding, setAdding] = useState(false);
+  const [sel, setSel] = useState('default');
   const [q, setQ] = useState('');
-  const [open, setOpen] = useState(null); // quem está aberto na lista personalizada
   const st = useStore.getState();
   const ownerId = guild?.ownerId;
   const defaults = guild?.defaultPerms ?? PERM.INVITE;
-  const owner = members.find((m) => m.id === ownerId);
   const name = (m) => plain(m.displayName) || m.username;
-  const listed = members.filter((m) => m.id !== ownerId && m.id in custom).sort((a, b) => name(a).localeCompare(name(b)));
-  const pages = Math.max(1, Math.ceil(listed.length / PAGE));
-  const cur = Math.min(page, pages - 1);
-  const shown = listed.slice(cur * PAGE, cur * PAGE + PAGE);
-  const candidates = members
-    .filter((m) => m.id !== ownerId && !(m.id in custom))
+  const byName = (a, b) => name(a).localeCompare(name(b), 'pt-BR', { sensitivity: 'base' });
+  const owner = members.find((m) => m.id === ownerId);
+  const people = members
+    .filter((m) => m.id !== ownerId)
     .filter((m) => `${name(m)} ${m.username}`.toLowerCase().includes(q.trim().toLowerCase()))
-    .slice(0, 8);
+    .sort(byName);
+  const picked = sel === 'default' ? null : members.find((m) => m.id === sel);
+  const isCustom = (m) => m.id in custom;
+  const summary = (m) => {
+    if (m.id === ownerId) return 'Dono · todas';
+    if (!isCustom(m)) return 'Padrão';
+    const bits = custom[m.id] || 0;
+    return bits & PERM.ADMIN ? 'Administrador' : `Personalizado · ${countBits(bits)}/${PERM_COUNT}`;
+  };
 
   const run = async (id, fn) => {
     setBusy(id);
@@ -2799,123 +2886,128 @@ function GuildMembers({ guildId, perms: mine }) {
   };
   const toggleDefault = (bit, on) =>
     run('default', () => st.updateGuild(guildId, { defaultPerms: on ? defaults | bit : defaults & ~bit }));
+  // Quem usa o padrão parte dele; quem já é personalizado parte do que tem.
   const toggle = (m, bit, on) => {
-    const bits = custom[m.id] || 0;
-    return run(m.id, () => st.setMemberPerms(guildId, m.id, on ? bits | bit : bits & ~bit));
+    const bits = isCustom(m) ? custom[m.id] || 0 : defaults;
+    return run(m.id, () => st.setMemberPerms(guildId, m.id, on ? bits | bit : bits & ~bit, true));
   };
-  const add = (m) =>
-    run(m.id, async () => {
-      await st.setMemberPerms(guildId, m.id, defaults, true);
-      setAdding(false);
-      setQ('');
-      setOpen(m.id);
-      // Vai para a página onde a pessoa entrou.
-      const idx = [...listed, m].sort((a, b) => name(a).localeCompare(name(b))).findIndex((x) => x.id === m.id);
-      setPage(Math.floor(idx / PAGE));
-    });
+
+  const item = (key, avatar, label, sub, extra) => (
+    <button
+      key={key}
+      type="button"
+      className={`pm-item${sel === key ? ' on' : ''}`}
+      aria-current={sel === key || undefined}
+      onClick={() => setSel(key)}
+    >
+      {avatar}
+      <span className="pm-item-name">
+        {label}
+        <small>{sub}</small>
+      </span>
+      {extra}
+    </button>
+  );
+
+  let head;
+  let body;
+  if (!picked) {
+    head = (
+      <div className="pm-detail-head">
+        <span className="pm-all-ico" aria-hidden="true">
+          <Users size={16} />
+        </span>
+        <span className="pm-item-name">
+          <b>Todos os membros</b>
+          <small>Quem não tem permissões personalizadas pode:</small>
+        </span>
+      </div>
+    );
+    body = <PermGroups bits={defaults} who="todos" disabled={busy === 'default'} onToggle={toggleDefault} />;
+  } else if (picked.id === ownerId) {
+    head = (
+      <div className="pm-detail-head">
+        <Avatar user={picked} size={32} frame={false} />
+        <span className="pm-item-name">
+          <b>
+            <UserName user={picked} /> <Crown size={13} className="crown" aria-label="Dono" />
+          </b>
+          <small>Dono do servidor: tem todas as permissões.</small>
+        </span>
+      </div>
+    );
+    body = <PermGroups bits={ALL_BITS} admin who={name(picked)} disabled onToggle={() => {}} />;
+  } else {
+    const bits = isCustom(picked) ? custom[picked.id] || 0 : defaults;
+    const isAdmin = isCustom(picked) && (bits & PERM.ADMIN) !== 0;
+    const locked = isAdmin && !mine.owner; // só o dono mexe em admins
+    head = (
+      <div className="pm-detail-head">
+        <Avatar user={picked} size={32} frame={false} />
+        <span className="pm-item-name">
+          <b>
+            <UserName user={picked} />
+            {isAdmin && <Shield size={13} className="crown admin-badge" aria-label="Administrador" />}
+          </b>
+          <small>
+            {isCustom(picked)
+              ? 'Permissões personalizadas: valem só para esta pessoa.'
+              : 'Usa o padrão. Mudar qualquer permissão personaliza só para esta pessoa.'}
+          </small>
+        </span>
+        {isCustom(picked) && (
+          <button
+            type="button"
+            className="gloss small-btn pm-reset"
+            disabled={busy === picked.id || locked}
+            onClick={() => run(picked.id, () => st.setMemberPerms(guildId, picked.id, 0, false))}
+          >
+            <RotateCcw size={13} /> Voltar ao padrão
+          </button>
+        )}
+      </div>
+    );
+    body = (
+      <PermGroups
+        bits={bits}
+        admin
+        adminLocked={!mine.owner}
+        who={name(picked)}
+        disabled={busy === picked.id || locked}
+        onToggle={(bit, on) => toggle(picked, bit, on)}
+      />
+    );
+  }
 
   return (
-    <div className="gs-perms">
-      <section className="gs-box">
-        <div className="gs-box-head">
-          <b>Padrão para todos os membros</b>
-          <small>Quem não está na lista abaixo pode:</small>
-        </div>
-        <PermGroups bits={defaults} who="todos" disabled={busy === 'default'} onToggle={toggleDefault} />
-      </section>
-
-      <section className="gs-box gs-custom">
-        <div className="gs-box-head">
-          <b>Permissões personalizadas</b>
-          <small>{listed.length ? `${listed.length} na lista` : 'Ninguém na lista: todos usam o padrão.'}</small>
-          <span className="tool-wrap gs-add">
-            <IconBtn icon={UserPlus} label="Adicionar pessoa à lista" tip="left" className={adding ? 'pressed' : ''} onClick={() => setAdding(!adding)} />
-          </span>
-        </div>
-        {adding && (
-          <div className="gs-add-box">
-            <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar membro" aria-label="Buscar membro para adicionar" />
-            <div className="gs-add-list" role="listbox" aria-label="Membros">
-              {candidates.length === 0 && <p className="kv">Ninguém encontrado.</p>}
-              {candidates.map((m) => (
-                <button key={m.id} type="button" role="option" aria-selected={false} className="pick-row" disabled={busy === m.id} onClick={() => add(m)}>
-                  <Avatar user={m} size={22} frame={false} />
-                  <UserName user={m} />
-                  <small>@{m.username}</small>
-                </button>
-              ))}
-            </div>
-          </div>
+    <div className="gs-perms pm-split">
+      <nav className="pm-list" aria-label="Escolha de quem ver as permissões">
+        {item(
+          'default',
+          <span className="pm-all-ico" aria-hidden="true">
+            <Users size={15} />
+          </span>,
+          <b>Todos os membros</b>,
+          'Padrão do servidor',
         )}
-        {owner && (
-          <div className="pm-row owner">
-            <div className="pm-head">
-              <span className="gs-member-who">
-                <Avatar user={owner} size={26} frame={false} />
-                <UserName user={owner} className="gs-member-name" />
-                <Crown size={13} className="crown" aria-label="Dono" />
-              </span>
-              <span className="pm-sum">Dono: todas as permissões</span>
-            </div>
-          </div>
+        <input className="pm-search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar membro" aria-label="Buscar membro" />
+        {owner &&
+          !q.trim() &&
+          item(owner.id, <Avatar user={owner} size={24} frame={false} />, <UserName user={owner} />, summary(owner), <Crown size={13} className="crown" aria-label="Dono" />)}
+        {people.map((m) =>
+          item(
+            m.id,
+            <Avatar user={m} size={24} frame={false} />,
+            <UserName user={m} />,
+            summary(m),
+            isCustom(m) && (custom[m.id] & PERM.ADMIN ? <Shield size={13} className="crown admin-badge" aria-label="Administrador" /> : <span className="pm-dot" title="Personalizado" />),
+          ),
         )}
-        {shown.map((m) => {
-          const bits = custom[m.id] || 0;
-          const isAdmin = (bits & PERM.ADMIN) !== 0;
-          const locked = isAdmin && !mine.owner; // só o dono mexe em admins
-          const expanded = open === m.id;
-          return (
-            <div className={`pm-row${expanded ? ' open' : ''}`} key={m.id}>
-              <div className="pm-head">
-                <button
-                  type="button"
-                  className="pm-toggle"
-                  aria-expanded={expanded}
-                  aria-controls={`pm-${m.id}`}
-                  onClick={() => setOpen(expanded ? null : m.id)}
-                >
-                  <span className="gs-member-who">
-                    <Avatar user={m} size={26} frame={false} />
-                    <UserName user={m} className="gs-member-name" />
-                    {isAdmin && <Shield size={13} className="crown admin-badge" aria-label="Administrador" />}
-                  </span>
-                  <span className="pm-sum">{isAdmin ? 'Administrador: todas' : `${countBits(bits)} de ${PERM_COUNT} permissões`}</span>
-                  <ChevronDown size={16} className="pm-chevron" aria-hidden="true" />
-                </button>
-                <IconBtn
-                  icon={X}
-                  size={14}
-                  tip="left"
-                  className="mini-ico"
-                  label={`Tirar ${name(m)} da lista (volta ao padrão)`}
-                  disabled={busy === m.id || locked}
-                  onClick={() => run(m.id, () => st.setMemberPerms(guildId, m.id, 0, false))}
-                />
-              </div>
-              {expanded && (
-                <div className="pm-body" id={`pm-${m.id}`}>
-                  <PermGroups
-                    bits={bits}
-                    admin
-                    adminLocked={!mine.owner}
-                    who={name(m)}
-                    disabled={busy === m.id || locked}
-                    onToggle={(bit, on) => toggle(m, bit, on)}
-                  />
-                </div>
-              )}
-            </div>
-          );
-        })}
-        {pages > 1 && (
-          <div className="gs-pager">
-            <IconBtn icon={ChevronLeft} label="Página anterior" disabled={cur === 0} onClick={() => setPage(cur - 1)} />
-            <span>
-              {cur * PAGE + 1}–{Math.min(listed.length, cur * PAGE + PAGE)} de {listed.length}
-            </span>
-            <IconBtn icon={ChevronRight} label="Próxima página" disabled={cur >= pages - 1} onClick={() => setPage(cur + 1)} />
-          </div>
-        )}
+        {!people.length && q.trim() && <p className="kv">Ninguém encontrado.</p>}
+      </nav>
+      <section className="pm-detail">
+        {head}
+        <div className="perm-one">{body}</div>
       </section>
     </div>
   );

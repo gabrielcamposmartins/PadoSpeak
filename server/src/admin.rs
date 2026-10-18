@@ -2,10 +2,11 @@
 //! tempo cada pessoa ficou com o app aberto e em qual plataforma, e os dias/horários de mais uso.
 //!
 //! Só o dono do app (usuário `gabs`, ou o definido em `APP_OWNER`) vê, e ele pode liberar para
-//! outras pessoas. No nó local do app desktop não existe.
+//! outras pessoas. No nó local do app desktop não existe. Dos servidores, o painel mostra também os
+//! integrantes, as mensagens dos canais de texto e os arquivos (as conversas diretas ficam de fora).
 use crate::api::{ApiError, AuthUser};
 use crate::host::App;
-use crate::models::{user_from_row, User, USER_COLS};
+use crate::models::{attach_reactions, message_from_row, open_message, user_from_row, Message, User, MESSAGE_SELECT, USER_COLS};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get};
@@ -30,6 +31,9 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/admin/access", get(access))
         .route("/api/admin/overview", get(overview))
         .route("/api/admin/guilds/{id}/members", get(guild_members))
+        .route("/api/admin/guilds/{id}/channels", get(guild_channels))
+        .route("/api/admin/guilds/{id}/files", get(guild_files))
+        .route("/api/admin/channels/{id}/messages", get(channel_messages))
         .route("/api/admin/viewers", get(viewers).put(grant))
         .route("/api/admin/viewers/{id}", delete(revoke))
 }
@@ -45,6 +49,11 @@ async fn rights(app: &App, user: &User) -> ApiResult<(bool, bool)> {
     }
     let granted = app.db.query_one("SELECT 1 FROM app_admins WHERE user_id = ?1", [user.id.as_str()], |_| Ok(())).await?.is_some();
     Ok((granted, false))
+}
+
+/// Pode ver o painel (e, com ele, as mensagens e os arquivos dos servidores).
+pub async fn can_view(app: &App, user: &User) -> bool {
+    rights(app, user).await.map(|(view, _)| view).unwrap_or(false)
 }
 
 async fn require_view(app: &App, user: &User) -> ApiResult<bool> {
@@ -228,7 +237,6 @@ async fn overview(State(app): AppState, AuthUser(me, _): AuthUser, Query(q): Que
     })))
 }
 
-/// Quem pode ver o painel além do dono.
 /// Integrantes de um servidor (aba Servidores do painel): quem é, desde quando, dono/admin e se está online.
 async fn guild_members(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     require_view(&app, &me).await?;
@@ -258,6 +266,62 @@ async fn guild_members(State(app): AppState, AuthUser(me, _): AuthUser, Path(id)
     Ok(Json(json!(members)))
 }
 
+/// Canais de texto de um servidor, com quantas mensagens cada um tem (os privados também).
+async fn guild_channels(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    require_view(&app, &me).await?;
+    let list = app
+        .db
+        .query_all(
+            "SELECT c.id, c.name, c.private, (SELECT COUNT(*) FROM messages x WHERE x.channel_id = c.id),              (SELECT MAX(x.created_at) FROM messages x WHERE x.channel_id = c.id)              FROM channels c WHERE c.guild_id = ?1 AND c.type = 'text' ORDER BY c.position, c.name",
+            [id.as_str()],
+            |r| {
+                Ok(json!({
+                    "id": r.get::<String>(0)?, "name": r.get::<String>(1)?, "private": r.get::<i64>(2)? != 0,
+                    "messages": r.get::<i64>(3)?, "lastMessageAt": r.get::<Option<i64>>(4)?,
+                }))
+            },
+        )
+        .await?;
+    Ok(Json(Value::Array(list)))
+}
+
+#[derive(Deserialize)]
+struct MessagesQuery {
+    before: Option<i64>,
+    limit: Option<i64>,
+}
+
+/// Mensagens de um canal de texto de qualquer servidor (das mais novas para trás, como na conversa).
+async fn channel_messages(
+    State(app): AppState,
+    AuthUser(me, _): AuthUser,
+    Path(id): Path<String>,
+    Query(q): Query<MessagesQuery>,
+) -> ApiResult<Json<Vec<Message>>> {
+    require_view(&app, &me).await?;
+    let text = app.db.query_one("SELECT 1 FROM channels WHERE id = ?1 AND type = 'text'", [id.as_str()], |_| Ok(())).await?;
+    if text.is_none() {
+        return Err(ApiError(StatusCode::NOT_FOUND, "Canal não encontrado".into()));
+    }
+    let limit = q.limit.unwrap_or(50).clamp(1, 100);
+    let before = q.before.unwrap_or(i64::MAX);
+    let sql = format!("{MESSAGE_SELECT} WHERE m.channel_id = ?1 AND m.created_at < ?2 ORDER BY m.created_at DESC LIMIT ?3");
+    let mut list = app.db.query_all(&sql, libsql::params![id.as_str(), before, limit], message_from_row).await?;
+    for m in &mut list {
+        open_message(&app.db, m);
+    }
+    attach_reactions(&app.db, &mut list).await?;
+    list.reverse();
+    Ok(Json(list))
+}
+
+/// Arquivos de um servidor (os mesmos da tela de configuração dele).
+async fn guild_files(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    require_view(&app, &me).await?;
+    Ok(Json(crate::files::guild_file_list(&app, &id).await?))
+}
+
+/// Quem pode ver o painel além do dono.
 async fn viewers(State(app): AppState, AuthUser(me, _): AuthUser) -> ApiResult<Json<Value>> {
     require_view(&app, &me).await?;
     let sql = format!("SELECT {USER_COLS}, a.granted_at FROM app_admins a JOIN users u ON u.id = a.user_id ORDER BY a.granted_at");

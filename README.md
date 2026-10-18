@@ -224,6 +224,22 @@ todos no canal ouvem a mesma música, em sincronia, mesmo que quem adicionou sai
   logada em **Hostear → Música** (navegador ou arquivo `cookies.txt`) ou pelas variáveis `YTDLP_COOKIES` /
   `YTDLP_COOKIES_FROM_BROWSER`.
 
+## Palavras com efeito
+
+Algumas palavras, escritas sozinhas numa mensagem (maiúsculas ou minúsculas tanto faz), aparecem destacadas e
+soltam um efeito pela janela quando a conversa ou o canal é aberto com elas, ou quando o mouse passa por cima. Não
+há lista delas no app; esta seção é a única documentação.
+
+| Palavra | Destaque | Efeito |
+|---|---|---|
+| `stars` / `estrelas` | sublinhada, amarela | estrelas subindo |
+| `bubbles` / `bolhas` | sublinhada, negrito, rosa | bolhas subindo |
+| `confete` / `confetti` | sublinhada, azul-claro | confetes subindo, girando |
+| `arco-íris` / `rainbow` | sublinhada, negrito, cada letra de uma cor | um arco-íris do canto esquerdo ao direito |
+
+Cada efeito toca uma vez por vez (passar o mouse de novo no meio não empilha). Com “reduzir movimento” ligado no
+sistema, fica só o destaque da palavra. Código: `client/src/lib/magic.js`.
+
 ## Banco de dados
 
 O `padospeak-server` usa o crate oficial `libsql` (Turso). Tabelas: `users`, `sessions`, `guilds`,

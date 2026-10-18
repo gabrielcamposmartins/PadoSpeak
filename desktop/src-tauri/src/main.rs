@@ -36,8 +36,10 @@ struct Autostart {
     available: bool,
 }
 
-/// Argumento usado na entrada de inicialização: abre direto na bandeja, sem mostrar a janela.
+/// Argumento da entrada de inicialização quando a pessoa escolheu "só na bandeja": abre sem mostrar a janela.
 const AUTOSTART_ARG: &str = "--autostart";
+/// Argumento da entrada de inicialização com a janela aberta (o padrão).
+const STARTUP_ARG: &str = "--startup";
 
 #[cfg(windows)]
 mod startup {
@@ -51,12 +53,14 @@ mod startup {
         RegKey::predef(HKEY_CURRENT_USER).open_subkey(RUN).and_then(|k| k.get_value::<String, _>(NAME)).is_ok()
     }
 
-    /// Liga (com o caminho atual do executável, que muda se o app for reinstalado) ou desliga.
-    pub fn set(on: bool) -> std::io::Result<()> {
+    /// Liga (com o caminho atual do executável, que muda se o app for reinstalado) ou desliga. `tray`:
+    /// abre só na bandeja; senão abre com a janela.
+    pub fn set(on: bool, tray: bool) -> std::io::Result<()> {
         let (key, _) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(RUN)?;
         if on {
             let exe = std::env::current_exe()?;
-            key.set_value(NAME, &format!("\"{}\" {}", exe.display(), super::AUTOSTART_ARG))
+            let arg = if tray { super::AUTOSTART_ARG } else { super::STARTUP_ARG };
+            key.set_value(NAME, &format!("\"{}\" {}", exe.display(), arg))
         } else {
             match key.delete_value(NAME) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -71,23 +75,27 @@ mod startup {
     pub fn enabled() -> bool {
         false
     }
-    pub fn set(_on: bool) -> std::io::Result<()> {
+    pub fn set(_on: bool, _tray: bool) -> std::io::Result<()> {
         Ok(())
     }
 }
 
+/// Escolha guardada: "on" (abre com a janela), "tray" (só na bandeja) ou "off".
+fn autostart_choice(cfg: &Autostart) -> String {
+    std::fs::read_to_string(&cfg.choice).unwrap_or_default().trim().to_string()
+}
+
 /// Na primeira abertura liga o "iniciar com o Windows"; depois só reaplica a escolha (o caminho do
-/// executável pode ter mudado numa atualização).
+/// executável pode ter mudado numa atualização, e quem já tinha ligado passa a abrir com a janela).
 fn apply_autostart(cfg: &Autostart) {
     if !cfg.available {
         return;
     }
-    let choice = std::fs::read_to_string(&cfg.choice).unwrap_or_default();
-    let on = choice.trim() != "off";
+    let choice = autostart_choice(cfg);
     if choice.is_empty() {
         let _ = std::fs::write(&cfg.choice, "on");
     }
-    if let Err(e) = startup::set(on) {
+    if let Err(e) = startup::set(choice != "off", choice == "tray") {
         eprintln!("iniciar com o Windows: {e}");
     }
 }
@@ -115,16 +123,17 @@ fn open_url(url: String) -> Result<(), String> {
 
 #[tauri::command]
 fn autostart_get(cfg: State<'_, Autostart>) -> Value {
-    json!({ "available": cfg.available, "enabled": cfg.available && startup::enabled() })
+    json!({ "available": cfg.available, "enabled": cfg.available && startup::enabled(), "tray": autostart_choice(&cfg) == "tray" })
 }
 
 #[tauri::command]
-fn autostart_set(cfg: State<'_, Autostart>, on: bool) -> Result<bool, String> {
+fn autostart_set(cfg: State<'_, Autostart>, on: bool, tray: Option<bool>) -> Result<bool, String> {
     if !cfg.available {
         return Err("Disponível só no app instalado".into());
     }
-    startup::set(on).map_err(|e| e.to_string())?;
-    std::fs::write(&cfg.choice, if on { "on" } else { "off" }).map_err(|e| e.to_string())?;
+    let tray = tray.unwrap_or(false);
+    startup::set(on, tray).map_err(|e| e.to_string())?;
+    std::fs::write(&cfg.choice, if !on { "off" } else if tray { "tray" } else { "on" }).map_err(|e| e.to_string())?;
     Ok(startup::enabled())
 }
 
@@ -229,6 +238,12 @@ fn launched_hidden() -> bool {
 #[tauri::command]
 fn overlay_set(overlay: State<'_, overlay::Shared>, on: bool, right: Option<bool>) {
     overlay.set(on, right.unwrap_or(false));
+}
+
+/// Jogos (pelo nome que aparece no status) em que a sobreposição não aparece.
+#[tauri::command]
+fn overlay_block_set(overlay: State<'_, overlay::Shared>, names: Vec<String>) {
+    overlay.set_blocked(names);
 }
 
 /// Atalhos de voz que são uma tecla modificadora sozinha ("ControlRight"…): avisa a janela a cada toque.
@@ -430,7 +445,7 @@ fn main() {
             app.manage(screen_audio::ScreenAudio::default());
             app.manage(share_bar::ShareBar::default());
             build_tray(app)?;
-            // Aberto pela inicialização do Windows: fica só na bandeja; senão mostra a janela.
+            // Aberto pela inicialização do Windows com "só na bandeja": fica na bandeja; senão mostra a janela.
             if !std::env::args().any(|a| a == AUTOSTART_ARG) {
                 show_main(app.handle());
             }
@@ -446,7 +461,7 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, local_node, notify_windows, autostart_get, autostart_set, open_url, activity_get, activity_custom_set, activity_programs, solo_keys_set, share_dock_open, share_dock_close, share_bar_hide, overlay_set, launched_hidden, screen_audio::screen_audio_start, screen_audio::screen_audio_stop])
+        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, local_node, notify_windows, autostart_get, autostart_set, open_url, activity_get, activity_custom_set, activity_programs, solo_keys_set, share_dock_open, share_dock_close, share_bar_hide, overlay_set, overlay_block_set, launched_hidden, screen_audio::screen_audio_start, screen_audio::screen_audio_stop])
         .build(tauri::generate_context!())
         .expect("erro ao iniciar o PadoSpeak");
 

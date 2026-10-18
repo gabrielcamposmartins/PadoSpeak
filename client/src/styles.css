@@ -4931,6 +4931,103 @@ fieldset.plain {
   }
 }
 
+/* Palavras com efeito (lib/magic.js): a palavra colorida e as partículas por cima da janela. */
+:root {
+  --bubble-edge: rgba(70, 130, 190, 0.55);
+  --bubble-glow: rgba(70, 130, 190, 0.25);
+  --magic-stars: #c99700;
+  --magic-bubbles: #e0348f;
+  --magic-confetti: #2b9fd8;
+}
+:root[data-theme='dark'] {
+  --bubble-edge: rgba(255, 255, 255, 0.75);
+  --bubble-glow: rgba(255, 255, 255, 0.5);
+  --magic-stars: #ffd60a;
+  --magic-bubbles: #ff7ac0;
+  --magic-confetti: #8fd8ff;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bubble-edge: rgba(255, 255, 255, 0.75);
+    --bubble-glow: rgba(255, 255, 255, 0.5);
+    --magic-stars: #ffd60a;
+    --magic-bubbles: #ff7ac0;
+    --magic-confetti: #8fd8ff;
+  }
+}
+.magic {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.magic-stars {
+  color: var(--magic-stars);
+}
+.magic-bubbles {
+  color: var(--magic-bubbles);
+  font-weight: 700;
+}
+.magic-confetti {
+  color: var(--magic-confetti);
+}
+.magic-rainbow {
+  font-weight: 700;
+}
+.magic-rainbow > span {
+  color: var(--mc);
+}
+:root[data-theme='dark'] .magic-rainbow > span {
+  color: color-mix(in srgb, var(--mc) 75%, #fff);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .magic-rainbow > span {
+    color: color-mix(in srgb, var(--mc) 75%, #fff);
+  }
+}
+.magic-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  overflow: hidden;
+}
+.magic-p {
+  position: absolute;
+  bottom: -40px;
+  display: block;
+  will-change: transform, opacity;
+}
+.magic-p.stars svg {
+  display: block;
+  filter: drop-shadow(0 0 4px rgba(255, 214, 10, 0.7));
+}
+.magic-p.bubbles {
+  /* Bolha de sabão: quase transparente, com o brilho e o reflexo colorido da película. */
+  border-radius: 50%;
+  border: 1.5px solid var(--bubble-edge);
+  background:
+    radial-gradient(circle at 30% 28%, rgba(255, 255, 255, 0.95) 0 9%, rgba(255, 255, 255, 0) 16%),
+    radial-gradient(circle at 70% 75%, rgba(255, 255, 255, 0.45) 0 6%, rgba(255, 255, 255, 0) 12%),
+    radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0) 58%, rgba(160, 220, 255, 0.35) 74%, rgba(255, 190, 240, 0.3) 86%, rgba(255, 255, 200, 0.35) 100%);
+  box-shadow:
+    inset 0 0 8px var(--bubble-glow),
+    0 0 2px rgba(80, 140, 200, 0.35);
+}
+.magic-p.confetti {
+  border-radius: 2px;
+}
+.magic-arc {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.magic-foam {
+  transform-box: fill-box;
+  transform-origin: center bottom;
+  fill: #fff;
+  filter: drop-shadow(0 0 1px rgba(90, 140, 190, 0.6)) drop-shadow(0 2px 4px rgba(60, 110, 160, 0.3));
+}
+
 /* Barra acima da caixa de mensagem */
 .composer-tools {
   display: flex;
@@ -5212,6 +5309,62 @@ fieldset.plain {
   color: var(--muted);
 }
 /* Configurações → Atividade: programas que também aparecem no status */
+/* Campo do @ (cadastro e Configurações → Conta): o aviso de livre ou já usado fica embaixo. */
+.handle-input {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.handle-input > svg {
+  position: absolute;
+  left: 10px;
+  color: var(--muted);
+  pointer-events: none;
+}
+.handle-input > input:not([type='range']):not([type='checkbox']):not([type='radio']):not([type='file']) {
+  width: 100%;
+  padding-left: 30px;
+}
+.handle-note {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.handle-note.ok {
+  color: var(--ico-green);
+}
+.handle-note.taken {
+  color: var(--danger-ink);
+}
+.sub-check {
+  margin-left: 26px;
+}
+.overlay-block {
+  margin-left: 26px;
+}
+.overlay-block-add {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+.overlay-block-add input {
+  flex: 1;
+  min-width: 0;
+}
+.overlay-block-ideas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.overlay-block-ideas .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.overlay-block-ideas small {
+  color: var(--muted);
+}
 .custom-program-add {
   display: flex;
   flex-direction: column;
@@ -7573,6 +7726,130 @@ html[data-touch] [data-tip]::after {
   color: var(--muted);
   font-style: italic;
 }
+/* Permissões: pessoas à esquerda, as permissões de quem está escolhido à direita (uma coluna). */
+.pm-split {
+  display: grid;
+  grid-template-columns: minmax(190px, 250px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+.pm-list {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: min(560px, 70vh);
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--row-hover-border);
+  border-radius: 10px;
+  background: var(--area);
+}
+.pm-search {
+  width: 100%;
+  margin: 6px 0 4px;
+}
+.pm-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: none;
+  font: inherit;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.pm-item:hover {
+  background: var(--row-hover);
+}
+.pm-item.on {
+  border-color: var(--row-sel-border);
+  background: var(--row-sel);
+  color: var(--row-sel-ink);
+}
+.pm-item:focus-visible {
+  outline: 2px solid var(--brand-accent);
+  outline-offset: 1px;
+}
+.pm-item-name {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  font-size: 13px;
+}
+.pm-item-name > * {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pm-item-name small {
+  font-size: 11px;
+  color: var(--muted);
+}
+.pm-item.on .pm-item-name small {
+  color: inherit;
+  opacity: 0.8;
+}
+.pm-all-ico {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--panel);
+  border: 1px solid var(--row-hover-border);
+  color: var(--link);
+}
+.pm-detail-head .pm-all-ico {
+  width: 32px;
+  height: 32px;
+}
+.pm-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--link);
+}
+.pm-detail {
+  min-width: 0;
+}
+.pm-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.pm-detail-head .pm-item-name {
+  font-size: 14px;
+}
+.pm-detail-head .pm-item-name > * {
+  white-space: normal;
+}
+.pm-detail-head b {
+  color: var(--ink);
+}
+.pm-reset {
+  margin-left: auto;
+}
+.perm-one .perm-groups {
+  grid-template-columns: minmax(0, 1fr);
+}
+@media (max-width: 640px) {
+  .pm-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .pm-list {
+    position: static;
+    max-height: 260px;
+  }
+}
 /* Lista personalizada: uma linha por pessoa, que abre as permissões dela. */
 .pm-row {
   border-radius: 8px;
@@ -9084,6 +9361,291 @@ button.receipt.read:hover {
 }
 .adm-viewers {
   max-width: 520px;
+}
+/* Títulos que ordenam a tabela (clicar de novo inverte). */
+.adm-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.adm-sort svg {
+  opacity: 0.45;
+}
+.adm-sort:hover {
+  color: var(--ink);
+  background: var(--row-hover);
+}
+.adm-sort.on {
+  color: var(--ink);
+}
+.adm-sort.on svg {
+  opacity: 1;
+}
+.adm-sort:focus-visible {
+  outline: 2px solid var(--brand-accent);
+  outline-offset: 1px;
+}
+.adm-table th.num .adm-sort {
+  flex-direction: row-reverse;
+}
+.adm-empty {
+  margin: 10px 2px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.adm-table tbody tr.adm-click {
+  cursor: pointer;
+}
+.adm-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-weight: 700;
+  color: var(--ink);
+  cursor: pointer;
+  text-align: left;
+}
+.adm-link:hover {
+  text-decoration: underline;
+}
+.adm-link:focus-visible {
+  outline: 2px solid var(--brand-accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+.adm-gicon.big {
+  width: 42px;
+  height: 42px;
+  font-size: 13px;
+}
+/* Servidor aberto: cabeçalho, abas e o conteúdo de cada aba. */
+.adm-guild-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.adm-guild-title {
+  display: grid;
+  min-width: 0;
+}
+.adm-guild-title h3 {
+  margin: 0;
+}
+.adm-guild-title small {
+  color: var(--muted);
+}
+.adm-subtabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.adm-subtabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  margin-bottom: -1px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.adm-subtabs button:hover {
+  color: var(--ink);
+}
+.adm-subtabs button.on {
+  color: var(--ink);
+  font-weight: 700;
+  border-bottom-color: var(--brand-accent);
+}
+.adm-subtabs button:focus-visible {
+  outline: 2px solid var(--brand-accent);
+  outline-offset: -2px;
+}
+.adm-chat {
+  display: grid;
+  grid-template-columns: minmax(150px, 210px) minmax(0, 1fr);
+  gap: 12px;
+  min-height: 0;
+}
+.adm-chans {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 560px;
+  overflow-y: auto;
+}
+.adm-chans button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text-2);
+  text-align: left;
+  cursor: pointer;
+}
+.adm-chans button:hover {
+  background: var(--row-hover);
+  color: var(--ink);
+}
+.adm-chans button.on {
+  background: var(--row-hover);
+  color: var(--ink);
+  font-weight: 700;
+}
+.adm-chans button:focus-visible {
+  outline: 2px solid var(--brand-accent);
+  outline-offset: -2px;
+}
+.adm-chan-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.adm-chans small {
+  color: var(--muted);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+.adm-msgs {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.adm-msgs-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink);
+}
+.adm-msgs-head small {
+  color: var(--muted);
+  font-weight: 400;
+}
+.adm-msgs-head .adm-search {
+  flex: 1 1 200px;
+  max-width: 340px;
+  margin-left: auto;
+}
+.adm-msgs-list {
+  max-height: 560px;
+  overflow-y: auto;
+  padding: 6px 10px 10px;
+}
+.adm-msgs-list ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.adm-older {
+  display: block;
+  margin: 4px auto 8px;
+}
+.adm-msg {
+  display: flex;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+.adm-msg:last-child {
+  border-bottom: 0;
+}
+.adm-msg-body {
+  flex: 1;
+  min-width: 0;
+}
+.adm-msg-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+.adm-msg-head small,
+.adm-msg-head time {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.adm-msg-reply {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.adm-msg-content {
+  font-size: 13.5px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.adm-msg-content img,
+.adm-msg-content video {
+  max-width: min(100%, 360px);
+  max-height: 260px;
+}
+.adm-msg-reacts {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.adm-file a {
+  color: var(--ink);
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.adm-file-view {
+  max-width: 420px;
+}
+.adm-file-view img,
+.adm-file-view video {
+  max-width: 100%;
+  max-height: 300px;
+}
+@media (max-width: 640px) {
+  .adm-chat {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .adm-chans {
+    flex-direction: row;
+    overflow-x: auto;
+    max-height: none;
+  }
+  .adm-chans button {
+    flex: none;
+  }
 }
 
 /* Quadrado de cor com o seletor do sistema invisível por cima (clicar abre o seletor). */

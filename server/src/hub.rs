@@ -1445,17 +1445,17 @@ impl Hub {
                 let track_id = d.get("trackId").and_then(Value::as_str);
                 use crate::api::perm;
                 let perms = crate::api::member_perms(app, &guild_id, &user.id).await.ok().flatten().unwrap_or(0);
-                // A música (da fila ou a que toca) foi a própria pessoa que pôs: pular, tirar e recomeçar sempre pode.
+                // A música (da fila ou a que toca) foi a própria pessoa que pôs: pausar, pular, tirar e recomeçar sempre pode.
                 let own = || app.music.added_by(&channel_id, track_id).as_deref() == Some(user.id.as_str());
                 let (flag, what) = match op {
-                    "music:pause" | "music:resume" => (perm::MUSIC_PAUSE, "pausar a música"),
+                    "music:pause" | "music:resume" => (perm::MUSIC_PAUSE_OTHERS, "pausar a música de outra pessoa"),
                     "music:skip" => (perm::MUSIC_SKIP_OTHERS, "pular a música de outra pessoa"),
                     "music:remove" => (perm::MUSIC_REMOVE_OTHERS, "tirar da fila a música de outra pessoa"),
                     "music:restart" => (perm::MUSIC_RESTART_OTHERS, "recomeçar a música de outra pessoa"),
                     "music:previous" => (perm::MUSIC_PREVIOUS, "voltar para a música anterior"),
                     _ => (perm::MUSIC_CLEAR, "limpar a fila"),
                 };
-                let mine = matches!(op, "music:skip" | "music:remove" | "music:restart") && own();
+                let mine = matches!(op, "music:pause" | "music:resume" | "music:skip" | "music:remove" | "music:restart") && own();
                 if !mine && !perm::has(perms, flag) {
                     return err(&format!("Você não tem permissão para {what} neste servidor"));
                 }
@@ -1693,6 +1693,12 @@ impl Hub {
                 };
                 if !dm && !crate::sounds::guild_allows(app, &guild_id).await {
                     return err("Os sons rápidos estão desligados neste servidor");
+                }
+                if !dm {
+                    let perms = crate::api::member_perms(app, &guild_id, &user.id).await.ok().flatten().unwrap_or(0);
+                    if !crate::api::perm::has(perms, crate::api::perm::SOUNDS) {
+                        return err("Você não tem permissão para tocar efeitos sonoros neste servidor");
+                    }
                 }
                 if !dm && crate::sounds::muted_in_guild(app, &guild_id, &user.id).await {
                     return err("Um administrador silenciou os seus sons rápidos neste servidor");

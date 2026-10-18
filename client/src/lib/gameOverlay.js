@@ -38,6 +38,13 @@ async function push() {
   }
 }
 
+/** Jogos (pelo nome que aparece no status) em que a sobreposição não aparece. */
+export async function setOverlayBlocked(names) {
+  if (!isTauri) return;
+  const { invoke } = await import('@tauri-apps/api/core');
+  invoke('overlay_block_set', { names: (names || []).filter(Boolean) }).catch((e) => console.warn('[sobreposição]', e));
+}
+
 /** A opção de Configurações → Funcionalidade, e o canto da tela (tl, tr, bl, br). */
 export function setGameOverlay(pref, where) {
   enabled = Boolean(pref);

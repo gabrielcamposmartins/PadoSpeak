@@ -35,6 +35,7 @@ pub fn pair<'a>(a: &'a str, b: &'a str) -> (&'a str, &'a str) {
 pub fn router() -> Router<Arc<App>> {
     Router::new()
         .route("/api/me/profile", axum::routing::patch(update_profile))
+        .route("/api/me/username", axum::routing::put(change_username))
         .route("/api/me/avatar", put(upload_avatar).delete(remove_avatar))
         .route("/api/users/{id}", get(profile))
         .route("/api/users/{id}/avatar", get(avatar))
@@ -174,6 +175,43 @@ async fn update_profile(State(app): AppState, AuthUser(me, _): AuthUser, Json(bo
     let user = broadcast_user(&app, &me.id).await?;
     let bio = app.db.query_one("SELECT bio FROM users WHERE id = ?1", [me.id.as_str()], |r| r.get::<String>(0)).await?;
     Ok(Json(json!({ "user": user, "bio": bio.unwrap_or_default() })))
+}
+
+#[derive(Deserialize)]
+struct UsernameBody {
+    username: String,
+}
+
+/// Troca o @ (o nome de usuário). Não pode repetir o de ninguém (sem diferenciar maiúsculas); mudar só
+/// maiúsculas e minúsculas do próprio pode. O @ do dono do app não muda (o painel do administrador é dele
+/// por esse nome, e outra pessoa poderia pegar o nome livre).
+async fn change_username(State(app): AppState, AuthUser(me, _): AuthUser, Json(body): Json<UsernameBody>) -> ApiResult<Json<User>> {
+    let name = body.username.trim().trim_start_matches('@').to_string();
+    crate::api::check_username(&name)?;
+    if name == me.username {
+        return Ok(Json(me));
+    }
+    let owner = crate::admin::owner_username();
+    if app.lan.is_none() && (me.username.to_lowercase() == owner || name.to_lowercase() == owner) {
+        return Err(ApiError(StatusCode::CONFLICT, if me.username.to_lowercase() == owner {
+            "O @ do dono do app não pode mudar".into()
+        } else {
+            "Esse @ já é de outra pessoa".into()
+        }));
+    }
+    let taken = app
+        .db
+        .query_one("SELECT id FROM users WHERE username = ?1 AND id != ?2", [name.as_str(), me.id.as_str()], |r| r.get::<String>(0))
+        .await?;
+    if taken.is_some() {
+        return Err(ApiError(StatusCode::CONFLICT, "Esse @ já é de outra pessoa".into()));
+    }
+    // A coluna é UNIQUE (sem diferenciar maiúsculas): se duas pessoas pedirem o mesmo @ ao mesmo tempo, só uma leva.
+    app.db
+        .execute("UPDATE users SET username = ?1 WHERE id = ?2", [name.as_str(), me.id.as_str()])
+        .await
+        .map_err(|_| ApiError(StatusCode::CONFLICT, "Esse @ já é de outra pessoa".into()))?;
+    Ok(Json(broadcast_user(&app, &me.id).await?))
 }
 
 /// Confere o tipo pelo conteúdo (não confia só no cabeçalho).

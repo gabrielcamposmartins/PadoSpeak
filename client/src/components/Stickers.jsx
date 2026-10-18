@@ -5,6 +5,7 @@ import { PointMenu, Item } from './VoiceMenus.jsx';
 import { useStore, stickerHome, STICKER_RE } from '../store.js';
 import { EMOTES, Emote, Floating } from './Emotes.jsx';
 import { useConn } from './conn.jsx';
+import { magicEmoteKind, playMagic } from '../lib/magic.js';
 
 const MAX_BYTES = 2 * 1024 * 1024;
 
@@ -52,7 +53,17 @@ export function MessageSticker({ sticker }) {
   const home = stickerHome();
   const mine = home((s) => s.stickers);
   const [menu, setMenu] = useState(null); // { x, y }
-  if (sticker.emote) return <StickerView sticker={sticker} />;
+  if (sticker.emote) {
+    // Sticker de efeito (estrelas, bolhas, confete, arco-íris): passar o mouse solta o efeito.
+    const fx = magicEmoteKind(sticker.emote);
+    return fx ? (
+      <span className="magic-emote" onMouseEnter={() => playMagic(fx)}>
+        <StickerView sticker={sticker} />
+      </span>
+    ) : (
+      <StickerView sticker={sticker} />
+    );
+  }
   const sameServer = conn === home;
   const already = sameServer && Boolean(mine?.some((x) => x.id === sticker.id));
   const open = (e) => {

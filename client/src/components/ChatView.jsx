@@ -26,6 +26,7 @@ import FormatTools, { formatKey } from './FormatTools.jsx';
 import { AttachTray, oversized, CAPTION_MAX, CameraCapture, VoiceRecorder, requestMic, fromPhoneCamera } from './Compose.jsx';
 import AttachSheet from './AttachSheet.jsx';
 import { addRecent } from '../lib/recent.js';
+import { magicIn, magicEmotesIn, playMagic } from '../lib/magic.js';
 import { useConn, useConnKey } from './conn.jsx';
 import Avatar, { UserName, Orb, usePresence, useUser, colorClass, colorStyle } from './Avatar.jsx';
 import { RichText, FormattedText, plain, EmojiText, EmojiPicker, Floating, insertText, EMOTES, mentionsUser } from './Emotes.jsx';
@@ -699,6 +700,21 @@ export default function ChatView({ channel, variant = 'channel' }) {
     setReply(null);
     inputRef.current?.focus();
   }, [channel.id]);
+
+  // Abriu a conversa e uma das 10 últimas mensagens tem efeito (lib/magic.js): toca cada efeito uma vez.
+  const magicDone = useRef(null);
+  useEffect(() => {
+    if (!loaded || magicDone.current === channel.id) return;
+    magicDone.current = channel.id;
+    const kinds = new Set();
+    for (const m of messages.slice(-10)) {
+      // Arquivo, voz e sticker: só a legenda conta (o nome do arquivo não).
+      for (const k of magicIn(m.content.replace(/^\[(?:arquivo|voz|sticker):[^\]]*\]\n?/, ''))) kinds.add(k);
+      // Emoticons e stickers de efeito (no texto ou como sticker).
+      for (const k of magicEmotesIn(m.content)) kinds.add(k);
+    }
+    kinds.forEach((k, i) => setTimeout(() => playMagic(k), 250 + i * 400));
+  }, [loaded, channel.id]);
 
   // Li o que está na tela (só com a janela em foco e visível).
   useEffect(() => {

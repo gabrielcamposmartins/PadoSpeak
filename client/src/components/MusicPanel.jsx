@@ -169,7 +169,7 @@ const noPerm = (what) => `Você não tem permissão para ${what} neste servidor`
 function NowPlaying({ state, perms, mine }) {
   const canPrev = perms.musicPrevious;
   const canRestart = mine || perms.musicRestartOthers;
-  const canPause = perms.musicPause;
+  const canPause = mine || perms.musicPauseOthers;
   const canSkip = mine || perms.musicSkipOthers;
   const { current } = state;
   const { track } = current;
@@ -243,7 +243,7 @@ function NowPlaying({ state, perms, mine }) {
           </button>
           <button
             className="ball aqua"
-            title={canPause ? (paused ? 'Retomar' : 'Pausar') : noPerm('pausar a música')}
+            title={canPause ? (paused ? 'Retomar' : 'Pausar') : noPerm('pausar a música de outra pessoa')}
             aria-label={paused ? 'Retomar' : 'Pausar'}
             disabled={!canPause || loading}
             onClick={() => musicControl(paused ? 'resume' : 'pause')}

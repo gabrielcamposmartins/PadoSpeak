@@ -52,6 +52,43 @@ impl From<libsql::Error> for ApiError {
     }
 }
 
+/// Formato do usuário (@): 3–24 letras, números, _ ou . — e nomes reservados.
+pub fn check_username(username: &str) -> ApiResult<()> {
+    let valid = (3..=24).contains(&username.len())
+        && username.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.');
+    if !valid {
+        return Err(bad("Usuário deve ter 3–24 caracteres (letras, números, _ ou .)"));
+    }
+    // "@everyone" avisa todos do canal: ninguém pode ter esse nome.
+    if username.eq_ignore_ascii_case("everyone") {
+        return Err(ApiError::new(StatusCode::CONFLICT, "Nome de usuário já em uso"));
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct UsernameQuery {
+    u: String,
+}
+
+/// O @ está livre? (cadastro e troca do @ conferem enquanto a pessoa digita.) `self` livre para quem já é dono dele.
+async fn username_available(State(app): AppState, Query(q): Query<UsernameQuery>, headers: axum::http::HeaderMap) -> ApiResult<Json<Value>> {
+    let name = q.u.trim().trim_start_matches('@');
+    if let Err(e) = check_username(name) {
+        return Ok(Json(json!({ "available": false, "error": e.1 })));
+    }
+    let me = match headers.get(axum::http::header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")) {
+        Some(token) => auth::user_from_token(&app.db, token).await.map(|u| u.id),
+        None => None,
+    };
+    let owner = app
+        .db
+        .query_one("SELECT id FROM users WHERE username = ?1", [name], |r| r.get::<String>(0))
+        .await?;
+    let available = owner.is_none_or(|id| Some(&id) == me.as_ref());
+    Ok(Json(json!({ "available": available, "error": if available { Value::Null } else { json!("Esse @ já é de outra pessoa") } })))
+}
+
 fn bad(msg: &str) -> ApiError {
     ApiError::new(StatusCode::BAD_REQUEST, msg)
 }
@@ -168,20 +205,22 @@ pub mod perm {
     pub const MUTE: i64 = 8;
     pub const DISCONNECT: i64 = 16;
     pub const MOVE: i64 = 32;
-    /// Música no canal de voz, uma permissão para cada coisa. Pular, tirar da fila e recomeçar a música
-    /// que a própria pessoa pôs sempre pode; as permissões "de outros" valem para as músicas dos outros.
+    /// Música no canal de voz, uma permissão para cada coisa. Pausar, pular, tirar da fila e recomeçar a
+    /// música que a própria pessoa pôs sempre pode; as permissões "de outros" valem para as músicas dos outros.
     pub const MUSIC_ADD: i64 = 64;
-    pub const MUSIC_PAUSE: i64 = 128;
+    pub const MUSIC_PAUSE_OTHERS: i64 = 128;
     pub const MUSIC_SKIP_OTHERS: i64 = 256;
     pub const MUSIC_REMOVE_OTHERS: i64 = 512;
     pub const MUSIC_PREVIOUS: i64 = 1024;
     pub const MUSIC_RESTART_OTHERS: i64 = 2048;
     pub const MUSIC_CLEAR: i64 = 4096;
     pub const MUSIC: i64 =
-        MUSIC_ADD | MUSIC_PAUSE | MUSIC_SKIP_OTHERS | MUSIC_REMOVE_OTHERS | MUSIC_PREVIOUS | MUSIC_RESTART_OTHERS | MUSIC_CLEAR;
-    pub const ALL: i64 = ADMIN | INVITE | CHANNELS | MUTE | DISCONNECT | MOVE | MUSIC;
-    /// Padrão de um servidor novo: convidar e a música liberada para todos.
-    pub const DEFAULT: i64 = INVITE | MUSIC;
+        MUSIC_ADD | MUSIC_PAUSE_OTHERS | MUSIC_SKIP_OTHERS | MUSIC_REMOVE_OTHERS | MUSIC_PREVIOUS | MUSIC_RESTART_OTHERS | MUSIC_CLEAR;
+    /// Tocar efeitos sonoros (sons rápidos) nos canais de voz do servidor.
+    pub const SOUNDS: i64 = 8192;
+    pub const ALL: i64 = ADMIN | INVITE | CHANNELS | MUTE | DISCONNECT | MOVE | MUSIC | SOUNDS;
+    /// Padrão de um servidor novo: convidar, a música e os efeitos sonoros liberados para todos.
+    pub const DEFAULT: i64 = INVITE | MUSIC | SOUNDS;
     /// Admin vale por todas.
     pub fn has(perms: i64, flag: i64) -> bool {
         perms & ADMIN != 0 || perms & flag != 0
@@ -189,7 +228,7 @@ pub mod perm {
     /// Permissões de um membro (`m`, de `guild_members`) no servidor `g`: o dono tem todas; quem está
     /// na lista personalizada tem as dela; o resto, o padrão do servidor.
     pub const EFFECTIVE_SQL: &str =
-        "CASE WHEN g.owner_id = m.user_id THEN 8191 WHEN m.custom = 1 THEN m.perms ELSE g.default_perms END";
+        "CASE WHEN g.owner_id = m.user_id THEN 16383 WHEN m.custom = 1 THEN m.perms ELSE g.default_perms END";
 }
 
 /// Permissões de um membro (o dono tem todas); `None` se não for membro.
@@ -322,6 +361,7 @@ pub fn router() -> Router<Arc<App>> {
     Router::new()
         .route("/api/config", get(get_config))
         .route("/api/auth/register", post(register))
+        .route("/api/auth/username", get(username_available))
         .route("/api/auth/login", post(login))
         .route("/api/auth/new-password", post(new_password))
         .route("/api/auth/recover", post(recover_local))
@@ -397,15 +437,7 @@ async fn register(
         return Err(forbidden("Cadastro desativado neste servidor"));
     }
     let username = body.username.trim().to_string();
-    let valid = (3..=24).contains(&username.len())
-        && username.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.');
-    if !valid {
-        return Err(bad("Usuário deve ter 3–24 caracteres (letras, números, _ ou .)"));
-    }
-    // "@everyone" avisa todos do canal: ninguém pode ter esse nome.
-    if username.eq_ignore_ascii_case("everyone") {
-        return Err(ApiError::new(StatusCode::CONFLICT, "Nome de usuário já em uso"));
-    }
+    check_username(&username)?;
     if body.password.chars().count() < 6 {
         return Err(bad("A senha deve ter pelo menos 6 caracteres"));
     }

@@ -327,6 +327,9 @@ export function createConnStore({ key, kind, base, primary = false }) {
     leaveAdmin: () => ui().setState({ phase: 'app' }),
     adminOverview: (days) => api.get(`/api/admin/overview?days=${days}`),
     adminGuildMembers: (guildId) => api.get(`/api/admin/guilds/${guildId}/members`),
+    adminGuildChannels: (guildId) => api.get(`/api/admin/guilds/${guildId}/channels`),
+    adminGuildFiles: (guildId) => api.get(`/api/admin/guilds/${guildId}/files`),
+    adminChannelMessages: (channelId, before) => api.get(`/api/admin/channels/${channelId}/messages${before ? `?before=${before}` : ''}`),
     adminViewers: () => api.get('/api/admin/viewers'),
     grantAdmin: (username) => api.put('/api/admin/viewers', { username }),
     revokeAdmin: (userId) => api.del(`/api/admin/viewers/${userId}`),
@@ -1022,6 +1025,16 @@ export function createConnStore({ key, kind, base, primary = false }) {
       profiles.delete(res.user.id);
       set((s) => ({ me: res.user, users: { ...s.users, [res.user.id]: res.user } }));
       return res;
+    },
+
+    /** O @ está livre? ({ available, error }) */
+    usernameAvailable: (username) => api.get(`/api/auth/username?u=${encodeURIComponent(username.trim())}`),
+    /** Troca o @ (não pode repetir o de ninguém). */
+    async changeUsername(username) {
+      const user = await api.put('/api/me/username', { username: username.trim() });
+      profiles.delete(user.id);
+      set((s) => ({ me: user, users: { ...s.users, [user.id]: user } }));
+      return user;
     },
 
     async uploadAvatar(blob) {
@@ -1990,6 +2003,8 @@ const knownKey = (base) => `padospeak.knownProfiles:${base}`;
 /** Guarda nome e foto de quem entrou (só neste PC), e quem foi o último. */
 function rememberProfile(base, me) {
   const known = knownProfiles(base);
+  // Trocou o @: some a entrada com o @ antigo.
+  for (const [k, v] of Object.entries(known)) if (v?.id === me.id && k !== me.username.toLowerCase()) delete known[k];
   known[me.username.toLowerCase()] = {
     id: me.id,
     username: me.username,
@@ -2237,16 +2252,18 @@ export const PERM = {
   MUTE: 8,
   DISCONNECT: 16,
   MOVE: 32,
-  // Música: pular, tirar da fila e recomeçar a música que a própria pessoa pôs sempre pode.
+  // Música: pausar, pular, tirar da fila e recomeçar a música que a própria pessoa pôs sempre pode.
   MUSIC_ADD: 64,
-  MUSIC_PAUSE: 128,
+  MUSIC_PAUSE_OTHERS: 128,
   MUSIC_SKIP_OTHERS: 256,
   MUSIC_REMOVE_OTHERS: 512,
   MUSIC_PREVIOUS: 1024,
   MUSIC_RESTART_OTHERS: 2048,
   MUSIC_CLEAR: 4096,
+  // Tocar efeitos sonoros (sons rápidos) nos canais de voz.
+  SOUNDS: 8192,
 };
-const ALL_PERMS = 8191;
+const ALL_PERMS = 16383;
 
 /** Bits de um membro: os da lista personalizada, ou o padrão do servidor. */
 export function memberBits(s, guildId, userId) {
@@ -2276,12 +2293,13 @@ const permFlags = (owner, bits) => {
     disconnect: has(PERM.DISCONNECT),
     move: has(PERM.MOVE),
     musicAdd: has(PERM.MUSIC_ADD),
-    musicPause: has(PERM.MUSIC_PAUSE),
+    musicPauseOthers: has(PERM.MUSIC_PAUSE_OTHERS),
     musicSkipOthers: has(PERM.MUSIC_SKIP_OTHERS),
     musicRemoveOthers: has(PERM.MUSIC_REMOVE_OTHERS),
     musicPrevious: has(PERM.MUSIC_PREVIOUS),
     musicRestartOthers: has(PERM.MUSIC_RESTART_OTHERS),
     musicClear: has(PERM.MUSIC_CLEAR),
+    sounds: has(PERM.SOUNDS),
   };
 };
 

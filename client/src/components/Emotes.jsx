@@ -2,6 +2,7 @@
 import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { plain, visibleLength, colorSpans, MENTION_RE, mentionsUser } from '../lib/text.js';
+import { MAGIC_RE, magicKind, magicEmoteKind, playMagic, rainbowColor } from '../lib/magic.js';
 
 export { plain, visibleLength, mentionsUser };
 
@@ -372,6 +373,110 @@ export const EMOTES = [
       </g>
     ),
   },
+  {
+    code: '(ESTRELAS)',
+    name: 'Estrelas',
+    draw: (id) => (
+      <>
+        <defs>
+          <linearGradient id={`${id}s`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor="#fff6a8" />
+            <stop offset=".5" stopColor="#ffd400" />
+            <stop offset="1" stopColor="#f0a000" />
+          </linearGradient>
+        </defs>
+        <path d={STAR} transform="translate(1 7.5) scale(.74)" fill={`url(#${id}s)`} stroke="#c98200" strokeWidth="1.4" strokeLinejoin="round" />
+        <ellipse cx="10.5" cy="15.5" rx="3.6" ry="2" fill="#fff" opacity=".6" />
+        <path d={STAR} transform="translate(19 1.5) scale(.4)" fill={`url(#${id}s)`} stroke="#c98200" strokeWidth="2.4" strokeLinejoin="round" />
+        <path d={STAR} transform="translate(21.5 19.5) scale(.32)" fill={`url(#${id}s)`} stroke="#c98200" strokeWidth="3" strokeLinejoin="round" />
+        <path d="M5 2.5 L5.9 5.1 L8.5 6 L5.9 6.9 L5 9.5 L4.1 6.9 L1.5 6 L4.1 5.1 Z" fill="#fff3a0" stroke="#e0a800" strokeWidth=".6" />
+      </>
+    ),
+  },
+  {
+    code: '(BOLHAS)',
+    name: 'Bolhas',
+    draw: (id) => {
+      const bubble = (cx, cy, r) => (
+        <g key={`${cx}`}>
+          <circle cx={cx} cy={cy} r={r} fill={`url(#${id}b)`} stroke="#6fa8d6" strokeWidth=".9" />
+          <ellipse cx={cx - r * 0.38} cy={cy - r * 0.4} rx={r * 0.32} ry={r * 0.2} fill="#fff" opacity=".95" transform={`rotate(-35 ${cx - r * 0.38} ${cy - r * 0.4})`} />
+          <circle cx={cx + r * 0.42} cy={cy + r * 0.45} r={r * 0.1} fill="#fff" opacity=".8" />
+        </g>
+      );
+      return (
+        <>
+          <defs>
+            <radialGradient id={`${id}b`} cx="45%" cy="45%" r="55%">
+              <stop offset="0" stopColor="#ffffff" stopOpacity=".15" />
+              <stop offset=".65" stopColor="#cdeeff" stopOpacity=".35" />
+              <stop offset=".85" stopColor="#ffc9f1" stopOpacity=".55" />
+              <stop offset="1" stopColor="#8fd0ff" stopOpacity=".85" />
+            </radialGradient>
+          </defs>
+          {bubble(12, 19, 9.5)}
+          {bubble(23.5, 10, 6.5)}
+          {bubble(25.5, 24.5, 4.5)}
+        </>
+      );
+    },
+  },
+  {
+    code: '(CONFETE)',
+    name: 'Confete',
+    draw: (id) => (
+      <>
+        <defs>
+          <linearGradient id={`${id}c`} x1="0" y1="1" x2="1" y2="0">
+            <stop offset="0" stopColor="#7b3fb0" />
+            <stop offset="1" stopColor="#c27be8" />
+          </linearGradient>
+        </defs>
+        <path d="M19 12 Q22 6 26 6.5 Q29 7 30 3" fill="none" stroke="#ff4f7a" strokeWidth="1.6" strokeLinecap="round" />
+        <path d="M20.5 15 Q26 13 27.5 16.5 Q29 19.5 31 18" fill="none" stroke="#2fb6ff" strokeWidth="1.6" strokeLinecap="round" />
+        <path d="M3.5 29 L11.5 11.5 L20.5 20.5 Z" fill={`url(#${id}c)`} stroke="#5a2a86" strokeWidth="1" strokeLinejoin="round" />
+        <path d="M6.6 22.3 L12.8 28.5 M9.2 16.6 L18.5 25.8" stroke="#ffd400" strokeWidth="1.8" strokeLinecap="round" />
+        <ellipse cx="16" cy="16" rx="6.4" ry="2.3" transform="rotate(45 16 16)" fill="#4a1f72" stroke="#5a2a86" strokeWidth=".8" />
+        <rect x="17" y="4" width="3" height="1.8" rx=".4" fill="#34c759" transform="rotate(-25 18.5 5)" />
+        <rect x="23" y="9.5" width="3" height="1.8" rx=".4" fill="#ffcc00" transform="rotate(30 24.5 10.5)" />
+        <rect x="27" y="22" width="3" height="1.8" rx=".4" fill="#ff3b30" transform="rotate(-40 28.5 23)" />
+        <rect x="12" y="6.5" width="2.6" height="1.6" rx=".4" fill="#ff9500" transform="rotate(20 13 7.3)" />
+        <circle cx="22.5" cy="2.8" r="1.2" fill="#af52de" />
+        <circle cx="29" cy="12.5" r="1.1" fill="#ff2d55" />
+        <circle cx="24" cy="18.5" r="1" fill="#5ac8fa" />
+      </>
+    ),
+  },
+  {
+    code: '(ARCOIRIS)',
+    name: 'Arco-íris',
+    draw: () => {
+      const bands = ['#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#32ade6', '#7b52d6'];
+      const cloud = (x) => [
+        [x - 3.6, 25.5, 3],
+        [x, 23.5, 3.8],
+        [x + 3.6, 25.5, 3],
+        [x, 27, 3.2],
+      ];
+      const puffs = [...cloud(5.5), ...cloud(26.5)];
+      return (
+        <>
+          {bands.map((c, i) => {
+            const r = 12.6 - i * 1.65;
+            return <path key={c} d={`M ${16 - r} 24 A ${r} ${r} 0 0 1 ${16 + r} 24`} fill="none" stroke={c} strokeWidth="1.85" />;
+          })}
+          {puffs.map(([cx, cy, r], i) => (
+            <circle key={`o${i}`} cx={cx} cy={cy} r={r} fill="#9cc4e4" stroke="#9cc4e4" strokeWidth="1.4" />
+          ))}
+          {puffs.map(([cx, cy, r], i) => (
+            <circle key={`f${i}`} cx={cx} cy={cy} r={r} fill="#fff" />
+          ))}
+          <ellipse cx="4.6" cy="22.6" rx="1.6" ry=".9" fill="#eef7ff" />
+          <ellipse cx="25.6" cy="22.6" rx="1.6" ry=".9" fill="#eef7ff" />
+        </>
+      );
+    },
+  },
 ];
 
 const BY_CODE = new Map(EMOTES.map((e) => [e.code, e]));
@@ -432,12 +537,30 @@ const FORMAT_RULES = [
 const LINK_RULE = { re: /https?:\/\/[^\s<]+/, link: true };
 const EMOTE_RULE = { re: EMOTE_RE, emote: true };
 const MENTION_RULE = { re: MENTION_RE, mention: true };
+const MAGIC_RULE = { re: MAGIC_RE, magic: true };
+
+/** Palavra com efeito (veja lib/magic.js): colorida, e passar o mouse solta o efeito. */
+function MagicWord({ word }) {
+  const kind = magicKind(word);
+  return (
+    <span className={`magic magic-${kind}`} onMouseEnter={() => playMagic(kind)}>
+      {kind === 'rainbow'
+        ? [...word].map((ch, i) => (
+            <span key={i} style={{ '--mc': rainbowColor(i) }}>
+              {ch}
+            </span>
+          ))
+        : word}
+    </span>
+  );
+}
 
 function parse(text, opts, key = 'k') {
   const rules = [
     ...(opts.format ? FORMAT_RULES : []),
     ...(opts.links ? [LINK_RULE] : []),
     ...(opts.mentions ? [MENTION_RULE] : []),
+    ...(opts.magic ? [MAGIC_RULE] : []),
     EMOTE_RULE,
   ];
   const out = [];
@@ -456,7 +579,20 @@ function parse(text, opts, key = 'k') {
     const { rule, m } = best;
     if (m.index > 0) out.push(rest.slice(0, m.index));
     const k = `${key}.${n++}`;
-    if (rule.emote) out.push(<Emote key={k} code={m[0]} size={opts.emoteSize} />);
+    if (rule.emote) {
+      // Emoticon com efeito (estrelas, bolhas, confete, arco-íris), só nas mensagens: passar o mouse solta o efeito.
+      const fx = opts.magic && magicEmoteKind(m[0]);
+      out.push(
+        fx ? (
+          <span key={k} className="magic-emote" onMouseEnter={() => playMagic(fx)}>
+            <Emote code={m[0]} size={opts.emoteSize} />
+          </span>
+        ) : (
+          <Emote key={k} code={m[0]} size={opts.emoteSize} />
+        ),
+      );
+    }
+    else if (rule.magic) out.push(<MagicWord key={k} word={m[0]} />);
     else if (rule.mention) {
       const who = m[1].toLowerCase();
       const mine = who === 'everyone' || who === opts.me;
@@ -492,7 +628,7 @@ function parse(text, opts, key = 'k') {
  * menções (@usuario, @everyone — as que falam comigo, `me`, ficam mais fortes).
  */
 export function RichText({ text, me }) {
-  return parse(text, { format: true, links: true, mentions: true, me: me?.toLowerCase(), emoteSize: 22 });
+  return parse(text, { format: true, links: true, mentions: true, magic: true, me: me?.toLowerCase(), emoteSize: 22 });
 }
 
 /** Nome e mensagem pessoal: formatação, cores e emoticons (sem links). */

@@ -8,7 +8,7 @@
 //! cima; só injetando código no jogo, o que os anti-cheats punem, então não fazemos.
 use crate::activity;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
 
@@ -22,6 +22,8 @@ pub struct Overlay {
     on: AtomicBool,
     /// Do lado direito da tela (escolhido em Configurações; o canto de cima ou de baixo é da página).
     right: AtomicBool,
+    /// Jogos sem sobreposição (nome do status, em minúsculas), escolhidos em Configurações.
+    blocked: Mutex<Vec<String>>,
 }
 
 pub type Shared = Arc<Overlay>;
@@ -30,6 +32,15 @@ impl Overlay {
     pub fn set(&self, on: bool, right: bool) {
         self.on.store(on, Ordering::Relaxed);
         self.right.store(right, Ordering::Relaxed);
+    }
+
+    pub fn set_blocked(&self, names: Vec<String>) {
+        *self.blocked.lock().unwrap() = names.iter().map(|n| n.trim().to_lowercase()).filter(|n| !n.is_empty()).collect();
+    }
+
+    fn is_blocked(&self, game: &str) -> bool {
+        let game = game.trim().to_lowercase();
+        self.blocked.lock().unwrap().iter().any(|n| *n == game)
     }
 }
 
@@ -49,9 +60,16 @@ fn strip(game: (i32, i32, i32, i32), monitors: &[(i32, i32, u32, u32, f64)], rig
     (bottom > top && width > 0).then_some((x, top, width, (bottom - top) as u32))
 }
 
-/// Retângulo da janela do jogo, se ele está em foco agora.
-fn focused_game(games: &activity::Shared) -> Option<(i32, i32, i32, i32)> {
-    let pid = games.current.lock().unwrap().as_ref()?.pid();
+/// Retângulo da janela do jogo, se ele está em foco agora (e não está na lista de jogos sem sobreposição).
+fn focused_game(games: &activity::Shared, overlay: &Overlay) -> Option<(i32, i32, i32, i32)> {
+    let pid = {
+        let current = games.current.lock().unwrap();
+        let game = current.as_ref()?;
+        if overlay.is_blocked(&game.name) {
+            return None;
+        }
+        game.pid()
+    };
     let (hwnd, fg) = activity::foreground_window()?;
     if fg != pid {
         return None;
@@ -158,7 +176,7 @@ pub fn spawn(app: AppHandle, games: activity::Shared) -> Shared {
                     last_game = None;
                     continue;
                 }
-                let game = focused_game(&games);
+                let game = focused_game(&games, &me);
                 let right = me.right.load(Ordering::Relaxed);
                 let place = match game {
                     // A janela do jogo não mexeu (nem o lado escolhido): mesma faixa.

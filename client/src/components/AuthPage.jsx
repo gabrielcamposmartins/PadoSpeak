@@ -1,38 +1,29 @@
 import { useEffect, useRef, useState } from 'react';
 import { Download } from 'lucide-react';
 import { useStore, localAuthenticate, localRecover, localFromServer, connRegistry, knownProfiles, lastProfile } from '../store.js';
-import { GoogleButton, ForgotForm, useAuthOptions } from './AccountAuth.jsx';
+import { GoogleButton, ForgotForm, useAuthOptions, HandleField, useHandleCheck, handleFrom } from './AccountAuth.jsx';
 import Avatar from './Avatar.jsx';
 import { InstallCard } from './Mobile.jsx';
 import { isDesktop, DOWNLOAD_URL } from '../lib/env.js';
 import { isStandalone, isTouch } from '../lib/layout.js';
 import { useLoginLock, LoginLock } from './LoginLock.jsx';
 
-/** Usuário a partir do e-mail (o que vem antes do @), no formato aceito: 3–24 letras, números, _ ou . */
-function usernameFrom(email) {
-  const base = email
-    .split('@')[0]
-    .normalize('NFD')
-    .replace(/[^a-zA-Z0-9_.]/g, '')
-    .toLowerCase()
-    .slice(0, 18);
-  return base.length >= 3 ? base : `${base}${'user'.slice(base.length)}`;
-}
-
 /**
- * Criar conta pelo e-mail: o usuário sai do e-mail (com números se já existir); depois de entrar, o
- * servidor manda o código para confirmar o e-mail, e Configurações → Conta abre com o campo do código.
+ * Criar conta pelo e-mail com o @ escolhido (`handle`). Se a pessoa não mexeu no @ (`explicit` falso), ele
+ * sai do nome de exibição ou do e-mail e ganha números quando já existe; o @ digitado é usado como está.
+ * Depois de entrar, o servidor manda o código para confirmar o e-mail, e Configurações → Conta abre com o
+ * campo do código.
  */
-async function registerWithEmail(form) {
+async function registerWithEmail(form, handle, explicit) {
   const email = form.email.trim();
-  let username = usernameFrom(email);
+  let username = handle;
   for (let attempt = 0; ; attempt++) {
     try {
       await useStore.getState().authenticate('register', { username, password: form.password, displayName: form.displayName, email });
       break;
     } catch (e) {
-      if (e.status !== 409 || !/usuário/i.test(e.message) || attempt >= 4) throw e;
-      username = `${usernameFrom(email).slice(0, 18)}${Math.floor(100 + Math.random() * 9900)}`;
+      if (explicit || e.status !== 409 || !/usuário/i.test(e.message) || attempt >= 4) throw e;
+      username = `${handle.slice(0, 18)}${Math.floor(100 + Math.random() * 9900)}`;
     }
   }
   const st = useStore.getState();
@@ -97,6 +88,11 @@ export default function AuthPage() {
   const bodyRef = useFitWindow();
 
   const update = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
+  // Criar conta pelo e-mail: o @ acompanha o nome de exibição (ou o e-mail) até a pessoa escrever o dela.
+  const [handle, setHandle] = useState(null);
+  const autoHandle = handleFrom(form.displayName) || handleFrom(form.email);
+  const handleValue = handle ?? autoHandle;
+  const handleCheck = useHandleCheck(mode === 'register' && !isDesktop ? handleValue : '');
 
   async function submit(e) {
     e.preventDefault();
@@ -106,7 +102,9 @@ export default function AuthPage() {
     try {
       if (mode === 'register' && form.password !== form.confirm) throw new Error('As duas senhas não são iguais.');
       if (mode === 'register' && !isDesktop) {
-        await registerWithEmail(form);
+        if (!handleValue) throw new Error('Escolha o seu @.');
+        if (handle != null && handleCheck.state === 'taken') throw new Error(handleCheck.error);
+        await registerWithEmail(form, handleValue, handle != null);
         return;
       }
       if (mode === 'reset') {
@@ -262,6 +260,16 @@ export default function AuthPage() {
                 <span>Nome de exibição</span>
                 <input value={form.displayName} onChange={update('displayName')} placeholder="Opcional" />
               </label>
+            )}
+            {mode === 'register' && !isDesktop && (
+              <HandleField
+                value={handleValue}
+                onChange={setHandle}
+                check={handleCheck}
+                required
+                placeholder="seu_usuario"
+                hint={handle == null ? 'Sai do nome de exibição; mude se quiser. Dá para trocar depois.' : undefined}
+              />
             )}
             {mode === 'reset' ? (
               <>

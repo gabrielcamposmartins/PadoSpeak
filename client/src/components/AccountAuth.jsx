@@ -1,8 +1,10 @@
 // Entrar com o Google, "esqueci minha senha" (código por e-mail) e a aba "Conta" das configurações
 // (vincular o e-mail e o Google).
 import { useEffect, useRef, useState } from 'react';
-import { Mail, Check, X, Send, ShieldCheck, KeyRound, MailCheck, ArrowLeft } from 'lucide-react';
-import { useStore } from '../store.js';
+import { Mail, Check, X, Send, ShieldCheck, KeyRound, MailCheck, ArrowLeft, AtSign } from 'lucide-react';
+import { useStore, connRegistry } from '../store.js';
+import { isDesktop } from '../lib/env.js';
+import { plain } from '../lib/text.js';
 import { googleFlow, authOptions } from '../lib/google.js';
 
 /** Opções de entrada deste servidor ({ email, google }). */
@@ -323,6 +325,123 @@ export function ForgotForm({ base, onBack, onReset }) {
   );
 }
 
+/** Um @ válido a partir de um nome ou e-mail: sem acentos, espaço vira "_", 3–24 letras, números, _ ou . */
+export function handleFrom(text) {
+  const base = plain(String(text || ''))
+    .split('@')[0]
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-zA-Z0-9_.]/g, '')
+    .toLowerCase()
+    .slice(0, 24);
+  return base.length >= 3 ? base : base ? `${base}${'user'.slice(base.length)}` : '';
+}
+
+/**
+ * Confere enquanto a pessoa digita se o @ está livre: { state: 'idle' | 'checking' | 'ok' | 'taken', error }.
+ * `current`: o @ que já é da pessoa (sempre livre para ela).
+ */
+export function useHandleCheck(value, current = '') {
+  const [res, setRes] = useState({ state: 'idle', error: '' });
+  useEffect(() => {
+    const v = value.trim().replace(/^@/, '');
+    if (!v || v.toLowerCase() === current.toLowerCase()) return setRes({ state: 'idle', error: '' });
+    setRes({ state: 'checking', error: '' });
+    let alive = true;
+    const t = setTimeout(() => {
+      useStore
+        .getState()
+        .usernameAvailable(v)
+        .then((r) => alive && setRes(r.available ? { state: 'ok', error: '' } : { state: 'taken', error: r.error || 'Esse @ já é de outra pessoa' }))
+        .catch(() => alive && setRes({ state: 'idle', error: '' }));
+    }, 350);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+    };
+  }, [value, current]);
+  return res;
+}
+
+/** Campo do @ com o aviso de livre ou já usado embaixo. */
+export function HandleField({ value, onChange, check, label = 'Usuário (@)', hint, ...rest }) {
+  const id = useRef(`handle-${Math.random().toString(36).slice(2)}`).current;
+  return (
+    <label className="field grow handle-field">
+      <span>{label}</span>
+      <span className="handle-input">
+        <AtSign size={14} aria-hidden="true" />
+        <input
+          value={value}
+          onChange={(e) => onChange(e.target.value.replace(/^@/, '').replace(/\s/g, ''))}
+          autoComplete="username"
+          spellCheck={false}
+          maxLength={24}
+          aria-describedby={id}
+          aria-invalid={check.state === 'taken' || undefined}
+          {...rest}
+        />
+      </span>
+      <small id={id} className={`handle-note ${check.state}`} aria-live="polite">
+        {check.state === 'checking'
+          ? 'Conferindo…'
+          : check.state === 'ok'
+            ? '✓ Disponível'
+            : check.state === 'taken'
+              ? check.error
+              : hint || '3 a 24 letras, números, _ ou .'}
+      </small>
+    </label>
+  );
+}
+
+/** Configurações → Conta: trocar o @ (ninguém pode ter o mesmo). */
+function HandleSettings({ me }) {
+  const [value, setValue] = useState(me.username);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [note, setNote] = useState('');
+  const check = useHandleCheck(value, me.username);
+  useEffect(() => setValue(me.username), [me.username]);
+  const changed = value.trim() && value.trim() !== me.username;
+  const save = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    setError('');
+    setNote('');
+    try {
+      const user = await useStore.getState().changeUsername(value);
+      // App do Windows: o perfil local deste PC acompanha o @ da conta do servidor.
+      if (isDesktop) await connRegistry.get('local')?.getState().changeUsername(user.username).catch(() => {});
+      setNote(`Pronto: agora você é @${user.username}. Para entrar, use o @ novo (ou o e-mail).`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <div className="settings-sec">Usuário (@)</div>
+      <p className="kv">É como as pessoas te acham e te mencionam. Ninguém pode ter o mesmo @ que outra pessoa.</p>
+      <form className="acc-form" onSubmit={save}>
+        <HandleField value={value} onChange={setValue} check={check} label="Seu @" />
+        <button className="btn" disabled={busy || !changed || check.state === 'taken' || check.state === 'checking'}>
+          <Check size={14} /> Salvar
+        </button>
+      </form>
+      {error && <p className="error-text">{error}</p>}
+      {note && (
+        <p className="acc-note" role="status">
+          {note}
+        </p>
+      )}
+    </>
+  );
+}
+
 /** Configurações → Conta: e-mail (para entrar e recuperar a senha) e Google. */
 export function AccountSettings() {
   const me = useStore((s) => s.me);
@@ -361,6 +480,7 @@ export function AccountSettings() {
 
   return (
     <div className="account-tab">
+      <HandleSettings me={me} />
       <div className="settings-sec">E-mail</div>
       <p className="kv">Com o e-mail confirmado você entra com ele no lugar do usuário e recebe um código se esquecer a senha.</p>
       {!acc.mail && !acc.email && <p className="kv">Este servidor ainda não manda e-mails, então ainda não dá para vincular um.</p>}

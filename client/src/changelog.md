@@ -1,5 +1,20 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.9.6 — 18/10/2026
+
+### Novidades
+- **Trocar o seu @**: em Configurações → Conta, escolha um novo nome de usuário. O app confere na hora se ele está livre: ninguém pode ter o mesmo @ que outra pessoa.
+- **Escolher o @ ao criar a conta**: o campo “Usuário (@)” vem preenchido pelo nome de exibição e dá para mudar antes de criar.
+- **Iniciar com o Windows abre a janela**: o PadoSpeak abre normalmente ao ligar o computador. Quem prefere que ele fique só perto do relógio marca “Abrir só na bandeja” em Configurações.
+- **Jogos sem sobreposição**: em Configurações → Funcionalidade, escolha jogos (inclusive os programas que você adicionou ao status) em que a sobreposição não aparece.
+- **Tela de permissões nova**: as pessoas ficam numa lista à esquerda e as permissões de quem você escolher aparecem à direita, em Geral, Voz e Música.
+- **Permissão de efeitos sonoros**: o dono do servidor escolhe quem pode tocar os sons rápidos nos canais de voz.
+- **Pausar música de outros**: virou uma permissão própria. A sua própria música você sempre pode pausar e retomar.
+- **Novos emoticons e stickers**: Estrelas, Bolhas, Confete e Arco-íris.
+
+### Correções
+- **Criar conta pelo e-mail**: o @ era sempre tirado do e-mail, mesmo depois de você escolher um nome.
+
 ## 1.9.5 — 18/10/2026
 
 ### Novidades

@@ -623,7 +623,8 @@ async fn download(State(app): AppState, Path(id): Path<String>, Query(q): Query<
         return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Entre para ver o arquivo" }))).into_response();
     };
     let Some(f) = file_row(&app, &id).await else { return not_found() };
-    if place(&app, &f.channel_id, &user.id).await.is_none() {
+    // O painel do administrador do app abre os arquivos dos servidores (não os das conversas diretas).
+    if place(&app, &f.channel_id, &user.id).await.is_none() && !(f.guild_id.is_some() && crate::admin::can_view(&app, &user).await) {
         return not_found();
     }
     let path = dir(&app).join(&id);
@@ -898,13 +899,18 @@ async fn guild_files(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): 
     if !perms.is_some_and(|p| crate::api::perm::has(p, crate::api::perm::ADMIN)) {
         return Err(ApiError(StatusCode::NOT_FOUND, "Servidor não encontrado".into()));
     }
+    Ok(Json(guild_file_list(&app, &id).await?))
+}
+
+/// Lista dos arquivos de um servidor, com o total guardado e os limites.
+pub async fn guild_file_list(app: &App, id: &str) -> ApiResult<Value> {
     let list = app
         .db
         .query_all(
             "SELECT f.id, f.name, f.mime, f.size, f.created_at, f.channel_id, COALESCE(c.name, ''), u.display_name, u.username, \
              COALESCE(f.stored, f.size), f.expires_at, f.big, f.kind, f.nsfw FROM files f LEFT JOIN channels c ON c.id = f.channel_id \
              JOIN users u ON u.id = f.owner_id WHERE f.guild_id = ?1 ORDER BY f.created_at DESC",
-            [id.as_str()],
+            [id],
             |r| {
                 Ok(json!({
                     "id": r.get::<String>(0)?, "name": app.db.cipher.reveal(&r.get::<String>(1)?), "mime": r.get::<String>(2)?,
@@ -918,11 +924,11 @@ async fn guild_files(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): 
         .await?;
     let total: i64 = list.iter().filter_map(|f| f["size"].as_i64()).sum();
     let stored: i64 = list.iter().filter_map(|f| f["stored"].as_i64()).sum();
-    let (big_count, big_total) = big_usage(&app).await;
-    Ok(Json(json!({
+    let (big_count, big_total) = big_usage(app).await;
+    Ok(json!({
         "files": list, "total": total, "stored": stored, "maxFile": max_bytes(),
         "big": { "count": big_count, "total": big_total, "maxCount": BIG_MAX_COUNT, "maxTotal": BIG_MAX_TOTAL, "ttlMs": BIG_TTL_MS },
-    })))
+    }))
 }
 
 #[cfg(test)]

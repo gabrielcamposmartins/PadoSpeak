@@ -4,7 +4,7 @@
 // Na chamada, um toque toca para todos; fora dela, toca só para você ouvir. À direita do título, a
 // caixa de som dos efeitos sonoros dos outros (ver SoundFx.jsx).
 import { useEffect, useState } from 'react';
-import { useStore } from '../store.js';
+import { useStore, permsOf } from '../store.js';
 import { useVoiceConn } from './conn.jsx';
 import { SoundIcon } from './SoundIcons.jsx';
 import { plain } from '../lib/text.js';
@@ -46,6 +46,8 @@ export default function SoundPanel({ variant = 'side' }) {
   const voice = vc((s) => s.voice);
   const me = vc((s) => s.me);
   const guildOff = vc((s) => (s.voice && !s.voice.dm ? s.guilds.find((g) => g.id === s.voice.guildId)?.sounds === false : false));
+  // Sem a permissão do servidor, os botões só tocam para mim (como fora da chamada).
+  const noPerm = vc((s) => Boolean(s.voice && !s.voice.dm && !permsOf(s, s.voice.guildId).sounds));
   const volume = useStore((s) => s.prefs.soundboardVolume ?? 0.8);
   const [playing, setPlaying] = useState(null);
   const recent = useRecentOther(vc, me?.id);
@@ -61,7 +63,7 @@ export default function SoundPanel({ variant = 'side' }) {
     .slice(0, rows * 3)
     .map((id) => id && byId.get(id))
     .filter(Boolean);
-  const live = Boolean(voice) && !guildOff;
+  const live = Boolean(voice) && !guildOff && !noPerm;
 
   const waitOf = (snd) => {
     const c = cooldowns[snd.id];
@@ -102,6 +104,7 @@ export default function SoundPanel({ variant = 'side' }) {
         <SoundFx />
       </div>
       {guildOff && !empty && <p className="sp-note">Os sons rápidos estão desligados neste servidor.</p>}
+      {!guildOff && noPerm && !empty && <p className="sp-note">Você não tem permissão para tocar efeitos sonoros neste servidor.</p>}
       {!empty && (
         <div className="sp-grid">
           {board.map((snd) => {

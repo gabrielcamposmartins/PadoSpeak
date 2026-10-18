@@ -497,6 +497,14 @@ UPDATE guilds SET default_perms = default_perms | 8128;
 UPDATE guild_members SET perms = perms | 8128 WHERE custom = 1;
 "#,
     ),
+    (
+        23,
+        r#"
+-- Permissão de tocar efeitos sonoros nos canais de voz (8192). Até aqui todos podiam: continua assim.
+UPDATE guilds SET default_perms = default_perms | 8192;
+UPDATE guild_members SET perms = perms | 8192 WHERE custom = 1;
+"#,
+    ),
 ];
 
 impl Db {
