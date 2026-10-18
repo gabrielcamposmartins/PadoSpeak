@@ -667,7 +667,7 @@ export default function VoiceView({ channel, variant }) {
           </button>
           <button
             className="ball"
-            onClick={() => store.openModal({ type: 'settings' })}
+            onClick={() => store.openModal({ type: 'settings', focus: 'devices' })}
             title="Dispositivos"
             aria-label="Dispositivos"
           >

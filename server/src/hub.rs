@@ -125,6 +125,8 @@ struct HubState {
     activities: HashMap<String, (Value, ConnId)>,
     /// Horários dos últimos "chamar atenção" de cada usuário (limite por minuto).
     nudges: HashMap<String, VecDeque<i64>>,
+    /// (usuário, som) → até quando esse som não pode ser tocado de novo por essa pessoa (`sounds::cooldown_ms`).
+    sound_cooldowns: HashMap<(String, String), i64>,
     /// Nó local: a presença vai para todos os conectados (perfil do PC e convidados da rede).
     lan_mode: bool,
     /// Canais privados → (servidor, quem pode ver). Canal fora daqui é público.
@@ -869,10 +871,21 @@ impl Hub {
             let url = d.get("url").and_then(Value::as_str).unwrap_or_default().to_string();
             let reply = match place {
                 None => json!({ "error": "Entre em um canal de voz para tocar música" }),
-                Some((channel_id, guild_id)) => match app.music.add(&channel_id, &guild_id, &user, &url).await {
-                    Ok(v) => v,
-                    Err(e) => json!({ "error": e }),
-                },
+                Some((channel_id, guild_id)) => {
+                    let allowed = crate::api::member_perms(&app, &guild_id, &user.id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .is_some_and(|p| crate::api::perm::has(p, crate::api::perm::MUSIC_ADD));
+                    if !allowed {
+                        json!({ "error": "Você não tem permissão para pôr músicas neste servidor" })
+                    } else {
+                        match app.music.add(&channel_id, &guild_id, &user, &url).await {
+                            Ok(v) => v,
+                            Err(e) => json!({ "error": e }),
+                        }
+                    }
+                }
             };
             if let Some(id) = id {
                 let _ = tx.send(json!({ "re": id, "d": reply }).to_string());
@@ -1426,10 +1439,26 @@ impl Hub {
             }
 
             "music:pause" | "music:resume" | "music:skip" | "music:previous" | "music:restart" | "music:remove" | "music:clear" => {
-                let Some((channel_id, _)) = self.voice_channel_of(conn_id) else {
+                let Some((channel_id, guild_id)) = self.voice_channel_of(conn_id) else {
                     return err("Entre no canal de voz para controlar a música");
                 };
                 let track_id = d.get("trackId").and_then(Value::as_str);
+                use crate::api::perm;
+                let perms = crate::api::member_perms(app, &guild_id, &user.id).await.ok().flatten().unwrap_or(0);
+                // A música (da fila ou a que toca) foi a própria pessoa que pôs: pular, tirar e recomeçar sempre pode.
+                let own = || app.music.added_by(&channel_id, track_id).as_deref() == Some(user.id.as_str());
+                let (flag, what) = match op {
+                    "music:pause" | "music:resume" => (perm::MUSIC_PAUSE, "pausar a música"),
+                    "music:skip" => (perm::MUSIC_SKIP_OTHERS, "pular a música de outra pessoa"),
+                    "music:remove" => (perm::MUSIC_REMOVE_OTHERS, "tirar da fila a música de outra pessoa"),
+                    "music:restart" => (perm::MUSIC_RESTART_OTHERS, "recomeçar a música de outra pessoa"),
+                    "music:previous" => (perm::MUSIC_PREVIOUS, "voltar para a música anterior"),
+                    _ => (perm::MUSIC_CLEAR, "limpar a fila"),
+                };
+                let mine = matches!(op, "music:skip" | "music:remove" | "music:restart") && own();
+                if !mine && !perm::has(perms, flag) {
+                    return err(&format!("Você não tem permissão para {what} neste servidor"));
+                }
                 Some(match app.music.control(&channel_id, op, track_id) {
                     Ok(()) => json!({ "ok": true }),
                     Err(e) => json!({ "error": e }),
@@ -1672,12 +1701,28 @@ impl Hub {
                     return err("Som não encontrado");
                 };
                 let now = crate::now_ms();
-                let s = &*self.state.lock().unwrap();
+                let s = &mut *self.state.lock().unwrap();
+                // Contra spam: o mesmo som da mesma pessoa só toca de novo depois de um tempo (em qualquer aparelho).
+                let key = (user.id.clone(), sound.id.clone());
+                if let Some(&until) = s.sound_cooldowns.get(&key) {
+                    if until > now {
+                        let wait = until - now;
+                        return Some(json!({
+                            "error": format!("Espere {} s para tocar “{}” de novo", (wait + 999) / 1000, sound.name),
+                            "retryMs": wait,
+                        }));
+                    }
+                }
+                let cooldown = crate::sounds::cooldown_ms(sound.duration_ms);
+                if s.sound_cooldowns.len() > 512 {
+                    s.sound_cooldowns.retain(|_, until| *until > now);
+                }
+                s.sound_cooldowns.insert(key, now + cooldown);
                 let msg = event("sound:play", json!({ "channelId": channel_id, "by": user, "sound": sound, "at": now }));
                 for p in s.voice.get(&channel_id).into_iter().flatten() {
                     Self::send_to(s, &p.peer_id, msg.clone());
                 }
-                Some(json!({ "ok": true }))
+                Some(json!({ "ok": true, "cooldownMs": cooldown }))
             }
 
             // O app foi para segundo plano (ou voltou): decide se as notificações vão por push.

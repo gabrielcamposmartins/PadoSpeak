@@ -1,5 +1,22 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.9.5 — 18/10/2026
+
+### Novidades
+- **Cortar os sons rápidos**: ao adicionar um som, escolha o trecho arrastando o começo e o fim sobre a forma da onda e ouça antes de salvar. Cada som pode ter até 15 segundos.
+- **Espera para repetir o mesmo som**: depois de tocar um som, você espera alguns segundos para tocar o mesmo de novo (o botão mostra quanto falta). Os outros sons continuam livres.
+- **Permissões de música**: em Configurações do servidor → Membros, o dono escolhe quem pode pôr músicas, pausar, voltar para a anterior, limpar a fila e pular, tirar da fila ou recomeçar a música de outras pessoas. As próprias músicas cada um sempre pode pular, tirar e recomeçar.
+- **Permissões em categorias**: a tela de permissões ficou separada em Geral, Voz e Música, e as permissões de cada membro abrem e fecham na lista.
+- **Painel “Voz conectada”**: agora tem silenciar o microfone, ensurdecer e um atalho para os dispositivos de áudio, no lugar dos botões de câmera e de compartilhar tela.
+- **Mensagens de voz em sequência**: ao terminar de ouvir uma, a próxima logo abaixo começa sozinha.
+- **Perfis abrem na hora**: o perfil já aberto uma vez aparece sem esperar carregar.
+
+### Correções
+- **“Conectando…” só para quem está conectando**: quando uma pessoa da chamada fica instável, os outros continuam vendo “Voz conectada”.
+- **Canal de voz no status**: “em canal · servidor” aparece só para quem está no mesmo servidor.
+- **Aura de quem fala**: ficou só o verde, sem o brilho branco antes.
+- **Recuperar a senha**: o texto do campo de e-mail não fica mais por cima do ícone.
+
 ## 1.9.4 — 17/10/2026
 
 ### Novidades

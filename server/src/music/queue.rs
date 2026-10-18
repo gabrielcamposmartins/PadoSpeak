@@ -153,6 +153,16 @@ impl ChannelMusic {
         }
     }
 
+    /// Quem pôs a faixa `track_id` (ou a que está tocando, sem `track_id`).
+    pub fn added_by(&self, track_id: Option<&str>) -> Option<&str> {
+        let current = self.current.as_ref().map(|p| &p.track);
+        let track = match track_id {
+            None => current,
+            Some(id) => current.filter(|t| t.id == id).or_else(|| self.queue.iter().find(|t| t.id == id)),
+        }?;
+        track.added_by.as_ref().map(|u| u.id.as_str())
+    }
+
     /// Quando a faixa atual termina (se estiver tocando e com duração conhecida).
     pub fn end_at(&self) -> Option<i64> {
         let p = self.current.as_ref()?;
@@ -492,6 +502,12 @@ impl MusicManager {
         let source = source.ok_or("faixa não está em nenhuma fila")?;
         let tools = self.tools().await?;
         Ok(self.cached_or_resolve(&tools, track_id, &source, force).await?.url)
+    }
+
+    /// Quem pôs a faixa (ou a atual) no canal: sem a permissão de controlar, a pessoa só mexe nas dela.
+    pub fn added_by(&self, channel_id: &str, track_id: Option<&str>) -> Option<String> {
+        let channels = self.channels.lock().unwrap();
+        channels.get(channel_id)?.added_by(track_id).map(str::to_string)
     }
 
     /// Pausar, retomar, pular, voltar, recomeçar, remover ou limpar — sempre no canal de quem pediu.

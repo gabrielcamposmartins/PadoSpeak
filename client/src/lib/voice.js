@@ -223,6 +223,8 @@ export class VoiceClient {
       peer.connectionState = pc.connectionState;
       this.peerLog(peer, `conexão: ${pc.connectionState}`);
       if (pc.connectionState === 'connected') {
+        // Já entrou de fato na chamada (alguém ouve você): daqui para frente, uma pessoa instável não é você.
+        this.linked = true;
         peer.badSince = null;
         this.sendWant(peer);
       } else if (!peer.badSince) peer.badSince = Date.now();
@@ -1164,6 +1166,7 @@ export class VoiceClient {
       // Quantas pessoas estão recebendo sua câmera/tela agora.
       cameraViewers: [...this.peers.values()].filter((p) => p.senders.camera).length,
       screenViewers: [...this.peers.values()].filter((p) => p.senders.screenVideo).length,
+      linked: Boolean(this.linked),
       speaking: { ...this.speaking },
       peers: [...this.peers.values()].map((p) => ({
         peerId: p.id,

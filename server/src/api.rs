@@ -168,7 +168,20 @@ pub mod perm {
     pub const MUTE: i64 = 8;
     pub const DISCONNECT: i64 = 16;
     pub const MOVE: i64 = 32;
-    pub const ALL: i64 = ADMIN | INVITE | CHANNELS | MUTE | DISCONNECT | MOVE;
+    /// Música no canal de voz, uma permissão para cada coisa. Pular, tirar da fila e recomeçar a música
+    /// que a própria pessoa pôs sempre pode; as permissões "de outros" valem para as músicas dos outros.
+    pub const MUSIC_ADD: i64 = 64;
+    pub const MUSIC_PAUSE: i64 = 128;
+    pub const MUSIC_SKIP_OTHERS: i64 = 256;
+    pub const MUSIC_REMOVE_OTHERS: i64 = 512;
+    pub const MUSIC_PREVIOUS: i64 = 1024;
+    pub const MUSIC_RESTART_OTHERS: i64 = 2048;
+    pub const MUSIC_CLEAR: i64 = 4096;
+    pub const MUSIC: i64 =
+        MUSIC_ADD | MUSIC_PAUSE | MUSIC_SKIP_OTHERS | MUSIC_REMOVE_OTHERS | MUSIC_PREVIOUS | MUSIC_RESTART_OTHERS | MUSIC_CLEAR;
+    pub const ALL: i64 = ADMIN | INVITE | CHANNELS | MUTE | DISCONNECT | MOVE | MUSIC;
+    /// Padrão de um servidor novo: convidar e a música liberada para todos.
+    pub const DEFAULT: i64 = INVITE | MUSIC;
     /// Admin vale por todas.
     pub fn has(perms: i64, flag: i64) -> bool {
         perms & ADMIN != 0 || perms & flag != 0
@@ -176,7 +189,7 @@ pub mod perm {
     /// Permissões de um membro (`m`, de `guild_members`) no servidor `g`: o dono tem todas; quem está
     /// na lista personalizada tem as dela; o resto, o padrão do servidor.
     pub const EFFECTIVE_SQL: &str =
-        "CASE WHEN g.owner_id = m.user_id THEN 63 WHEN m.custom = 1 THEN m.perms ELSE g.default_perms END";
+        "CASE WHEN g.owner_id = m.user_id THEN 8191 WHEN m.custom = 1 THEN m.perms ELSE g.default_perms END";
 }
 
 /// Permissões de um membro (o dono tem todas); `None` se não for membro.
@@ -656,8 +669,8 @@ async fn create_guild(
     let conn = app.db.conn().await?;
     let tx = conn.transaction().await?;
     tx.execute(
-        "INSERT INTO guilds (id, name, icon_color, owner_id, invite_code, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        libsql::params![id.as_str(), name, random_color(), user.id.as_str(), invite_code(), now],
+        "INSERT INTO guilds (id, name, icon_color, owner_id, invite_code, created_at, default_perms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        libsql::params![id.as_str(), name, random_color(), user.id.as_str(), invite_code(), now, perm::DEFAULT],
     )
     .await?;
     tx.execute(

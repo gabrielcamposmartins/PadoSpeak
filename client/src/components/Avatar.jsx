@@ -25,14 +25,21 @@ export const STATUS_INFO = {
   invisible: { cls: 'off', label: 'Offline' },
 };
 
-/** Situação de alguém para a moldura: ao vivo, em voz, ou o status escolhido (online, ausente, ocupado, offline). */
-export function usePresence(userId) {
+/** O canal de voz é deste servidor? */
+const inGuild = (s, guildId, channelId) => Boolean(s.guildData[guildId]?.channels.some((c) => c.id === channelId));
+
+/**
+ * Situação de alguém para a moldura: ao vivo, em voz, ou o status escolhido (online, ausente, ocupado, offline).
+ * `guildId` (lista de membros de um servidor): a voz só conta se for num canal desse servidor; a chamada em
+ * outro servidor (ou em particular) não aparece ali.
+ */
+export function usePresence(userId, guildId) {
   const useC = useConn();
   return useC((s) => {
     if (!userId) return 'off';
-    for (const list of Object.values(s.voiceStates)) {
+    for (const [channelId, list] of Object.entries(s.voiceStates)) {
       const p = list.find((x) => x.user.id === userId);
-      if (p) return p.screen ? 'live' : 'voice';
+      if (p && (!guildId || inGuild(s, guildId, channelId))) return p.screen ? 'live' : 'voice';
     }
     if (userId === s.me?.id) return s.rtStatus === 'connected' ? STATUS_INFO[s.myStatus]?.cls || 'on' : 'off';
     if (!s.online[userId]) return 'off';
@@ -50,11 +57,17 @@ export function useGame(userId) {
 
 /**
  * Onde a pessoa está na voz ("em Sala de Estar · Servidor"). Canal privado não aparece no status: quem vê
- * pode não ter acesso a ele.
+ * pode não ter acesso a ele. Com `here` (a lista de membros de um servidor), só a voz desse servidor, sem
+ * o nome dele ("em Sala de Estar"): a chamada em outro servidor ou em particular não aparece ali.
  */
-export function voicePlace(s, userId) {
+export function voicePlace(s, userId, here) {
   for (const [channelId, list] of Object.entries(s.voiceStates)) {
     if (!list.some((x) => x.user.id === userId)) continue;
+    if (here) {
+      const ch = s.guildData[here]?.channels.find((c) => c.id === channelId);
+      if (ch && !ch.private) return `em ${ch.name}`;
+      continue;
+    }
     for (const [guildId, g] of Object.entries(s.guildData)) {
       const ch = g.channels.find((c) => c.id === channelId);
       if (!ch) continue;
@@ -67,9 +80,9 @@ export function voicePlace(s, userId) {
 }
 
 /** O que a pessoa está fazendo agora, para a linha abaixo do nome: o jogo e/ou onde está na voz. */
-export function useActivity(userId) {
+export function useActivity(userId, guildId) {
   const useC = useConn();
-  return useC((s) => [gameText(s.activities?.[userId]), voicePlace(s, userId)].filter(Boolean).join(' · ') || null);
+  return useC((s) => [gameText(s.activities?.[userId]), voicePlace(s, userId, guildId)].filter(Boolean).join(' · ') || null);
 }
 
 /** Fundo da foto sem imagem: a cor da pessoa com brilho, como as fotos de exibição do Messenger. */
@@ -79,12 +92,12 @@ const picBackground = (c) => `linear-gradient(135deg, color-mix(in srgb, ${c} 50
  * Foto com moldura de presença (verde online, cinza offline, azul em voz, vermelho ao vivo).
  * `status` força a moldura; `frame={false}` mostra só a foto.
  */
-export default function Avatar({ user: given, size = 40, status, frame = true, speaking, onClick, online, base }) {
+export default function Avatar({ user: given, size = 40, status, frame = true, speaking, onClick, online, base, guildId }) {
   const user = useUser(given);
   const useC = useConn();
   const connBase = useC((s) => s.baseUrl);
   const withToken = useC((s) => s.withToken);
-  const auto = usePresence(frame && status == null && online == null ? user?.id : null);
+  const auto = usePresence(frame && status == null && online == null ? user?.id : null, guildId);
   const [broken, setBroken] = useState(null);
   const name = plain(user?.displayName) || user?.username || '?';
   // Foto deste servidor: vai com o login (quem esconde o perfil de alguém só mostra a foto a quem pode ver).

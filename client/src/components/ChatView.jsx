@@ -353,7 +353,7 @@ function messageColor(author, guild) {
   return mine;
 }
 
-function Message({ m, head, canEdit: canEditText, canDelete, onReply, me, receipt, color }) {
+function Message({ m, head, canEdit: canEditText, canDelete, onReply, me, receipt, color, guildId }) {
   const sticker = parseSticker(m.content);
   const parsedFile = !sticker && parseFile(m.content);
   const voice = !sticker && !parsedFile && parseVoice(m.content);
@@ -423,7 +423,7 @@ function Message({ m, head, canEdit: canEditText, canDelete, onReply, me, receip
     >
       {/* A fotinha de quem escreveu, nos canais e nas conversas privadas. */}
       <div className="msg-pic">
-        {head && <Avatar user={m.author} size={30} onClick={() => openProfile(m.author.id)} />}
+        {head && <Avatar user={m.author} size={30} guildId={guildId} onClick={() => openProfile(m.author.id)} />}
       </div>
       <div className="body">
         {m.replyTo && <ReplyQuote m={m} />}
@@ -1000,6 +1000,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
               me={me}
               receipt={receiptOf(m)}
               color={messageColor(users[m.author.id] || m.author, guild)}
+              guildId={guild?.id}
             />
           </Fragment>
         );

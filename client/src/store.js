@@ -179,6 +179,8 @@ export function createConnStore({ key, kind, base, primary = false }) {
       }),
   });
   const typingTimers = new Map();
+  // Perfis já abertos (userId -> resposta de /api/users/{id}): o perfil abre na hora e se atualiza por trás.
+  const profiles = new Map();
   let baseUrl = base;
   // No desktop, o servidor só tem token depois que um perfil local entra (veja `reloadToken`).
   let token = isDesktop && kind === 'server' ? null : loadToken(baseUrl, tokenScope(kind));
@@ -188,6 +190,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
   );
   const setToken = (t) => {
     token = t;
+    profiles.clear();
     saveToken(baseUrl, t, tokenScope(kind));
   };
   let store = null;
@@ -255,6 +258,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
     stickers: null, // minha coleção de stickers neste servidor (null = ainda não carregada)
     sounds: null, // sons rápidos: { sounds, slots, rows, max } (null = ainda não carregados)
     soundLast: null, // último som que tocou na chamada: { by, sound, at }
+    soundCooldowns: {}, // som -> { from, until }: espera para tocar o mesmo som de novo (contra spam)
 
     voice: null, // snapshot do VoiceClient
     selfMuted: false,
@@ -607,6 +611,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
       });
       rt.on('user:updated', (u) =>
         set((s) => {
+          profiles.delete(u.id);
           const friends = s.friends[u.id] ? { ...s.friends, [u.id]: { ...s.friends[u.id], user: u } } : s.friends;
           return {
             users: { ...s.users, [u.id]: u },
@@ -1004,10 +1009,17 @@ export function createConnStore({ key, kind, base, primary = false }) {
     },
 
     // ---------- Perfil ----------
-    fetchProfile: (userId) => api.get(`/api/users/${userId}`),
+    async fetchProfile(userId) {
+      const p = await api.get(`/api/users/${userId}`);
+      profiles.set(userId, p);
+      return p;
+    },
+    /** O perfil da última vez que foi aberto (ou nada). */
+    cachedProfile: (userId) => profiles.get(userId) || null,
 
     async updateProfile(patch) {
       const res = await api.patch('/api/me/profile', patch);
+      profiles.delete(res.user.id);
       set((s) => ({ me: res.user, users: { ...s.users, [res.user.id]: res.user } }));
       return res;
     },
@@ -1082,6 +1094,14 @@ export function createConnStore({ key, kind, base, primary = false }) {
     /** Toca um som da minha biblioteca para todos da chamada. */
     async playBoardSound(id) {
       const r = await rt?.request('sound:play', { soundId: id });
+      // O servidor diz quanto falta para o mesmo som poder tocar de novo (vale em todos os aparelhos).
+      const wait = r?.cooldownMs ?? r?.retryMs;
+      if (wait > 0) {
+        const now = Date.now();
+        const prev = get().soundCooldowns[id];
+        const from = r.retryMs && prev?.until > now ? prev.from : now;
+        set((s) => ({ soundCooldowns: { ...s.soundCooldowns, [id]: { from, until: now + wait } } }));
+      }
       if (r?.error) notify(r.error, 'info');
     },
 
@@ -2210,8 +2230,23 @@ async function gzipIfWorth(file) {
 }
 
 /** Bits de permissão dentro de um servidor (iguais aos do servidor). */
-export const PERM = { ADMIN: 1, INVITE: 2, CHANNELS: 4, MUTE: 8, DISCONNECT: 16, MOVE: 32 };
-const ALL_PERMS = 63;
+export const PERM = {
+  ADMIN: 1,
+  INVITE: 2,
+  CHANNELS: 4,
+  MUTE: 8,
+  DISCONNECT: 16,
+  MOVE: 32,
+  // Música: pular, tirar da fila e recomeçar a música que a própria pessoa pôs sempre pode.
+  MUSIC_ADD: 64,
+  MUSIC_PAUSE: 128,
+  MUSIC_SKIP_OTHERS: 256,
+  MUSIC_REMOVE_OTHERS: 512,
+  MUSIC_PREVIOUS: 1024,
+  MUSIC_RESTART_OTHERS: 2048,
+  MUSIC_CLEAR: 4096,
+};
+const ALL_PERMS = 8191;
 
 /** Bits de um membro: os da lista personalizada, ou o padrão do servidor. */
 export function memberBits(s, guildId, userId) {
@@ -2240,6 +2275,13 @@ const permFlags = (owner, bits) => {
     mute: has(PERM.MUTE),
     disconnect: has(PERM.DISCONNECT),
     move: has(PERM.MOVE),
+    musicAdd: has(PERM.MUSIC_ADD),
+    musicPause: has(PERM.MUSIC_PAUSE),
+    musicSkipOthers: has(PERM.MUSIC_SKIP_OTHERS),
+    musicRemoveOthers: has(PERM.MUSIC_REMOVE_OTHERS),
+    musicPrevious: has(PERM.MUSIC_PREVIOUS),
+    musicRestartOthers: has(PERM.MUSIC_RESTART_OTHERS),
+    musicClear: has(PERM.MUSIC_CLEAR),
   };
 };
 

@@ -75,6 +75,23 @@ function bars(id, n = 32) {
 const SPEEDS = [1, 1.25, 1.5, 2];
 const fmtRate = (r) => `${r.toLocaleString('pt-BR')}×`;
 
+/**
+ * Terminou uma mensagem de voz: se a mensagem logo abaixo (sem outra entre elas, só a separação do dia)
+ * também é de voz, toca ela em seguida, como no WhatsApp.
+ */
+function playNext(audio) {
+  let row = audio.closest('.msg')?.nextElementSibling;
+  while (row?.classList.contains('day-sep')) row = row.nextElementSibling;
+  if (!row?.classList.contains('msg')) return;
+  const next = row.querySelector(':scope > .body > .content > .voice-note > audio');
+  if (!next) return;
+  next.currentTime = 0;
+  next.play().then(
+    () => row.scrollIntoView({ block: 'nearest', behavior: 'smooth' }),
+    () => {},
+  );
+}
+
 /** Mensagem de voz: tocar/pausar, a onda (clique para pular) e a velocidade. */
 /** `src`: tocar outro endereço (ex.: a prévia da gravação, antes de mandar). */
 export function VoiceNote({ voice, src }) {
@@ -138,9 +155,10 @@ export function VoiceNote({ voice, src }) {
         preload="metadata"
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
-        onEnded={() => {
+        onEnded={(e) => {
           setPlaying(false);
           setPos(0);
+          if (!src) playNext(e.currentTarget);
         }}
         onTimeUpdate={(e) => setPos(e.currentTarget.currentTime * 1000)}
         onLoadedMetadata={(e) => Number.isFinite(e.currentTarget.duration) && setDur(e.currentTarget.duration * 1000)}

@@ -9,7 +9,6 @@ import {
   Settings,
   PhoneOff,
   Video,
-  MonitorUp,
   Server,
   UserPlus,
   Trash2,
@@ -30,7 +29,6 @@ import {
   Download,
   Gamepad2,
   WifiOff,
-  RefreshCw,
 } from 'lucide-react';
 import { useStore, primaryConn, setStatusEverywhere, connRegistry, usePerms, openMyProfile } from '../store.js';
 import { isDesktop, DOWNLOAD_URL } from '../lib/env.js';
@@ -697,9 +695,18 @@ export function VoiceStatus() {
   const guild = vc((s) => s.guilds.find((g) => g.id === s.voice?.guildId));
   const dm = vc((s) => (s.voice?.dm ? s.dms.find((d) => d.id === s.voice.channelId) : null));
   const ping = useServerPing(Boolean(voice), vc);
+  const online = vc((s) => s.rtStatus === 'connected');
+  const muted = useStore((s) => s.selfMuted);
+  const deafened = useStore((s) => s.selfDeafened);
   if (!voice) return null;
-  const { showVoice, leaveVoice, toggleCamera, toggleScreen, openModal } = vc.getState();
-  const connected = voice.peers.every((p) => p.connectionState === 'connected');
+  const { toggleMute, toggleDeafen } = useStore.getState();
+  const { showVoice, leaveVoice, openModal } = vc.getState();
+  // "Conectando…" é só o MEU estado: entrando na chamada (ainda sem conexão com ninguém), sem o servidor,
+  // ou sem conexão com todos de uma vez. Uma pessoa instável aparece só no cartão dela (o ícone de sem conexão).
+  const up = voice.peers.filter((p) => p.connectionState === 'connected').length;
+  const joining = voice.peers.length > 0 && !voice.linked;
+  const lostAll = voice.linked && voice.peers.length >= 2 && up === 0;
+  const connected = online && !joining && !lostAll;
   const calling = voice.dm && voice.peers.length === 0;
   const where = dm ? `Chamada com ${plain(dm.recipient.displayName)}` : `${channel?.name} · ${guild?.name}`;
   return (
@@ -707,7 +714,7 @@ export function VoiceStatus() {
       <button className="conn" onClick={showVoice} title="Abrir chamada">
         <b>
           <Orb status={connected && !calling ? 'on' : 'off'} />
-          {calling ? 'Chamando…' : connected ? 'Voz conectada' : 'Conectando…'}
+          {calling ? 'Chamando…' : connected ? 'Voz conectada' : voice.linked ? 'Reconectando…' : 'Conectando…'}
         </b>
         <span>
           {where}
@@ -716,35 +723,31 @@ export function VoiceStatus() {
       </button>
       <div className="actions">
         <button
-          className={voice.video ? 'go' : 'gloss'}
-          onClick={toggleCamera}
-          title={voice.video ? 'Desligar câmera' : 'Ligar câmera'}
-          aria-label="Câmera"
-          aria-pressed={voice.video}
+          className={`gloss${muted || deafened ? ' off' : ''}`}
+          onClick={toggleMute}
+          title={muted ? 'Ativar microfone' : 'Silenciar microfone'}
+          aria-label={muted ? 'Ativar microfone' : 'Silenciar microfone'}
+          aria-pressed={muted}
         >
-          <Video size={16} />
+          {muted || deafened ? <MicOff size={16} /> : <Mic size={16} />}
         </button>
-        {!isTouch && (
         <button
-          className={voice.screen ? 'go' : 'gloss'}
-          onClick={() => toggleScreen()}
-          title={voice.screen ? 'Parar transmissão' : 'Compartilhar tela'}
-          aria-label="Compartilhar tela"
-          aria-pressed={voice.screen}
+          className={`gloss${deafened ? ' off' : ''}`}
+          onClick={toggleDeafen}
+          title={deafened ? 'Ativar áudio' : 'Ensurdecer'}
+          aria-label={deafened ? 'Ativar áudio' : 'Ensurdecer'}
+          aria-pressed={deafened}
         >
-          <MonitorUp size={16} />
+          {deafened ? <HeadphoneOff size={16} /> : <Headphones size={16} />}
         </button>
-        )}
-        {!isTouch && voice.screen && (
-          <button
-            className="gloss"
-            onClick={() => vc.getState().switchScreen()}
-            title="Trocar a transmissão: outra janela ou a tela inteira, sem parar"
-            aria-label="Trocar a transmissão"
-          >
-            <RefreshCw size={16} />
-          </button>
-        )}
+        <button
+          className="gloss"
+          onClick={() => useStore.getState().openModal({ type: 'settings', focus: 'devices' })}
+          title="Dispositivos: microfone, saída de áudio e câmera"
+          aria-label="Dispositivos"
+        >
+          <Settings size={16} />
+        </button>
         <button
           className="gloss"
           onClick={() => openModal({ type: 'diagnostics' })}
@@ -763,11 +766,15 @@ export function VoiceStatus() {
 
 // ---------- Membros, como lista de contatos ----------
 
-function MemberRow({ m, isOn, ownerId, admin }) {
-  const activity = useActivity(m.id);
+function MemberRow({ m, isOn, ownerId, admin, guildId }) {
+  // Só a voz deste servidor: quem está numa chamada em outro servidor aparece aqui com o status normal.
+  const activity = useActivity(m.id, guildId);
   const game = useGame(m.id);
   const liveIn = useStore(
-    (s) => Object.entries(s.voiceStates).find(([, l]) => l.some((p) => p.user.id === m.id && p.screen))?.[0],
+    (s) =>
+      Object.entries(s.voiceStates).find(
+        ([cid, l]) => l.some((p) => p.user.id === m.id && p.screen) && s.guildData[guildId]?.channels.some((c) => c.id === cid),
+      )?.[0],
   );
   const live = Boolean(liveIn);
   const fresh = useStore((s) => s.users[m.id]) || m;
@@ -782,7 +789,7 @@ function MemberRow({ m, isOn, ownerId, admin }) {
       onClick={() => (live && m.id !== meId ? useStore.getState().watchStream(liveIn, m.id) : openProfile(m.id))}
       onContextMenu={userMenu.onContextMenu}
     >
-      <Avatar user={m} size={30} />
+      <Avatar user={m} size={30} guildId={guildId} />
       <span className="member-text">
         <span className="member-name">
           <UserName user={m} className="nm" />
@@ -824,11 +831,11 @@ function MemberList({ onClose, overlay = true }) {
       <div className="members-list">
         <GroupHeader title={`Online (${on.length})`} collapsed={onCollapsed} onToggle={toggleOn} />
         {!onCollapsed && on.map((m) => (
-          <MemberRow key={m.id} m={m} isOn ownerId={guild?.ownerId} admin={(memberPerms[m.id] & 1) !== 0} />
+          <MemberRow key={m.id} m={m} isOn ownerId={guild?.ownerId} admin={(memberPerms[m.id] & 1) !== 0} guildId={guild?.id} />
         ))}
         {off.length > 0 && <GroupHeader title={`Offline (${off.length})`} collapsed={offCollapsed} onToggle={toggleOff} />}
         {!offCollapsed && off.map((m) => (
-          <MemberRow key={m.id} m={m} isOn={false} ownerId={guild?.ownerId} admin={(memberPerms[m.id] & 1) !== 0} />
+          <MemberRow key={m.id} m={m} isOn={false} ownerId={guild?.ownerId} admin={(memberPerms[m.id] & 1) !== 0} guildId={guild?.id} />
         ))}
       </div>
     </aside>

@@ -488,6 +488,15 @@ CREATE TABLE IF NOT EXISTS profile_hidden (
 );
 "#,
     ),
+    (
+        22,
+        r#"
+-- Permissões de música (64 a 4096: pôr, pausar, pular, tirar da fila, voltar, recomeçar e limpar a fila).
+-- Até aqui todos podiam tudo na música: continua assim.
+UPDATE guilds SET default_perms = default_perms | 8128;
+UPDATE guild_members SET perms = perms | 8128 WHERE custom = 1;
+"#,
+    ),
 ];
 
 impl Db {

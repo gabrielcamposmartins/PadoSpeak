@@ -5,10 +5,16 @@ import { useEffect, useRef, useState } from 'react';
 import { Play, Pencil, Trash2, Upload, Check, X } from 'lucide-react';
 import { useStore, getConn } from '../store.js';
 import { SoundIcon, SOUND_ICONS, SOUND_TONES } from './SoundIcons.jsx';
-import { playSoundboard, audioDuration } from '../lib/soundboard.js';
+import { playSoundboard } from '../lib/soundboard.js';
+import { decodeAudioFile, clipToWav, MAX_SOUND_SEC } from '../lib/audioTrim.js';
 import { plain } from '../lib/text.js';
+import SoundTrimmer from './SoundTrimmer.jsx';
 
+/** O que o servidor aceita por som. */
 const MAX_BYTES = 5 * 1024 * 1024;
+/** Arquivo escolhido para cortar (uma música inteira, por exemplo): o trecho enviado é bem menor. */
+const MAX_PICK_BYTES = 40 * 1024 * 1024;
+const MAX_PICK_SEC = 15 * 60;
 /** Sons no atalho: 3 linhas de 3. */
 const BOARD_MAX = 9;
 /** 2,4 s; a partir de um minuto, 1:05. */
@@ -22,7 +28,7 @@ function useVolume() {
 }
 
 /** Formulário de um som: nome, ícone e cor (enviar um novo ou editar). */
-function SoundForm({ initial, file, onCancel, onSave, busy }) {
+function SoundForm({ initial, file, onCancel, onSave, busy, children }) {
   const [name, setName] = useState(initial.name);
   const [icon, setIcon] = useState(initial.icon);
   const [tone, setTone] = useState(initial.tone);
@@ -45,6 +51,7 @@ function SoundForm({ initial, file, onCancel, onSave, busy }) {
           {file && <small>{file}</small>}
         </label>
       </div>
+      {children}
       <div className="field">
         <span id="snd-icon-label">Ícone</span>
         <div className="snd-icons" role="radiogroup" aria-labelledby="snd-icon-label">
@@ -98,7 +105,7 @@ export function SoundsModal({ slot = null, conn, embedded = false }) {
   const lib = store((s) => s.sounds);
   const volume = useVolume();
   const fileRef = useRef(null);
-  const [pending, setPending] = useState(null); // { file, durationMs }
+  const [pending, setPending] = useState(null); // { file, buffer, range: [início, fim] em s }
   const [editing, setEditing] = useState(null); // id
   const [confirm, setConfirm] = useState(null); // id
   const [busy, setBusy] = useState(false);
@@ -118,19 +125,29 @@ export function SoundsModal({ slot = null, conn, embedded = false }) {
     e.target.value = '';
     setError('');
     if (!file) return;
-    if (file.size > MAX_BYTES) return setError(`“${file.name}” tem ${(file.size / 1048576).toFixed(1)} MB. O máximo é 5 MB.`);
+    if (file.size > MAX_PICK_BYTES) return setError(`“${file.name}” tem ${(file.size / 1048576).toFixed(1)} MB. Escolha um arquivo de até 40 MB.`);
+    let buffer;
     try {
-      const seconds = await audioDuration(file);
-      setPending({ file, durationMs: seconds * 1000 });
+      buffer = await decodeAudioFile(file);
     } catch {
-      setError(`Não deu para ler “${file.name}”. Use um áudio MP3, OGG, WAV ou M4A.`);
+      return setError(`Não deu para ler “${file.name}”. Use um áudio MP3, OGG, WAV ou M4A.`);
     }
+    if (buffer.duration > MAX_PICK_SEC) return setError(`“${file.name}” tem mais de 15 minutos. Escolha um áudio mais curto.`);
+    setPending({ file, buffer, range: [0, Math.min(buffer.duration, MAX_SOUND_SEC)] });
+  };
+  /** O arquivo a enviar: o original se ficou inteiro (e cabe), senão o trecho escolhido. */
+  const clipFile = async ({ file, buffer, range: [start, end] }) => {
+    const whole = start < 0.01 && end > buffer.duration - 0.01;
+    if (whole && file.size <= MAX_BYTES) return { blob: file, ms: buffer.duration * 1000 };
+    return { blob: await clipToWav(buffer, start, end), ms: (end - start) * 1000 };
   };
   const save = async (meta) => {
     setBusy(true);
     setError('');
     try {
-      const snd = await st.uploadSound(pending.file, { ...meta, durationMs: pending.durationMs });
+      const { blob, ms } = await clipFile(pending);
+      if (blob.size > MAX_BYTES) throw new Error('O trecho passou de 5 MB. Escolha um trecho mais curto.');
+      const snd = await st.uploadSound(blob, { ...meta, durationMs: ms });
       // Abriu pela casa vazia: o som novo vai para ela.
       if (slot != null && !inBoard(snd.id)) {
         const next = [...store.getState().sounds.slots.map((x) => (x === snd.id ? null : x))];
@@ -177,14 +194,16 @@ export function SoundsModal({ slot = null, conn, embedded = false }) {
       {pending && (
         <SoundForm
           initial={{ name: pending.file.name.replace(/\.[^.]+$/, '').slice(0, 24), icon: 'horn', tone: 'aqua' }}
-          file={`${pending.file.name} · ${fmtSec(pending.durationMs)}`}
+          file={`${pending.file.name} · ${fmtSec(pending.buffer.duration * 1000)}`}
           busy={busy}
           onCancel={() => setPending(null)}
           onSave={save}
-        />
+        >
+          <SoundTrimmer buffer={pending.buffer} range={pending.range} volume={volume} onChange={(range) => setPending((p) => ({ ...p, range }))} />
+        </SoundForm>
       )}
       {sounds.length === 0 && !pending && (
-        <p className="sl-empty">Nenhum som ainda. Envie um áudio de até 5 MB, ou copie de alguém: quando uma pessoa toca um som na chamada, aparece “Copiar para mim”.</p>
+        <p className="sl-empty">Nenhum som ainda. Envie um áudio (de até 15 segundos; de um mais longo você escolhe o trecho), ou copie de alguém: quando uma pessoa toca um som na chamada, aparece “Copiar para mim”.</p>
       )}
       <ul className="sl-list">
         {sounds.map((snd) =>
@@ -265,7 +284,8 @@ export function SoundsModal({ slot = null, conn, embedded = false }) {
         )}
       </ul>
       <p className="sl-foot">
-        MP3, OGG, WAV ou M4A de até 5 MB, de qualquer duração. O som fica na sua conta e aparece em todos os seus aparelhos.
+        MP3, OGG, WAV ou M4A, de até {MAX_SOUND_SEC} segundos: dá para cortar o começo e o fim, ou escolher o trecho de um áudio mais
+        longo. O som fica na sua conta e aparece em todos os seus aparelhos.
       </p>
     </div>
   );

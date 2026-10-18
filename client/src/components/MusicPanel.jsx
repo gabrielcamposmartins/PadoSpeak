@@ -14,8 +14,9 @@ import {
   Star,
   TrendingUp,
   ListPlus,
+  Lock,
 } from 'lucide-react';
-import { useStore } from '../store.js';
+import { useStore, usePerms } from '../store.js';
 import { MusicPlayer } from '../lib/music.js';
 import { plain } from '../lib/text.js';
 import VolumeSlider from './Volume.jsx';
@@ -158,7 +159,18 @@ function CoverArt() {
   );
 }
 
-function NowPlaying({ state }) {
+/** Sem a permissão: o botão fica apagado e o balão explica. */
+const noPerm = (what) => `Você não tem permissão para ${what} neste servidor`;
+
+/**
+ * `perms`: minhas permissões de música no servidor; `mine`: a música atual foi eu que pus (pular e
+ * recomeçar a própria música sempre pode).
+ */
+function NowPlaying({ state, perms, mine }) {
+  const canPrev = perms.musicPrevious;
+  const canRestart = mine || perms.musicRestartOthers;
+  const canPause = perms.musicPause;
+  const canSkip = mine || perms.musicSkipOthers;
   const { current } = state;
   const { track } = current;
   const offset = useStore((s) => s.serverOffset);
@@ -213,32 +225,38 @@ function NowPlaying({ state }) {
         <div className="np-controls">
           <button
             className="ball small"
-            title="Voltar para a anterior"
+            title={canPrev ? 'Voltar para a anterior' : noPerm('voltar para a música anterior')}
             aria-label="Voltar para a música anterior"
-            disabled={!state.history?.length}
+            disabled={!canPrev || !state.history?.length}
             onClick={() => musicControl('previous')}
           >
             <SkipBack />
           </button>
           <button
             className="ball small"
-            title="Recomeçar a música"
+            title={canRestart ? 'Recomeçar a música' : noPerm('recomeçar a música de outra pessoa')}
             aria-label="Recomeçar a música"
-            disabled={loading}
+            disabled={!canRestart || loading}
             onClick={() => musicControl('restart')}
           >
             <RotateCcw />
           </button>
           <button
             className="ball aqua"
-            title={paused ? 'Retomar' : 'Pausar'}
+            title={canPause ? (paused ? 'Retomar' : 'Pausar') : noPerm('pausar a música')}
             aria-label={paused ? 'Retomar' : 'Pausar'}
-            disabled={loading}
+            disabled={!canPause || loading}
             onClick={() => musicControl(paused ? 'resume' : 'pause')}
           >
             {paused ? <Play /> : <Pause />}
           </button>
-          <button className="ball small" title="Pular" aria-label="Pular faixa" onClick={() => musicControl('skip')}>
+          <button
+            className="ball small"
+            title={canSkip ? 'Pular' : noPerm('pular a música de outra pessoa')}
+            aria-label="Pular faixa"
+            disabled={!canSkip}
+            onClick={() => musicControl('skip')}
+          >
             <SkipForward />
           </button>
           <label className="np-volume">
@@ -259,6 +277,10 @@ export default function MusicPanel() {
   const adding = useStore((s) => s.musicAdding);
   const library = useStore((s) => s.musicLibrary);
   const { addMusic, musicControl, joinVoice, toggleMusicPanel } = useStore.getState();
+  // Permissões de música do servidor (cada controle tem a sua; as próprias músicas sempre dá para tirar).
+  const perms = usePerms(useStore, guildId);
+  const meId = useStore((s) => s.me?.id);
+  const canAdd = perms.musicAdd;
   const currentId = useStore((s) => (voice?.channelId ? s.music[voice.channelId]?.current?.track.id : null));
   // Favoritas e mais tocadas: ao abrir o painel e a cada música nova.
   useEffect(() => {
@@ -273,6 +295,7 @@ export default function MusicPanel() {
   const elsewhere = Object.values(music).filter((m) => m.guildId === guildId && m.channelId !== channelId && m.current);
 
   const add = (urls) => {
+    if (!canAdd) return useStore.getState().notify('Você não tem permissão para pôr músicas neste servidor');
     if (!urls.length) return useStore.getState().notify('Nenhum link do YouTube ou Spotify encontrado');
     addMusic(urls);
   };
@@ -282,7 +305,7 @@ export default function MusicPanel() {
       className={`music-panel${dragging ? ' dragging' : ''}`}
       onDragOver={(e) => {
         e.preventDefault();
-        e.dataTransfer.dropEffect = channelId ? 'copy' : 'none';
+        e.dataTransfer.dropEffect = channelId && canAdd ? 'copy' : 'none';
         setDragging(true);
       }}
       onDragLeave={(e) => {
@@ -321,13 +344,19 @@ export default function MusicPanel() {
         ) : (
           <>
             {state?.current ? (
-              <NowPlaying state={state} />
+              <NowPlaying state={state} perms={perms} mine={state.current.track.addedBy?.id === meId} />
             ) : (
               <div className="music-idle">
                 <Music size={26} />
-                <p>Nada tocando. Arraste links do YouTube ou do Spotify para cá.</p>
-                <small>Vídeos, playlists, faixas e álbuns</small>
-                {state?.history?.length > 0 && (
+                {canAdd ? (
+                  <>
+                    <p>Nada tocando. Arraste links do YouTube ou do Spotify para cá.</p>
+                    <small>Vídeos, playlists, faixas e álbuns</small>
+                  </>
+                ) : (
+                  <p>Nada tocando.</p>
+                )}
+                {perms.musicPrevious && state?.history?.length > 0 && (
                   <button className="gloss small-btn" onClick={() => musicControl('previous')}>
                     <SkipBack size={14} /> Tocar de novo a última
                   </button>
@@ -345,9 +374,11 @@ export default function MusicPanel() {
               <>
                 <div className="queue-head">
                   <span>A seguir ({state.queue.length})</span>
-                  <button className="gloss tiny danger-text" onClick={() => musicControl('clear')}>
-                    Limpar fila
-                  </button>
+                  {perms.musicClear && (
+                    <button className="gloss tiny danger-text" onClick={() => musicControl('clear')}>
+                      Limpar fila
+                    </button>
+                  )}
                 </div>
                 <ol className="music-queue">
                   {state.queue.map((t, i) => (
@@ -362,14 +393,16 @@ export default function MusicPanel() {
                         </span>
                       </div>
                       <FavStar track={t} />
-                      <button
-                        className="gloss mini mq-del"
-                        title="Remover da fila"
-                        aria-label="Remover da fila"
-                        onClick={() => musicControl('remove', t.id)}
-                      >
-                        <X size={12} />
-                      </button>
+                      {(perms.musicRemoveOthers || t.addedBy?.id === meId) && (
+                        <button
+                          className="gloss mini mq-del"
+                          title="Remover da fila"
+                          aria-label="Remover da fila"
+                          onClick={() => musicControl('remove', t.id)}
+                        >
+                          <X size={12} />
+                        </button>
+                      )}
                     </li>
                   ))}
                 </ol>
@@ -377,20 +410,20 @@ export default function MusicPanel() {
             )}
 
             {state?.history?.length > 0 && (
-              <TrackSection icon={History} title="Tocadas recentemente" tracks={state.history} canAdd />
+              <TrackSection icon={History} title="Tocadas recentemente" tracks={state.history} canAdd={canAdd} />
             )}
             <TrackSection
               icon={Star}
               title="Favoritas"
               tracks={library.favorites}
-              canAdd
+              canAdd={canAdd}
               empty="Toque na estrela de uma música para guardá-la aqui."
             />
             <TrackSection
               icon={TrendingUp}
               title="Mais tocadas"
               tracks={library.guildId === guildId ? library.top : []}
-              canAdd
+              canAdd={canAdd}
               empty="Nada tocou neste servidor nas últimas 2 semanas."
               extra={(t) => ` · ${t.plays}×`}
             />
@@ -411,7 +444,12 @@ export default function MusicPanel() {
         )}
       </div>
 
-      {channelId && (
+      {channelId && !canAdd && (
+        <p className="music-drop music-locked">
+          <Lock size={14} aria-hidden="true" /> Só quem tem permissão pode pôr músicas neste servidor.
+        </p>
+      )}
+      {channelId && canAdd && (
         <form
           className="music-drop music-add"
           onSubmit={(e) => {
@@ -435,7 +473,7 @@ export default function MusicPanel() {
         </form>
       )}
 
-      {dragging && channelId && <div className="drop-overlay">Solte para adicionar à fila</div>}
+      {dragging && channelId && canAdd && <div className="drop-overlay">Solte para adicionar à fila</div>}
     </div>
   );
 }

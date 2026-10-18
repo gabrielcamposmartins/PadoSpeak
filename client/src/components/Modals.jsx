@@ -41,6 +41,12 @@ import {
   ScrollText,
   ImagePlus,
   ArrowRightLeft,
+  ListPlus,
+  SkipForward,
+  SkipBack,
+  Pause,
+  ListX,
+  ChevronDown,
   MicOff,
   PhoneOff,
   Monitor,
@@ -1156,13 +1162,23 @@ function CustomPrograms() {
   );
 }
 
-function SettingsModal({ close, tab: startTab }) {
+/** `focus: 'devices'`: abre em Funcionalidade, já na parte de microfone, saída e câmera (atalho da chamada). */
+function SettingsModal({ close, tab: startTab, focus }) {
   const prim = primaryConn();
   const me = prim((s) => s.me);
   const serverUrl = prim((s) => s.baseUrl);
   const accent = useStore((s) => s.prefs.accent || null);
   const saved = useStore((s) => s.prefs.devices) || {};
-  const [tab, setTab] = useState(startTab || 'aparencia');
+  const [tab, setTab] = useState(startTab || (focus === 'devices' ? 'funcionalidade' : 'aparencia'));
+  useEffect(() => {
+    if (focus !== 'devices') return;
+    const t = setTimeout(() => {
+      const el = document.getElementById('settings-devices');
+      el?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      el?.classList.add('flash');
+    }, 60);
+    return () => clearTimeout(t);
+  }, [focus]);
   const [devices, setDevices] = useState([]);
   const [choice, setChoice] = useState({ mic: '', camera: '', output: '', ...saved });
   const [rnnoise, setRnnoise] = useState(useStore.getState().prefs.noiseSuppression !== false);
@@ -1313,7 +1329,9 @@ function SettingsModal({ close, tab: startTab }) {
   const features = (
     <div className="settings-cols">
       <section className="settings-col">
-        <div className="settings-sec">Voz e áudio</div>
+        <div className="settings-sec" id="settings-devices">
+          Voz e áudio
+        </div>
         <DeviceSelect {...props} k="mic" kind="audioinput" label="Microfone" />
         <label className="checkbox">
           <input type="checkbox" checked={rnnoise} onChange={(e) => setRnnoise(e.target.checked)} />
@@ -1795,27 +1813,33 @@ function ProfileCard({ close, userId }) {
   const game = useC((s) => (s.online[userId] || userId === s.me?.id ? s.activities?.[userId] : null));
   const nudgeBlocked = useC((s) => Boolean(s.nudgeSettings?.nudgeBlocks.some((u) => u.id === userId)));
   const blocked = useC((s) => Boolean(s.nudgeSettings?.blocks?.some((u) => u.id === userId)));
-  const [profile, setProfile] = useState(null);
+  // Abre na hora com o que já se sabe (o perfil da última vez, ou o usuário da lista) e completa por trás.
+  const [profile, setProfile] = useState(() => useC.getState().cachedProfile(userId));
   const [error, setError] = useState('');
-  const user = useUser(profile?.user);
+  const known = useC((s) => s.users[userId] || s.friends[userId]?.user || (s.me?.id === userId ? s.me : null));
+  const user = useUser(profile?.user || known);
   const { openDm, callUser, sendFriendRequest, acceptFriend, removeFriend } = useC.getState();
   const { openModal } = useStore.getState();
 
   useEffect(() => {
+    let live = true;
     useC
       .getState()
       .fetchProfile(userId)
-      .then(setProfile)
-      .catch((e) => setError(e.message));
+      .then((p) => live && setProfile(p))
+      .catch((e) => live && setError(e.message));
+    return () => {
+      live = false;
+    };
   }, [userId, friend?.status]);
 
-  if (error)
+  if (error && !profile)
     return (
       <div className="modal-body">
         <p className="error-text">{error}</p>
       </div>
     );
-  if (!profile)
+  if (!user)
     return (
       <div className="modal-body">
         <p className="sub">Carregando perfil…</p>
@@ -1852,7 +1876,7 @@ function ProfileCard({ close, userId }) {
             </p>
           </section>
         )}
-        {profile.bio && (
+        {profile?.bio && (
           <section>
             <h4>Sobre mim</h4>
             <p className={colorClass(user.bioColor, 'profile-bio')} style={colorStyle(user.bioColor)}>
@@ -1862,9 +1886,9 @@ function ProfileCard({ close, userId }) {
         )}
         <section>
           <h4>Membro desde</h4>
-          <p>{fmtDate(profile.createdAt)}</p>
+          <p>{profile ? fmtDate(profile.createdAt) : '…'}</p>
         </section>
-        {!isMe && profile.mutualGuilds.length > 0 && (
+        {!isMe && profile?.mutualGuilds?.length > 0 && (
           <section>
             <h4>Servidores em comum — {profile.mutualGuilds.length}</h4>
             <div className="chips">
@@ -2045,9 +2069,10 @@ function EditProfileModal({ close }) {
   // neste PC até o servidor voltar (e aí é trocada pelo perfil do servidor).
   const offline = useStore((s) => isDesktop && ['unreachable', 'connecting'].includes(s.serverStatus));
   const [name, setName] = useState(() => withLegacyColor(me.displayName, me.nameColor));
-  const [bio, setBio] = useState('');
+  const cached = prim.getState().cachedProfile(me.id);
+  const [bio, setBio] = useState(() => (cached ? withLegacyColor(cached.bio, cached.bioColor ?? me.bioColor) : ''));
   const [banner, setBanner] = useState(me.bannerColor || null);
-  const [loaded, setLoaded] = useState(false);
+  const [loaded, setLoaded] = useState(Boolean(cached));
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef(null);
   const { busy, error, run } = useAction(async () => {
@@ -2056,6 +2081,8 @@ function EditProfileModal({ close }) {
   }, close);
 
   useEffect(() => {
+    // Já veio do cache (que é limpo quando o perfil muda): não sobrescreve o que a pessoa começou a digitar.
+    if (loaded) return;
     prim
       .getState()
       .fetchProfile(me.id)
@@ -2652,13 +2679,85 @@ function GuildFiles({ guildId }) {
 }
 
 const PERM_OPTIONS = [
-  { bit: PERM.ADMIN, label: 'Administrador', hint: 'Tudo, menos excluir o servidor', icon: Shield },
-  { bit: PERM.INVITE, label: 'Convidar pessoas', hint: 'Vê e compartilha o convite', icon: UserPlus },
-  { bit: PERM.CHANNELS, label: 'Criar e editar canais', hint: 'Cria, renomeia e exclui canais', icon: Hash },
-  { bit: PERM.MUTE, label: 'Silenciar na voz', hint: 'Silencia alguém para todos no canal de voz', icon: MicOff },
-  { bit: PERM.DISCONNECT, label: 'Desconectar da voz', hint: 'Tira alguém do canal de voz', icon: PhoneOff },
-  { bit: PERM.MOVE, label: 'Mover entre canais', hint: 'Move alguém para outro canal de voz', icon: ArrowRightLeft },
+  { bit: PERM.ADMIN, flag: 'admin', label: 'Administrador', hint: 'Tudo, menos excluir o servidor', icon: Shield },
+  { bit: PERM.INVITE, flag: 'invite', label: 'Convidar pessoas', hint: 'Vê e compartilha o convite', icon: UserPlus },
+  { bit: PERM.CHANNELS, flag: 'channels', label: 'Criar e editar canais', hint: 'Cria, renomeia e exclui canais', icon: Hash },
+  { bit: PERM.MUTE, flag: 'mute', label: 'Silenciar na voz', hint: 'Silencia alguém para todos no canal de voz', icon: MicOff },
+  { bit: PERM.DISCONNECT, flag: 'disconnect', label: 'Desconectar da voz', hint: 'Tira alguém do canal de voz', icon: PhoneOff },
+  { bit: PERM.MOVE, flag: 'move', label: 'Mover entre canais', hint: 'Move alguém para outro canal de voz', icon: ArrowRightLeft },
+  { bit: PERM.MUSIC_ADD, flag: 'musicAdd', label: 'Pôr músicas na fila', hint: 'Adiciona músicas do YouTube e do Spotify', icon: ListPlus },
+  { bit: PERM.MUSIC_PAUSE, flag: 'musicPause', label: 'Pausar e retomar', hint: 'Pausa a música para todos do canal', icon: Pause },
+  { bit: PERM.MUSIC_SKIP_OTHERS, flag: 'musicSkipOthers', label: 'Pular música de outros', hint: 'Pula a música que outra pessoa pôs', icon: SkipForward },
+  { bit: PERM.MUSIC_REMOVE_OTHERS, flag: 'musicRemoveOthers', label: 'Tirar da fila música de outros', hint: 'Remove da fila a música que outra pessoa pôs', icon: ListX },
+  { bit: PERM.MUSIC_RESTART_OTHERS, flag: 'musicRestartOthers', label: 'Recomeçar música de outros', hint: 'Volta ao início a música que outra pessoa pôs', icon: RotateCcw },
+  { bit: PERM.MUSIC_PREVIOUS, flag: 'musicPrevious', label: 'Voltar para a anterior', hint: 'Toca de novo a música que tocou antes', icon: SkipBack },
+  { bit: PERM.MUSIC_CLEAR, flag: 'musicClear', label: 'Limpar a fila', hint: 'Tira todas as músicas da fila de uma vez', icon: Trash2 },
 ];
+const opt = (bit) => PERM_OPTIONS.find((o) => o.bit === bit);
+/** As permissões em categorias, para a tela de permissões. */
+const PERM_GROUPS = [
+  { id: 'geral', title: 'Geral', icon: Settings2, perms: [PERM.ADMIN, PERM.INVITE, PERM.CHANNELS].map(opt) },
+  { id: 'voz', title: 'Voz', icon: Mic, perms: [PERM.MUTE, PERM.DISCONNECT, PERM.MOVE].map(opt) },
+  {
+    id: 'musica',
+    title: 'Música',
+    icon: Music2,
+    note: 'Pular, tirar da fila e recomeçar as próprias músicas: todos podem.',
+    perms: [
+      PERM.MUSIC_ADD,
+      PERM.MUSIC_PAUSE,
+      PERM.MUSIC_SKIP_OTHERS,
+      PERM.MUSIC_REMOVE_OTHERS,
+      PERM.MUSIC_RESTART_OTHERS,
+      PERM.MUSIC_PREVIOUS,
+      PERM.MUSIC_CLEAR,
+    ].map(opt),
+  },
+];
+/** Quantas permissões dá para escolher (sem contar "Administrador"). */
+const PERM_COUNT = PERM_OPTIONS.length - 1;
+const countBits = (bits) => PERM_OPTIONS.filter((o) => o.bit !== PERM.ADMIN && (bits & o.bit) !== 0).length;
+
+/**
+ * As permissões em categorias (Geral, Voz, Música), uma caixa de marcar por linha com a explicação embaixo.
+ * `admin`: mostra "Administrador" (só na lista personalizada); com ele marcado, as outras ficam marcadas.
+ */
+function PermGroups({ bits, onToggle, disabled, admin = false, adminLocked = false, who }) {
+  const isAdmin = admin && (bits & PERM.ADMIN) !== 0;
+  return (
+    <div className="perm-groups">
+      {PERM_GROUPS.map((g) => (
+        <fieldset key={g.id} className="perm-group">
+          <legend>
+            <g.icon size={14} aria-hidden="true" /> {g.title}
+          </legend>
+          {g.perms
+            .filter((o) => admin || o.bit !== PERM.ADMIN)
+            .map((o) => {
+              const implied = isAdmin && o.bit !== PERM.ADMIN;
+              return (
+                <label key={o.bit} className={`perm-row${o.bit === PERM.ADMIN ? ' admin' : ''}`}>
+                  <input
+                    type="checkbox"
+                    checked={(bits & o.bit) !== 0 || implied}
+                    disabled={disabled || implied || (o.bit === PERM.ADMIN && adminLocked)}
+                    aria-label={`${o.label}: ${who}`}
+                    onChange={(e) => onToggle(o.bit, e.target.checked)}
+                  />
+                  <o.icon size={15} aria-hidden="true" />
+                  <span>
+                    {o.label}
+                    <small>{o.hint}</small>
+                  </span>
+                </label>
+              );
+            })}
+          {g.note && <p className="perm-note">{g.note}</p>}
+        </fieldset>
+      ))}
+    </div>
+  );
+}
 const PAGE = 6;
 
 /**
@@ -2673,6 +2772,7 @@ function GuildMembers({ guildId, perms: mine }) {
   const [page, setPage] = useState(0);
   const [adding, setAdding] = useState(false);
   const [q, setQ] = useState('');
+  const [open, setOpen] = useState(null); // quem está aberto na lista personalizada
   const st = useStore.getState();
   const ownerId = guild?.ownerId;
   const defaults = guild?.defaultPerms ?? PERM.INVITE;
@@ -2708,6 +2808,7 @@ function GuildMembers({ guildId, perms: mine }) {
       await st.setMemberPerms(guildId, m.id, defaults, true);
       setAdding(false);
       setQ('');
+      setOpen(m.id);
       // Vai para a página onde a pessoa entrou.
       const idx = [...listed, m].sort((a, b) => name(a).localeCompare(name(b))).findIndex((x) => x.id === m.id);
       setPage(Math.floor(idx / PAGE));
@@ -2720,20 +2821,7 @@ function GuildMembers({ guildId, perms: mine }) {
           <b>Padrão para todos os membros</b>
           <small>Quem não está na lista abaixo pode:</small>
         </div>
-        <div className="gs-default">
-          {PERM_OPTIONS.filter((o) => o.bit !== PERM.ADMIN).map((o) => (
-            <label key={o.bit} className="perm-chip" title={o.hint}>
-              <input
-                type="checkbox"
-                checked={(defaults & o.bit) !== 0}
-                disabled={busy === 'default'}
-                aria-label={`${o.label}: todos`}
-                onChange={(e) => toggleDefault(o.bit, e.target.checked)}
-              />
-              <o.icon size={14} /> {o.label}
-            </label>
-          ))}
-        </div>
+        <PermGroups bits={defaults} who="todos" disabled={busy === 'default'} onToggle={toggleDefault} />
       </section>
 
       <section className="gs-box gs-custom">
@@ -2760,65 +2848,65 @@ function GuildMembers({ guildId, perms: mine }) {
           </div>
         )}
         {owner && (
-          <div className="gs-member owner-row">
-            <span className="gs-member-who">
-              <Avatar user={owner} size={26} frame={false} />
-              <UserName user={owner} className="gs-member-name" />
-              <Crown size={13} className="crown" aria-label="Dono" />
-            </span>
-            <small>Dono — todas as permissões</small>
+          <div className="pm-row owner">
+            <div className="pm-head">
+              <span className="gs-member-who">
+                <Avatar user={owner} size={26} frame={false} />
+                <UserName user={owner} className="gs-member-name" />
+                <Crown size={13} className="crown" aria-label="Dono" />
+              </span>
+              <span className="pm-sum">Dono: todas as permissões</span>
+            </div>
           </div>
         )}
-        {listed.length > 0 && (
-          <div className="gs-members" role="table" aria-label="Permissões personalizadas">
-            <div className="gs-member gs-member-head" role="row">
-              <span>Membro</span>
-              {PERM_OPTIONS.map((o) => (
-                <span key={o.bit} className="perm-col tip-above" data-tip={o.label} aria-label={o.label}>
-                  <o.icon size={15} />
-                </span>
-              ))}
-              <span />
-            </div>
-            {shown.map((m) => {
-              const bits = custom[m.id] || 0;
-              const isAdmin = (bits & PERM.ADMIN) !== 0;
-              const locked = isAdmin && !mine.owner; // só o dono mexe em admins
-              return (
-                <div className="gs-member" role="row" key={m.id}>
+        {shown.map((m) => {
+          const bits = custom[m.id] || 0;
+          const isAdmin = (bits & PERM.ADMIN) !== 0;
+          const locked = isAdmin && !mine.owner; // só o dono mexe em admins
+          const expanded = open === m.id;
+          return (
+            <div className={`pm-row${expanded ? ' open' : ''}`} key={m.id}>
+              <div className="pm-head">
+                <button
+                  type="button"
+                  className="pm-toggle"
+                  aria-expanded={expanded}
+                  aria-controls={`pm-${m.id}`}
+                  onClick={() => setOpen(expanded ? null : m.id)}
+                >
                   <span className="gs-member-who">
                     <Avatar user={m} size={26} frame={false} />
                     <UserName user={m} className="gs-member-name" />
                     {isAdmin && <Shield size={13} className="crown admin-badge" aria-label="Administrador" />}
                   </span>
-                  {PERM_OPTIONS.map((o) => {
-                    const implied = o.bit !== PERM.ADMIN && isAdmin;
-                    return (
-                      <label key={o.bit} className="gs-perm" title={o.hint}>
-                        <input
-                          type="checkbox"
-                          aria-label={`${o.label}: ${name(m)}`}
-                          checked={(bits & o.bit) !== 0 || implied}
-                          disabled={busy === m.id || locked || implied || (o.bit === PERM.ADMIN && !mine.owner)}
-                          onChange={(e) => toggle(m, o.bit, e.target.checked)}
-                        />
-                      </label>
-                    );
-                  })}
-                  <IconBtn
-                    icon={X}
-                    size={14}
-                    tip="left"
-                    className="mini-ico"
-                    label={`Tirar ${name(m)} da lista (volta ao padrão)`}
+                  <span className="pm-sum">{isAdmin ? 'Administrador: todas' : `${countBits(bits)} de ${PERM_COUNT} permissões`}</span>
+                  <ChevronDown size={16} className="pm-chevron" aria-hidden="true" />
+                </button>
+                <IconBtn
+                  icon={X}
+                  size={14}
+                  tip="left"
+                  className="mini-ico"
+                  label={`Tirar ${name(m)} da lista (volta ao padrão)`}
+                  disabled={busy === m.id || locked}
+                  onClick={() => run(m.id, () => st.setMemberPerms(guildId, m.id, 0, false))}
+                />
+              </div>
+              {expanded && (
+                <div className="pm-body" id={`pm-${m.id}`}>
+                  <PermGroups
+                    bits={bits}
+                    admin
+                    adminLocked={!mine.owner}
+                    who={name(m)}
                     disabled={busy === m.id || locked}
-                    onClick={() => run(m.id, () => st.setMemberPerms(guildId, m.id, 0, false))}
+                    onToggle={(bit, on) => toggle(m, bit, on)}
                   />
                 </div>
-              );
-            })}
-          </div>
-        )}
+              )}
+            </div>
+          );
+        })}
         {pages > 1 && (
           <div className="gs-pager">
             <IconBtn icon={ChevronLeft} label="Página anterior" disabled={cur === 0} onClick={() => setPage(cur - 1)} />
@@ -3318,7 +3406,7 @@ function GuildSettingsModal({ guildId, tab: startTab }) {
   };
   const tabs = GS_TABS.filter(([, , , admin]) => !admin || perms.admin);
   const current = tabs.find(([id]) => id === tab) || tabs[0];
-  const myPerms = PERM_OPTIONS.filter((o) => (o.bit === PERM.ADMIN ? perms.admin : o.bit === PERM.INVITE ? perms.invite : perms.channels));
+  const myPerms = PERM_OPTIONS.filter((o) => perms[o.flag]);
   return (
     <div className="gs-layout">
       <nav className="gs-rail" role="tablist" aria-label="Seções" aria-orientation="vertical">

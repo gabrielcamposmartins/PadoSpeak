@@ -84,9 +84,12 @@ export function stopSoundboard() {
   playing.clear();
 }
 
-/** Duração de um arquivo de áudio escolhido para enviar (s), ou erro se não der para ler. */
-export async function audioDuration(file) {
+/** O contexto de áudio dos sons (já na saída escolhida), para a prévia do corte (veja audioTrim.js). */
+export function soundContext() {
   const ac = audio();
-  const buffer = await ac.decodeAudioData(await file.arrayBuffer());
-  return buffer.duration;
+  if (sinkId && ac.setSinkId && ac.sinkId !== sinkId) ac.setSinkId(sinkId).catch(() => {});
+  return ac;
 }
+
+/** Onde ligar o que toca no `soundContext()` (o volume geral dos sons). */
+export const soundOutput = () => (audio(), master);

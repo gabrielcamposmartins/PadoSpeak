@@ -24,6 +24,22 @@ function useRecentOther(vc, meId) {
   return last;
 }
 
+/** Relógio que anda (4 vezes por segundo) só enquanto algum som está esperando para tocar de novo. */
+function useCooldownClock(cooldowns) {
+  const [now, setNow] = useState(Date.now());
+  const until = Math.max(0, ...Object.values(cooldowns || {}).map((c) => c.until));
+  useEffect(() => {
+    if (until <= Date.now()) return;
+    setNow(Date.now());
+    const t = setInterval(() => {
+      setNow(Date.now());
+      if (Date.now() >= until) clearInterval(t);
+    }, 250);
+    return () => clearInterval(t);
+  }, [until]);
+  return now;
+}
+
 export default function SoundPanel({ variant = 'side' }) {
   const vc = useVoiceConn();
   const lib = vc((s) => s.sounds);
@@ -34,6 +50,8 @@ export default function SoundPanel({ variant = 'side' }) {
   const [playing, setPlaying] = useState(null);
   const recent = useRecentOther(vc, me?.id);
   const [copied, setCopied] = useState(null);
+  const cooldowns = vc((s) => s.soundCooldowns);
+  const now = useCooldownClock(cooldowns);
   if (!me) return null;
   const st = vc.getState();
   const rows = lib?.rows || 1;
@@ -45,7 +63,13 @@ export default function SoundPanel({ variant = 'side' }) {
     .filter(Boolean);
   const live = Boolean(voice) && !guildOff;
 
+  const waitOf = (snd) => {
+    const c = cooldowns[snd.id];
+    return live && c && c.until > now ? c : null;
+  };
   const press = (snd) => {
+    // Esperando: não manda de novo (o servidor recusaria), só mostra quanto falta.
+    if (waitOf(snd)) return;
     setPlaying(snd.id);
     setTimeout(() => setPlaying((p) => (p === snd.id ? null : p)), 700);
     if (live) st.playBoardSound(snd.id);
@@ -80,19 +104,36 @@ export default function SoundPanel({ variant = 'side' }) {
       {guildOff && !empty && <p className="sp-note">Os sons rápidos estão desligados neste servidor.</p>}
       {!empty && (
         <div className="sp-grid">
-          {board.map((snd) => (
-            <button
-              key={snd.id}
-              type="button"
-              className={`snd t-${snd.tone}${playing === snd.id ? ' playing' : ''}${live ? '' : ' idle'}`}
-              onClick={() => press(snd)}
-              title={live ? `Tocar “${snd.name}” para todos da chamada` : `Ouvir “${snd.name}” (fora de chamada, só você ouve)`}
-              aria-label={live ? `Tocar ${snd.name} para todos` : `Ouvir ${snd.name}`}
-            >
-              <SoundIcon icon={snd.icon} />
-              <span className="n">{snd.name}</span>
-            </button>
-          ))}
+          {board.map((snd) => {
+            const wait = waitOf(snd);
+            const left = wait ? Math.ceil((wait.until - now) / 1000) : 0;
+            return (
+              <button
+                key={snd.id}
+                type="button"
+                className={`snd t-${snd.tone}${playing === snd.id ? ' playing' : ''}${live ? '' : ' idle'}${wait ? ' cooling' : ''}`}
+                onClick={() => press(snd)}
+                aria-disabled={wait ? true : undefined}
+                title={
+                  wait
+                    ? `Espere ${left} s para tocar “${snd.name}” de novo`
+                    : live
+                      ? `Tocar “${snd.name}” para todos da chamada`
+                      : `Ouvir “${snd.name}” (fora de chamada, só você ouve)`
+                }
+                aria-label={wait ? `${snd.name}: espere ${left} segundos` : live ? `Tocar ${snd.name} para todos` : `Ouvir ${snd.name}`}
+              >
+                <SoundIcon icon={snd.icon} />
+                <span className="n">{snd.name}</span>
+                {wait && (
+                  <span className="snd-wait" aria-hidden="true">
+                    <i style={{ height: `${Math.max(0, Math.min(100, ((wait.until - now) / (wait.until - wait.from)) * 100))}%` }} />
+                    <b>{left}</b>
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
       )}
       {recent && (

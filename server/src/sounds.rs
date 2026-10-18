@@ -19,8 +19,10 @@ use std::sync::Arc;
 type AppState = State<Arc<App>>;
 type ApiResult<T> = Result<T, ApiError>;
 
-/// Tamanho máximo de um som (a duração é livre).
+/// Tamanho máximo de um som.
 pub const MAX_SOUND: usize = 5 * 1024 * 1024;
+/// Duração máxima (ms). O app corta o trecho antes de enviar; a folga cobre o arredondamento.
+pub const MAX_DURATION_MS: i64 = 15_000;
 /// Sons na biblioteca de cada pessoa.
 pub const MAX_PER_USER: i64 = 10;
 /// Botões do atalho: 3 por linha, de 1 a 3 linhas (escolhido em Configurações → Sons).
@@ -206,6 +208,9 @@ async fn upload(
     if q.duration_ms <= 0 {
         return Err(bad("Não deu para ler a duração do som"));
     }
+    if q.duration_ms > MAX_DURATION_MS + 250 {
+        return Err(bad("O som deve ter até 15 segundos: corte o trecho antes de enviar"));
+    }
     if count(&app, &me.id).await? >= MAX_PER_USER {
         return Err(bad("Sua biblioteca já tem 10 sons: apague um para enviar outro"));
     }
@@ -327,6 +332,12 @@ async fn of_user(State(app): AppState, AuthUser(_me, _): AuthUser, Path(id): Pat
     Ok(Json(mine(&app, &id).await?))
 }
 
+/// Depois de tocar um som, quanto tempo (ms) a mesma pessoa espera para tocar o mesmo som de novo (contra
+/// spam): a duração dele mais 3 s, entre 8 e 20 s.
+pub fn cooldown_ms(duration_ms: i64) -> i64 {
+    (duration_ms + 3_000).clamp(8_000, 20_000)
+}
+
 /// Som da pessoa, para tocar na chamada (`sound:play`).
 pub async fn owned(app: &App, user_id: &str, sound_id: &str) -> Option<Sound> {
     app.db
@@ -360,6 +371,15 @@ pub async fn guild_allows(app: &App, guild_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn espera_para_repetir() {
+        // Som curto → 8 s; 10 s → 13 s; 15 s (o máximo) → 18 s; nunca mais que 20 s.
+        assert_eq!(cooldown_ms(800), 8_000);
+        assert_eq!(cooldown_ms(10_000), 13_000);
+        assert_eq!(cooldown_ms(15_000), 18_000);
+        assert_eq!(cooldown_ms(60_000), 20_000);
+    }
 
     #[test]
     fn atalho_em_sequencia_e_linhas_automaticas() {
