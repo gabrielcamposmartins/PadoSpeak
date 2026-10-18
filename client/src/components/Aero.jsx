@@ -1,7 +1,150 @@
 // Peças do visual Aero: cena do céu (colinas, bolhas e raios de sol) e barra de título das janelas.
+import { useId } from 'react';
 import { X } from 'lucide-react';
 
 /** Cena de fundo: o gradiente vem do tema (`--scene-bg`); estrelas e aurora só aparecem no escuro. */
+/**
+ * Flores e folhas soltas na faixa do topo (cenas Sakura, Ameixeira e Folhas verdes): uma camada da frente,
+ * maior e com cor cheia, e uma de trás, pequena e clara, para dar profundidade. Sem galho.
+ */
+/** x, y, tamanho, giro — camada da frente. À esquerda de x≈400 fica o nome e o status: nada ali. */
+const FRONT = [
+  [1015, 30, 15, 10],
+  [1185, 68, 13, -15],
+  [865, 62, 12, -20],
+  [705, 30, 13, 35],
+  [565, 68, 11, 5],
+  [470, 40, 10, 25],
+  [1105, 14, 9, 50],
+];
+/** Camada de trás (menor e mais clara). */
+const BACK = [
+  [960, 76, 7, 20],
+  [785, 16, 6, -10],
+  [645, 52, 6, 40],
+  [505, 20, 7, -25],
+  [415, 74, 6, 15],
+  [1245, 32, 6, 30],
+  [905, 40, 5, -40],
+  [1060, 84, 6, 10],
+  [470, 84, 5, 55],
+];
+/** Pétalas (ou folhinhas) soltas, caindo. */
+const LOOSE = [
+  [935, 18, 20],
+  [815, 84, -35],
+  [605, 12, 60],
+  [475, 58, -10],
+  [1150, 44, 40],
+  [430, 14, -50],
+  [745, 74, 15],
+];
+
+/** Pétala apontando para cima a partir do centro; `notch`: com o recorte da sakura. */
+const petal = (r, notch) =>
+  notch
+    ? `M0 0 C ${-r * 0.62} ${-r * 0.28}, ${-r * 0.58} ${-r * 0.96}, ${-r * 0.18} ${-r} L 0 ${-r * 0.84} L ${r * 0.18} ${-r} C ${r * 0.58} ${-r * 0.96}, ${r * 0.62} ${-r * 0.28}, 0 0 Z`
+    : `M0 0 C ${-r * 0.68} ${-r * 0.22}, ${-r * 0.62} ${-r * 1.02}, 0 ${-r * 1.02} C ${r * 0.62} ${-r * 1.02}, ${r * 0.68} ${-r * 0.22}, 0 0 Z`;
+
+/** Folha deitada para a direita a partir do cabinho, com nervura central e laterais. */
+function Leaf({ l, id }) {
+  const w = l * 0.24;
+  return (
+    <>
+      <path d={`M${-l * 0.12} ${l * 0.02} L0 0`} stroke="#3c7a25" strokeWidth={l * 0.035} strokeLinecap="round" />
+      <path
+        d={`M0 0 C ${l * 0.22} ${-w}, ${l * 0.68} ${-w * 1.1}, ${l} 0 C ${l * 0.68} ${w * 1.05}, ${l * 0.22} ${w * 0.95}, 0 0 Z`}
+        fill={`url(#${id}l)`}
+        stroke="#2f6e22"
+        strokeWidth={l * 0.018}
+      />
+      <path d={`M0 0 Q ${l * 0.5} ${-w * 0.1}, ${l * 0.94} 0`} fill="none" stroke="#e9ffd2" strokeOpacity=".55" strokeWidth={l * 0.022} />
+      {[0.26, 0.46, 0.66].map((t) => (
+        <g key={t} stroke="#e9ffd2" strokeOpacity=".4" strokeWidth={l * 0.014} fill="none">
+          <path d={`M${l * t} ${-w * 0.04} Q ${l * (t + 0.1)} ${-w * 0.5}, ${l * (t + 0.2)} ${-w * 0.78}`} />
+          <path d={`M${l * t} ${w * 0.04} Q ${l * (t + 0.1)} ${w * 0.5}, ${l * (t + 0.2)} ${w * 0.78}`} />
+        </g>
+      ))}
+    </>
+  );
+}
+
+/** Flor de cerejeira (pétalas recortadas, claras na ponta) ou de ameixeira (redondas, com muitos estames). */
+function Flower({ r, kind, id }) {
+  const sakura = kind === 'sakura';
+  const angles = [0, 72, 144, 216, 288];
+  const stamens = sakura ? [18, 70, 122, 174, 226, 278, 330] : [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];
+  return (
+    <>
+      {angles.map((t) => (
+        <path key={t} d={petal(r, sakura)} transform={`rotate(${t})`} fill={`url(#${id}p)`} stroke={sakura ? '#f29bbb' : '#a8174a'} strokeWidth={r * 0.04} />
+      ))}
+      {sakura &&
+        angles.map((t) => <path key={`v${t}`} d={`M0 ${-r * 0.22} L0 ${-r * 0.62}`} transform={`rotate(${t})`} stroke="#f48fb1" strokeWidth={r * 0.04} strokeLinecap="round" />)}
+      <circle r={r * (sakura ? 0.2 : 0.24)} fill={sakura ? '#e2557f' : '#ffe9a8'} />
+      {stamens.map((t) => {
+        const len = r * (sakura ? 0.42 : 0.58);
+        return (
+          <g key={`s${t}`} transform={`rotate(${t})`}>
+            <path d={`M0 ${-r * 0.12} L0 ${-len}`} stroke={sakura ? '#d84a76' : '#ffd23f'} strokeWidth={r * 0.035} strokeLinecap="round" />
+            <circle cy={-len} r={r * (sakura ? 0.055 : 0.07)} fill={sakura ? '#b8174d' : '#ffb300'} />
+          </g>
+        );
+      })}
+    </>
+  );
+}
+
+function Blooms({ kind }) {
+  const id = useId().replace(/:/g, '');
+  const leaves = kind === 'leaves';
+  const item = (r) => (leaves ? <Leaf l={r * 2.6} id={id} /> : <Flower r={r} kind={kind} id={id} />);
+  return (
+    <g className={`blooms ${kind}`}>
+      <defs>
+        {kind === 'sakura' && (
+          <linearGradient id={`${id}p`} x1="0" y1="1" x2="0" y2="0">
+            <stop offset="0" stopColor="#ff9fbf" />
+            <stop offset=".45" stopColor="#ffd3e1" />
+            <stop offset="1" stopColor="#fff6f9" />
+          </linearGradient>
+        )}
+        {kind === 'plum' && (
+          <linearGradient id={`${id}p`} x1="0" y1="1" x2="0" y2="0">
+            <stop offset="0" stopColor="#b3134a" />
+            <stop offset=".55" stopColor="#e53d74" />
+            <stop offset="1" stopColor="#ff8bb0" />
+          </linearGradient>
+        )}
+        {leaves && (
+          <linearGradient id={`${id}l`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor="#b7ec74" />
+            <stop offset=".5" stopColor="#6cc24a" />
+            <stop offset="1" stopColor="#3a8f2c" />
+          </linearGradient>
+        )}
+      </defs>
+      <g className="bloom-back">
+        {BACK.map(([x, y, r, a]) => (
+          <g key={x} transform={`translate(${x} ${y}) rotate(${leaves ? a * 3 : a})`}>
+            {item(r)}
+          </g>
+        ))}
+      </g>
+      {LOOSE.map(([x, y, a]) => (
+        <g key={x} className="bloom-loose" transform={`translate(${x} ${y}) rotate(${a})`}>
+          {leaves ? <Leaf l={11} id={id} /> : <path d={petal(7, kind === 'sakura')} fill={`url(#${id}p)`} stroke={kind === 'sakura' ? '#f29bbb' : '#a8174a'} strokeWidth=".4" />}
+        </g>
+      ))}
+      {FRONT.map(([x, y, r, a]) => (
+        <g key={x} className="bloom-front" transform={`translate(${x} ${y}) rotate(${leaves ? a * 3 : a})`}>
+          {item(r)}
+        </g>
+      ))}
+    </g>
+  );
+}
+
 export function SceneArt({ wide }) {
   // `wide`: a cena ocupa a tela toda (login); senão, é a faixa estreita do topo.
   return wide ? (
@@ -111,6 +254,9 @@ export function SceneArt({ wide }) {
         <circle cx="1177" cy="51" r="2.2" />
         <circle cx="1226" cy="18" r="2.8" />
       </g>
+      <Blooms kind="sakura" />
+      <Blooms kind="plum" />
+      <Blooms kind="leaves" />
     </svg>
   );
 }

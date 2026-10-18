@@ -1800,6 +1800,25 @@ async fn channel_name(app: &App, channel_id: &str) -> String {
 /// Push para os membros do servidor que querem saber disto (`wants(usuário, configuração)`), que
 /// veem o canal (se houver) e não estão com o app aberto na tela.
 #[allow(clippy::too_many_arguments)]
+/// Quem está na lista de um canal privado (`None`: o canal não é privado).
+async fn private_list(app: &App, channel_id: &str) -> Option<HashSet<String>> {
+    let private = app
+        .db
+        .query_one("SELECT private FROM channels WHERE id = ?1", [channel_id], |r| r.get::<i64>(0))
+        .await
+        .ok()
+        .flatten()?;
+    if private == 0 {
+        return None;
+    }
+    let users = app
+        .db
+        .query_all("SELECT user_id FROM channel_access WHERE channel_id = ?1", [channel_id], |r| r.get::<String>(0))
+        .await
+        .unwrap_or_default();
+    Some(users.into_iter().collect())
+}
+
 pub async fn notify_guild(
     app: &Arc<App>,
     guild_id: &str,
@@ -1817,8 +1836,17 @@ pub async fn notify_guild(
         .ok()
         .flatten()
         .unwrap_or_else(|| "PadoSpeak".into());
+    // Canal privado: avisa só quem está na lista dele. O dono e os admins veem o canal (para moderar),
+    // mas fora da lista não recebem os avisos.
+    let listed = match channel_id {
+        Some(c) => private_list(app, c).await,
+        None => None,
+    };
     for (user_id, username, settings) in crate::api::notify_audience(app, guild_id, &from.id).await {
         if channel_id.is_some_and(|c| !app.hub.user_can_see(c, &user_id)) || !wants(&username, &settings) {
+            continue;
+        }
+        if listed.as_ref().is_some_and(|l| !l.contains(&user_id)) {
             continue;
         }
         app.push_to(

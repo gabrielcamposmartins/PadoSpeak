@@ -667,6 +667,8 @@ export function createConnStore({ key, kind, base, primary = false }) {
         } else if (m.author.id !== s.me?.id && !(isViewing(m.channelId) && appHasFocus())) {
           // Canal de servidor: avisa conforme as notificações escolhidas para o servidor.
           const guildId = m.guildId || Object.entries(s.guildData).find(([, g]) => g.channels.some((c) => c.id === m.channelId))?.[0];
+          // Canal privado em que não estou na lista (vejo por ser dono/admin): nunca avisa.
+          if (outsiderOf(s, guildId, m.channelId)) return;
           const n = { ...DEFAULT_NOTIFY, ...s.guildNotify[guildId] };
           // @meu_usuario ou @everyone: avisa mesmo com "só menções" ou com o canal silenciado.
           const mentioned = mentionsUser(plain(m.content), s.me?.username);
@@ -794,7 +796,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
         const s0 = get();
         const n = !dm && guildId && s0.guildNotify[guildId];
         const inThisCall = s0.voice?.channelId === channelId; // dentro da chamada já há sons próprios
-        if (n && (n.voiceJoin || n.streams) && !inThisCall) {
+        if (n && (n.voiceJoin || n.streams) && !inThisCall && !outsiderOf(s0, guildId, channelId)) {
           const before = new Map((s0.voiceStates[channelId] || []).map((p) => [p.peerId, p]));
           const ch = s0.guildData[guildId]?.channels.find((c) => c.id === channelId);
           for (const p of participants) {
@@ -2273,6 +2275,17 @@ export function memberBits(s, guildId, userId) {
   return custom ?? guild?.defaultPerms ?? PERM.INVITE;
 }
 
+/**
+ * Canal privado que eu vejo só por ser dono ou admin (não estou na lista dele): os avisos dele não são para mim.
+ * A lista (`channelAccess`) só chega para quem administra; para os outros o canal privado já é da lista.
+ */
+function outsiderOf(s, guildId, channelId) {
+  const g = s.guildData[guildId];
+  const ch = g?.channels.find((c) => c.id === channelId);
+  const list = g?.channelAccess?.[channelId];
+  return Boolean(ch?.private && Array.isArray(list) && !list.includes(s.me?.id));
+}
+
 /** O que eu posso fazer num servidor: dono e admin podem tudo. */
 export function permsOf(s, guildId) {
   const guild = s.guilds.find((g) => g.id === guildId);
@@ -2832,6 +2845,8 @@ function applyAppearance(p) {
   if (theme) root.dataset.theme = theme;
   else delete root.dataset.theme;
   root.dataset.scene = String(p.scene ?? 0);
+  // Cena do perfil desligada: a imagem de fundo cobre também o topo.
+  root.toggleAttribute('data-scene-off', p.sceneOn === false);
   // Cor do sistema: o CSS deriva dela os tons de seleção, abas, links e a cena "Sistema".
   if (/^#[0-9a-f]{6}$/i.test(p.accent || '')) {
     root.style.setProperty('--accent', p.accent);

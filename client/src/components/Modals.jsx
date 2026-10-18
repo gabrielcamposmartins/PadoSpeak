@@ -522,6 +522,9 @@ const SCENES = [
   ['Aquário', 'Aquário · Abismo no tema escuro'],
   ['Aurora', 'Aurora (nos dois temas)'],
   ['Sistema', 'Céu na cor do sistema'],
+  ['Sakura', 'Galho de cerejeira florida'],
+  ['Ameixeira', 'Galho de ameixeira florida'],
+  ['Folhas verdes', 'Galho com folhas verdes'],
 ];
 
 const SETTINGS_TABS = [
@@ -1284,6 +1287,7 @@ function SettingsModal({ close, tab: startTab, focus }) {
   const nudge = prim((s) => s.nudgeSettings);
   const [theme, setTheme] = useState(useStore.getState().prefs.theme || 'light');
   const [scene, setScene] = useState(useStore.getState().prefs.scene ?? 0);
+  const sceneOn = useStore((s) => s.prefs.sceneOn !== false);
   const [needsPermission, setNeedsPermission] = useState(false);
   const canPickOutput = typeof HTMLMediaElement !== 'undefined' && 'setSinkId' in HTMLMediaElement.prototype;
   const hasServer = useStore((s) => Boolean(s.me));
@@ -1338,7 +1342,16 @@ function SettingsModal({ close, tab: startTab, focus }) {
       </div>
       <div className="field">
         <span>Cena do perfil</span>
-        <div className="scene-pick" role="radiogroup" aria-label="Cena do perfil">
+        <label className="checkbox">
+          <input type="checkbox" checked={sceneOn} onChange={(e) => useStore.getState().setAppearance({ sceneOn: e.target.checked })} />
+          <span>
+            Mostrar a cena no topo
+            <small className="check-hint">
+              Desligada, a imagem de fundo cobre também o topo, e a sua foto e o seu nome ganham um fundo para continuar fáceis de ler.
+            </small>
+          </span>
+        </label>
+        <div className={`scene-pick${sceneOn ? '' : ' off'}`} role="radiogroup" aria-label="Cena do perfil">
           {SCENES.map(([name, hint], i) => (
             <button
               key={name}

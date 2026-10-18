@@ -19,6 +19,7 @@ import {
   Hash,
   Lock,
   Paperclip,
+  Trash2,
 } from 'lucide-react';
 import { useStore } from '../store.js';
 import Avatar, { UserName } from './Avatar.jsx';
@@ -558,7 +559,27 @@ const KIND = { image: 'Imagem', video: 'Vídeo', audio: 'Áudio', text: 'Texto' 
 const fileKind = (f) => (f.kind === 'voice' ? 'Mensagem de voz' : f.mime === 'application/pdf' ? 'PDF' : f.mime === 'application/zip' ? 'ZIP' : KIND[f.mime.split('/')[0]] || 'Arquivo');
 
 function GuildFiles({ guildId }) {
-  const { data, error } = useLoad(() => useStore.getState().adminGuildFiles(guildId), guildId);
+  const [version, setVersion] = useState(0);
+  const { data, error } = useLoad(() => useStore.getState().adminGuildFiles(guildId), `${guildId}:${version}`);
+  const [busy, setBusy] = useState(null);
+  /** Apaga o arquivo do servidor (a mensagem fica com "Arquivo removido"), depois de confirmar. */
+  const remove = (f) =>
+    useStore.getState().openModal({
+      type: 'confirm',
+      title: `Apagar “${f.name}”?`,
+      text: `O arquivo some do servidor e a mensagem em #${f.channelName || 'canal'} fica com “Arquivo removido”. Não dá para desfazer.`,
+      action: async () => {
+        setBusy(f.id);
+        try {
+          await useStore.getState().deleteFile(f.id);
+          setVersion((v) => v + 1);
+        } catch (e) {
+          useStore.getState().notify(e.message);
+        } finally {
+          setBusy(null);
+        }
+      },
+    });
   const fileUrl = useStore((s) => s.fileUrl);
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(null);
@@ -590,6 +611,9 @@ function GuildFiles({ guildId }) {
               {th('channel', 'Canal')}
               {th('by', 'Enviado por')}
               {th('date', 'Enviado em')}
+              <th>
+                <span className="sr-only">Apagar</span>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -621,10 +645,22 @@ function GuildFiles({ guildId }) {
                     {plain(f.by)} <small>@{f.byUsername}</small>
                   </td>
                   <td>{fmtStamp(f.createdAt)}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="adm-expand adm-del"
+                      title="Apagar o arquivo"
+                      aria-label={`Apagar ${f.name}`}
+                      disabled={busy === f.id}
+                      onClick={() => remove(f)}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </td>
                 </tr>
                 {open === f.id && (
                   <tr className="adm-members-row">
-                    <td colSpan={6}>
+                    <td colSpan={7}>
                       <div className="adm-file-view">
                         {f.kind === 'voice' ? (
                           <VoiceNote voice={{ id: f.id, duration: 0, mime: f.mime }} />

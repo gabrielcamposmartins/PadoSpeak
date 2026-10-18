@@ -160,6 +160,16 @@
   --scene-top-0: #0d6cc0;
   --scene-top-1: #04697a;
   --scene-top-2: #1a3c8c;
+  /* Galho (Sakura, Ameixeira, Folhas verdes): céu, e as cores das flores e folhas. */
+  --scene-4: var(--scene-glow), linear-gradient(180deg, #c4567f 0%, #e286aa 55%, #f5bfd2 100%);
+  --scene-5: var(--scene-glow), linear-gradient(180deg, #4b2f86 0%, #8656b6 55%, #d4a2d3 100%);
+  --scene-6: var(--scene-glow), linear-gradient(180deg, #1c7442 0%, #4aa75a 55%, #b3e39c 100%);
+  --scene-top-4: #c4567f;
+  --scene-top-5: #4b2f86;
+  --scene-top-6: #1c7442;
+  --wide-4: linear-gradient(180deg, #b84d76 0%, #e08aac 40%, #f7c9da 70%, #fff0f5 100%);
+  --wide-5: linear-gradient(180deg, #432a7c 0%, #8254b2 40%, #d4a2d3 70%, #fbeefa 100%);
+  --wide-6: linear-gradient(180deg, #19693c 0%, #47a357 40%, #b3e39c 70%, #f0fbe8 100%);
   --scene-top: var(--scene-top-0);
   --mention-text: #0a5aa0;
   --mention-bg: rgba(60, 160, 240, 0.14);
@@ -217,6 +227,21 @@
   --scene-bg: var(--scene-2);
   --scene-wide: var(--wide-2);
   --scene-top: var(--scene-top-2);
+}
+:root[data-scene='4'] {
+  --scene-bg: var(--scene-4);
+  --scene-wide: var(--wide-4);
+  --scene-top: var(--scene-top-4);
+}
+:root[data-scene='5'] {
+  --scene-bg: var(--scene-5);
+  --scene-wide: var(--wide-5);
+  --scene-top: var(--scene-top-5);
+}
+:root[data-scene='6'] {
+  --scene-bg: var(--scene-6);
+  --scene-wide: var(--wide-6);
+  --scene-top: var(--scene-top-6);
 }
 
 /* DARK:BEGIN */
@@ -371,6 +396,15 @@
   --scene-top-0: #030c22;
   --scene-top-1: #010a14;
   --scene-top-2: #040d26;
+  --scene-4: var(--scene-glow), linear-gradient(180deg, #1e0a1a 0%, #4a1838 60%, #7a2c5a 100%);
+  --scene-5: var(--scene-glow), linear-gradient(180deg, #110a26 0%, #2e1a52 60%, #4e2f72 100%);
+  --scene-6: var(--scene-glow), linear-gradient(180deg, #06170d 0%, #0f3a20 60%, #1d5a32 100%);
+  --scene-top-4: #1e0a1a;
+  --scene-top-5: #110a26;
+  --scene-top-6: #06170d;
+  --wide-4: linear-gradient(180deg, #14060f 0%, #3a1230 45%, #6a2650 80%, #7a2c5a 100%);
+  --wide-5: linear-gradient(180deg, #0a0618 0%, #241444 45%, #422866 80%, #4e2f72 100%);
+  --wide-6: linear-gradient(180deg, #030d07 0%, #0b2c18 45%, #17492a 80%, #1d5a32 100%);
   --mention-text: #9fd8ff;
   --mention-bg: rgba(90, 180, 255, 0.16);
   --mention-border: rgba(127, 208, 255, 0.4);
@@ -565,6 +599,15 @@
     --scene-top-0: #030c22;
     --scene-top-1: #010a14;
     --scene-top-2: #040d26;
+    --scene-4: var(--scene-glow), linear-gradient(180deg, #1e0a1a 0%, #4a1838 60%, #7a2c5a 100%);
+    --scene-5: var(--scene-glow), linear-gradient(180deg, #110a26 0%, #2e1a52 60%, #4e2f72 100%);
+    --scene-6: var(--scene-glow), linear-gradient(180deg, #06170d 0%, #0f3a20 60%, #1d5a32 100%);
+    --scene-top-4: #1e0a1a;
+    --scene-top-5: #110a26;
+    --scene-top-6: #06170d;
+    --wide-4: linear-gradient(180deg, #14060f 0%, #3a1230 45%, #6a2650 80%, #7a2c5a 100%);
+    --wide-5: linear-gradient(180deg, #0a0618 0%, #241444 45%, #422866 80%, #4e2f72 100%);
+    --wide-6: linear-gradient(180deg, #030d07 0%, #0b2c18 45%, #17492a 80%, #1d5a32 100%);
     --mention-text: #9fd8ff;
     --mention-bg: rgba(90, 180, 255, 0.16);
     --mention-border: rgba(127, 208, 255, 0.4);
@@ -1179,6 +1222,33 @@ code {
 .scene-art .glints circle {
   fill: var(--glint);
 }
+/* Flores e folhas das cenas Sakura (4), Ameixeira (5) e Folhas verdes (6): no lugar das bolhas. */
+.scene-art .blooms {
+  display: none;
+}
+:root[data-scene='4'] .scene-art .blooms.sakura,
+:root[data-scene='5'] .scene-art .blooms.plum,
+:root[data-scene='6'] .scene-art .blooms.leaves {
+  display: inline;
+}
+:root:is([data-scene='4'], [data-scene='5'], [data-scene='6']) .scene-art :is(.bubbles, .glints) {
+  display: none;
+}
+.scene-art .bloom-front {
+  filter: drop-shadow(0 1px 1.5px rgba(60, 10, 40, 0.25));
+}
+.scene-art .bloom-back {
+  opacity: 0.45;
+}
+.scene-art .bloom-loose {
+  opacity: 0.8;
+}
+/* Celular: o nome ocupa a faixa toda; ficam só as flores pequenas do fundo e as pétalas soltas. */
+@media (max-width: 640px) {
+  .scene-art .bloom-front {
+    display: none;
+  }
+}
 
 /* ---------- Barras de título (janelas Aero) ---------- */
 .titlebar {
@@ -1346,6 +1416,48 @@ html.framed .overlay {
 .profile-bar > :not(.scene-art) {
   position: relative;
   z-index: 1;
+}
+/* Foto e texto do perfil: só um agrupamento; vira um cartão com a cena desligada. */
+.pb-id {
+  display: contents;
+}
+.pb-id > * {
+  position: relative;
+  z-index: 1;
+}
+:root[data-scene-off] .profile-bar {
+  background: transparent;
+  border-bottom: 0;
+}
+:root[data-scene-off] .profile-bar > .scene-art {
+  display: none;
+}
+:root[data-scene-off] .pb-id {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 6px 16px 6px 6px;
+  border-radius: 18px;
+  background: rgba(6, 30, 56, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  box-shadow: 0 4px 14px rgba(0, 20, 40, 0.25);
+  backdrop-filter: blur(10px);
+}
+:root[data-scene-off] .pb-id .pb-text {
+  flex: 0 1 auto;
+}
+:root[data-scene-off] .profile-bar .pb-controls {
+  margin-left: auto;
+}
+/* A imagem de fundo do Início ou do servidor cobre o app inteiro, do topo para baixo. */
+:root[data-scene-off] .aero-app[data-bg] {
+  background: var(--app-bg-img) center / cover no-repeat;
+}
+:root[data-scene-off] .aero-app[data-bg] .aero-body,
+:root[data-scene-off] .aero-app.mobile-app[data-bg] .m-body {
+  background: none;
 }
 .pb-text {
   flex: 1;
@@ -3691,6 +3803,21 @@ html.framed .overlay {
 .scene-swatch.s2 {
   background: var(--scene-2);
 }
+.scene-swatch.s4 {
+  background: var(--scene-4);
+}
+.scene-swatch.s5 {
+  background: var(--scene-5);
+}
+.scene-swatch.s6 {
+  background: var(--scene-6);
+}
+.scene-pick .scene-swatch {
+  min-width: 84px;
+}
+.scene-pick.off {
+  opacity: 0.55;
+}
 .scene-swatch.on {
   border-color: #fff;
   box-shadow: 0 0 0 2px var(--input-focus);
@@ -5310,6 +5437,20 @@ fieldset.plain {
 }
 /* Configurações → Atividade: programas que também aparecem no status */
 /* Campo do @ (cadastro e Configurações → Conta): o aviso de livre ou já usado fica embaixo. */
+.auth-agree {
+  margin: 2px 0 4px;
+  font-size: 13px;
+}
+.auth-agree a {
+  color: var(--link);
+}
+.auth-agree-hint {
+  display: block;
+  margin-top: 6px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+}
 .handle-input {
   position: relative;
   display: flex;
@@ -9626,6 +9767,12 @@ button.receipt.read:hover {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.adm-expand.adm-del:hover {
+  color: var(--danger-ink);
+}
+.adm-expand.adm-del svg {
+  rotate: 0deg;
+}
 .adm-file-view {
   max-width: 420px;
 }
@@ -9744,6 +9891,40 @@ button.receipt.read:hover {
 .dl-banner .dl-close:hover {
   background: rgba(0, 0, 0, 0.07);
   border-color: rgba(0, 0, 0, 0.12);
+}
+
+/* Faixa "Nova versão disponível": a mesma faixa, em verde. */
+.up-banner {
+  background: linear-gradient(180deg, #effbe6 0%, #cdeeb8 100%);
+  border-bottom-color: #8cc56f;
+  color: #24520f;
+}
+.up-banner .dl-ico {
+  width: 20px;
+  height: 20px;
+  color: #2e9e1a;
+}
+.up-banner small {
+  font-size: 12.5px;
+  opacity: 0.8;
+}
+:root[data-theme='dark'] .up-banner {
+  background: linear-gradient(180deg, #1d3a14, #142a0d);
+  border-color: #3f6e2a;
+  color: #cff3bd;
+}
+:root[data-theme='dark'] .up-banner .dl-ico {
+  color: #6fdc4f;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .up-banner {
+    background: linear-gradient(180deg, #1d3a14, #142a0d);
+    border-color: #3f6e2a;
+    color: #cff3bd;
+  }
+  :root:not([data-theme='light']) .up-banner .dl-ico {
+    color: #6fdc4f;
+  }
 }
 
 /* ---------- Downloads: setinha verde até terminar ---------- */

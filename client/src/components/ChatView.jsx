@@ -26,7 +26,7 @@ import FormatTools, { formatKey } from './FormatTools.jsx';
 import { AttachTray, oversized, CAPTION_MAX, CameraCapture, VoiceRecorder, requestMic, fromPhoneCamera } from './Compose.jsx';
 import AttachSheet from './AttachSheet.jsx';
 import { addRecent } from '../lib/recent.js';
-import { magicIn, magicEmotesIn, playMagic } from '../lib/magic.js';
+import { magicOf, playMagic } from '../lib/magic.js';
 import { useConn, useConnKey } from './conn.jsx';
 import Avatar, { UserName, Orb, usePresence, useUser, colorClass, colorStyle } from './Avatar.jsx';
 import { RichText, FormattedText, plain, EmojiText, EmojiPicker, Floating, insertText, EMOTES, mentionsUser } from './Emotes.jsx';
@@ -708,13 +708,26 @@ export default function ChatView({ channel, variant = 'channel' }) {
     magicDone.current = channel.id;
     const kinds = new Set();
     for (const m of messages.slice(-10)) {
-      // Arquivo, voz e sticker: só a legenda conta (o nome do arquivo não).
-      for (const k of magicIn(m.content.replace(/^\[(?:arquivo|voz|sticker):[^\]]*\]\n?/, ''))) kinds.add(k);
-      // Emoticons e stickers de efeito (no texto ou como sticker).
-      for (const k of magicEmotesIn(m.content)) kinds.add(k);
+      for (const k of magicOf(m.content)) kinds.add(k);
     }
     kinds.forEach((k, i) => setTimeout(() => playMagic(k), 250 + i * 400));
   }, [loaded, channel.id]);
+
+  // Chegou agora uma mensagem com efeito (palavra, emoticon ou sticker), mandada por mim ou por outra
+  // pessoa, com a conversa aberta: toca na hora.
+  const lastMagic = useRef(null);
+  const newest = messages[messages.length - 1];
+  useEffect(() => {
+    if (!newest || newest.id === lastMagic.current) return;
+    const first = lastMagic.current === null;
+    lastMagic.current = newest.id;
+    if (first || Date.now() - newest.createdAt > 15000) return;
+    const kinds = magicOf(newest.content);
+    [...kinds].forEach((k, i) => setTimeout(() => playMagic(k), i * 400));
+  }, [newest?.id]);
+  useEffect(() => {
+    lastMagic.current = null;
+  }, [channel.id]);
 
   // Li o que está na tela (só com a janela em foco e visível).
   useEffect(() => {

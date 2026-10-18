@@ -90,6 +90,8 @@ export default function AuthPage() {
   const update = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
   // Criar conta pelo e-mail: o @ acompanha o nome de exibição (ou o e-mail) até a pessoa escrever o dela.
   const [handle, setHandle] = useState(null);
+  // Criar conta: só depois de marcar que leu e aceita os termos e a política de privacidade.
+  const [agreed, setAgreed] = useState(false);
   const autoHandle = handleFrom(form.displayName) || handleFrom(form.email);
   const handleValue = handle ?? autoHandle;
   const handleCheck = useHandleCheck(mode === 'register' && !isDesktop ? handleValue : '');
@@ -101,6 +103,7 @@ export default function AuthPage() {
     setBusy(true);
     try {
       if (mode === 'register' && form.password !== form.confirm) throw new Error('As duas senhas não são iguais.');
+      if (mode === 'register' && !agreed) throw new Error('Para criar a conta, marque que leu e aceita os Termos de Serviço e a Política de Privacidade.');
       if (mode === 'register' && !isDesktop) {
         if (!handleValue) throw new Error('Escolha o seu @.');
         if (handle != null && handleCheck.state === 'taken') throw new Error(handleCheck.error);
@@ -322,6 +325,21 @@ export default function AuthPage() {
                 />
               </label>
             )}
+            {mode === 'register' && (
+              <label className="checkbox auth-agree">
+                <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} required />
+                <span>
+                  Li e aceito os{' '}
+                  <a href={`${serverUrl}/termos`} target="_blank" rel="noreferrer">
+                    Termos de Serviço
+                  </a>{' '}
+                  e a{' '}
+                  <a href={`${serverUrl}/privacidade`} target="_blank" rel="noreferrer">
+                    Política de Privacidade
+                  </a>
+                </span>
+              </label>
+            )}
 
             {note && !error && <p className="auth-note" role="status">{note}</p>}
             {locked ? <LoginLock left={lockout.left} /> : (error || localError) && <p className="error-text">{error || localError}</p>}
@@ -341,7 +359,13 @@ export default function AuthPage() {
               <div className="auth-or">
                 <span>ou</span>
               </div>
-              <GoogleButton base={serverUrl} onDone={google} onError={(e) => setError(e.message)} />
+              <GoogleButton
+                base={serverUrl}
+                onDone={google}
+                onError={(e) => setError(e.message)}
+                disabled={mode === 'register' && !agreed}
+              />
+              {mode === 'register' && !agreed && <small className="auth-agree-hint">Marque “Li e aceito” acima para criar a conta com o Google.</small>}
             </div>
           )}
 

@@ -197,6 +197,9 @@ pub async fn guild_ids_of(app: &App, user_id: &str) -> Vec<String> {
 }
 
 /// Permissões dentro de um servidor (bits na coluna `guild_members.perms`).
+/// Validade dos arquivos de um servidor novo (o dono muda nas configurações do servidor).
+pub const DEFAULT_FILE_TTL_MS: i64 = 7 * 24 * 3600 * 1000;
+
 pub mod perm {
     pub const ADMIN: i64 = 1;
     pub const INVITE: i64 = 2;
@@ -701,8 +704,8 @@ async fn create_guild(
     let conn = app.db.conn().await?;
     let tx = conn.transaction().await?;
     tx.execute(
-        "INSERT INTO guilds (id, name, icon_color, owner_id, invite_code, created_at, default_perms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        libsql::params![id.as_str(), name, random_color(), user.id.as_str(), invite_code(), now, perm::DEFAULT],
+        "INSERT INTO guilds (id, name, icon_color, owner_id, invite_code, created_at, default_perms, file_ttl_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        libsql::params![id.as_str(), name, random_color(), user.id.as_str(), invite_code(), now, perm::DEFAULT, DEFAULT_FILE_TTL_MS],
     )
     .await?;
     tx.execute(

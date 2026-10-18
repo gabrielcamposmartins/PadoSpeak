@@ -25,22 +25,19 @@ export const STATUS_INFO = {
   invisible: { cls: 'off', label: 'Offline' },
 };
 
-/** O canal de voz é deste servidor? */
-const inGuild = (s, guildId, channelId) => Boolean(s.guildData[guildId]?.channels.some((c) => c.id === channelId));
-
 /**
- * Situação de alguém para a moldura: ao vivo, em voz, ou o status escolhido (online, ausente, ocupado, offline).
- * `guildId` (lista de membros de um servidor): a voz só conta se for num canal desse servidor; a chamada em
- * outro servidor (ou em particular) não aparece ali.
+ * Situação de alguém para a moldura: ao vivo ou em voz (só na mesma chamada que a minha), ou o status
+ * escolhido (online, ausente, ocupado, offline).
  */
-export function usePresence(userId, guildId) {
+export function usePresence(userId) {
   const useC = useConn();
   return useC((s) => {
     if (!userId) return 'off';
-    for (const [channelId, list] of Object.entries(s.voiceStates)) {
-      const p = list.find((x) => x.user.id === userId);
-      if (p && (!guildId || inGuild(s, guildId, channelId))) return p.screen ? 'live' : 'voice';
-    }
+    // A borda de voz (e a de ao vivo) só para quem está na mesma chamada que eu; para os outros, a cor
+    // do status que a pessoa escolheu.
+    const mine = s.voice?.channelId;
+    const p = mine && s.voiceStates[mine]?.find((x) => x.user.id === userId);
+    if (p) return p.screen ? 'live' : 'voice';
     if (userId === s.me?.id) return s.rtStatus === 'connected' ? STATUS_INFO[s.myStatus]?.cls || 'on' : 'off';
     if (!s.online[userId]) return 'off';
     return STATUS_INFO[s.statuses[userId]]?.cls || 'on';
@@ -92,12 +89,12 @@ const picBackground = (c) => `linear-gradient(135deg, color-mix(in srgb, ${c} 50
  * Foto com moldura de presença (verde online, cinza offline, azul em voz, vermelho ao vivo).
  * `status` força a moldura; `frame={false}` mostra só a foto.
  */
-export default function Avatar({ user: given, size = 40, status, frame = true, speaking, onClick, online, base, guildId }) {
+export default function Avatar({ user: given, size = 40, status, frame = true, speaking, onClick, online, base }) {
   const user = useUser(given);
   const useC = useConn();
   const connBase = useC((s) => s.baseUrl);
   const withToken = useC((s) => s.withToken);
-  const auto = usePresence(frame && status == null && online == null ? user?.id : null, guildId);
+  const auto = usePresence(frame && status == null && online == null ? user?.id : null);
   const [broken, setBroken] = useState(null);
   const name = plain(user?.displayName) || user?.username || '?';
   // Foto deste servidor: vai com o login (quem esconde o perfil de alguém só mostra a foto a quem pode ver).

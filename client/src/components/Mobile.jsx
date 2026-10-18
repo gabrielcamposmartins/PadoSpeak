@@ -24,7 +24,7 @@ import { isDesktop } from '../lib/env.js';
 import { unreadTotal, useAcross } from './conn.jsx';
 import Avatar from './Avatar.jsx';
 import { FormattedText } from './Emotes.jsx';
-import { useAppBackground, ProfileBar, GuildRail, ChannelSidebar, Main, VoiceStatus, StatusMenu } from './Shell.jsx';
+import { useAppBackground, ProfileBar, GuildRail, ChannelSidebar, Main, VoiceStatus, StatusMenu, UpdateBanner } from './Shell.jsx';
 import { HomeSidebar, FriendsPage, FriendTabs } from './Home.jsx';
 import MusicPanel from './MusicPanel.jsx';
 import { colorClass, colorStyle, STATUS_INFO } from './Avatar.jsx';
@@ -261,6 +261,7 @@ export default function MobileShell() {
   return (
     <div className={`aero-app mobile-app${detail ? ' m-open' : ''}`} {...bg}>
       {!detail && <ProfileBar />}
+      {!detail && <UpdateBanner />}
       <div className="m-body">
         {detail ? (
           music ? (

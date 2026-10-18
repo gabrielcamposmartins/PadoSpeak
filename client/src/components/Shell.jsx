@@ -27,11 +27,13 @@ import {
   VolumeX,
   ChartColumn,
   Download,
+  RefreshCw,
   Gamepad2,
   WifiOff,
 } from 'lucide-react';
 import { useStore, primaryConn, setStatusEverywhere, connRegistry, usePerms, openMyProfile } from '../store.js';
 import { isDesktop, DOWNLOAD_URL } from '../lib/env.js';
+import { useUpdate, installAvailable } from '../lib/update.js';
 import { offerWindowsApp } from './AuthPage.jsx';
 import { ConnProvider, useAcross, useVoiceConn } from './conn.jsx';
 import { canHost } from '../lib/host.js';
@@ -171,6 +173,8 @@ export function ProfileBar({ onMenu }) {
           <Menu size={20} />
         </button>
       )}
+      {/* Com a cena do perfil desligada, foto e texto ganham um fundo para não perder contraste com a imagem. */}
+      <div className="pb-id">
       <Avatar user={me} base={base} size={62} status={frame} speaking={voice?.speaking.me} onClick={openMyProfile} />
       <div className="pb-text">
         <div className="pb-name">
@@ -199,6 +203,7 @@ export function ProfileBar({ onMenu }) {
             </span>
           </div>
         )}
+      </div>
       </div>
       <div className="pb-controls glass">
         <button
@@ -422,6 +427,8 @@ function VoiceChannelMembers({ channelId, guildId }) {
  */
 function VoiceMemberRow({ p, channelId, guildId, speaking, watch, trouble }) {
   const localMuted = useStore((s) => Boolean(s.prefs.localMutes?.[p.user.id]));
+  // Borda de voz só para quem está na mesma chamada; de fora, a cor do status de cada um.
+  const together = useStore((s) => s.voice?.channelId === channelId);
   const { props, overlay } = useVoicePerson({
     p,
     channelId,
@@ -437,7 +444,7 @@ function VoiceMemberRow({ p, channelId, guildId, speaking, watch, trouble }) {
       title={watch ? `Assistir a transmissão de ${plain(p.user.displayName)}` : undefined}
       onKeyDown={(e) => e.key === 'Enter' && props.onClick(e)}
     >
-      <Avatar user={p.user} size={20} status={p.screen ? 'live' : 'voice'} speaking={speaking} />
+      <Avatar user={p.user} size={20} status={together ? (p.screen ? 'live' : 'voice') : undefined} speaking={speaking} />
       <UserName user={p.user} className="nm" />
       {p.screen && <span className="live">AO VIVO</span>}
       {p.video && <Video size={14} />}
@@ -970,6 +977,7 @@ function TabletShell() {
   return (
     <div className="aero-app tablet-app" {...useAppBackground()}>
       <ProfileBar onMenu={() => setOpen(true)} />
+      <UpdateBanner />
       <DownloadBanner />
       <div className="aero-body">
         <Main />
@@ -994,8 +1002,46 @@ export function useAppBackground() {
   const prim = primaryConn();
   const myBg = prim((s) => s.myBackground);
   const primBase = prim((s) => s.baseUrl);
-  const url = home ? myBg && primBase + myBg : guildBg && base + guildBg;
+  // Servidor sem imagem própria: vale a minha imagem do Início (só eu vejo, é a minha).
+  const mine = myBg && primBase + myBg;
+  const url = home ? mine : (guildBg && base + guildBg) || mine;
   return url ? { 'data-bg': '1', style: { '--app-bg-img': `url("${url}")` } } : {};
+}
+
+/**
+ * Faixa "Nova versão disponível": saiu versão nova com o app aberto (veja lib/update.js). "Atualizar": no
+ * Windows instala e reabre; no navegador e no PWA recarrega na versão nova. "Depois" esconde até a próxima versão.
+ */
+export function UpdateBanner() {
+  const available = useUpdate((s) => s.available);
+  const inCall = useStore((s) => Boolean(s.voice));
+  const [later, setLater] = useState(null);
+  const [busy, setBusy] = useState(false);
+  if (!available || later === available.key) return null;
+  const install = async () => {
+    setBusy(true);
+    try {
+      await installAvailable();
+    } catch (e) {
+      useStore.getState().notify(`Não deu para atualizar: ${e?.message || e}`);
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="dl-banner up-banner" role="region" aria-label="Atualização disponível">
+      <RefreshCw size={20} className="dl-ico" aria-hidden="true" />
+      <span className="dl-text">
+        <b>Nova versão do PadoSpeak{available.version ? ` (${available.version})` : ''}</b>
+        <small>{inCall ? ' · a chamada cai ao atualizar' : isDesktop ? ' · o app reabre sozinho' : ''}</small>
+      </span>
+      <button type="button" className="btn" onClick={install} disabled={busy}>
+        <RefreshCw size={15} className={busy ? 'spin' : undefined} /> {busy ? 'Atualizando…' : 'Atualizar'}
+      </button>
+      <button type="button" className="dl-close" title="Depois" aria-label="Atualizar depois" onClick={() => setLater(available.key)}>
+        <X size={16} />
+      </button>
+    </div>
+  );
 }
 
 /**
@@ -1051,6 +1097,7 @@ export default function Shell() {
   return (
     <div className="aero-app" {...bg}>
       <ProfileBar />
+      <UpdateBanner />
       <DownloadBanner />
       <div className="aero-body">
         <GuildRail />

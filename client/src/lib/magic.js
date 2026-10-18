@@ -41,6 +41,16 @@ export function magicIn(text) {
   return found;
 }
 
+/**
+ * Efeitos de uma mensagem: as palavras do texto (num arquivo, voz ou sticker, só a legenda conta, não o nome
+ * do arquivo) e os emoticons ou o sticker de efeito.
+ */
+export function magicOf(content) {
+  const text = String(content || '');
+  const caption = text.replace(/^\[(?:arquivo|voz|sticker):[^\]]*\]\n?/, '');
+  return new Set([...magicIn(caption), ...magicEmotesIn(text)]);
+}
+
 const RAINBOW = ['#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#32ade6', '#5856d6', '#af52de'];
 const CONFETTI = ['#5ac8fa', '#ff2d55', '#ffcc00', '#34c759', '#af52de', '#ff9500'];
 const running = new Set();

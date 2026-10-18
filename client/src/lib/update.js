@@ -22,6 +22,9 @@ export const useUpdate = create((set) => ({
   progress: null, // 0 a 1 enquanto baixa (null se o tamanho não vier)
   total: 0, // bytes do pacote (0 se o tamanho não vier)
   error: null,
+  // Versão nova encontrada com o app já aberto: { version, key } (a faixa "Nova versão disponível"; `key`
+  // identifica a versão para o "Depois").
+  available: null,
   set: (patch) => set(patch),
   dismiss: () => set({ stage: 'idle', error: null }),
 }));
@@ -115,4 +118,78 @@ function retryHidden(left) {
       useUpdate.getState().set({ stage: 'idle' });
     });
   }, RETRY_MS);
+}
+
+// ---------- Versão nova com o app aberto ----------
+//
+// App do Windows: de tempos em tempos pergunta ao GitHub (o mesmo `latest.json`). Navegador e PWA: o
+// servidor de comunidade serve o app, então basta comparar o build deste app com o `version.json` que ele
+// serve (gerado no build, veja vite.config.js); recarregar a página já traz a versão nova.
+// Em ambos aparece a faixa "Nova versão disponível" (components/Shell.jsx), e quem decide a hora é a pessoa.
+
+const APP_CHECK_MS = 30 * 60 * 1000;
+const WEB_CHECK_MS = 10 * 60 * 1000;
+let pending = null; // atualização do Tauri pronta para instalar
+let watching = false;
+let lastWebCheck = 0;
+const thisBuild = typeof __APP_BUILD__ === 'string' ? __APP_BUILD__ : null;
+
+async function checkApp() {
+  if (useUpdate.getState().stage !== 'idle') return;
+  const found = await findUpdate(20000);
+  if (!found.update) return;
+  pending = found.update;
+  useUpdate.getState().set({ available: { version: found.update.version, key: found.update.version } });
+}
+
+async function checkWeb() {
+  if (!thisBuild || Date.now() - lastWebCheck < 60 * 1000) return;
+  lastWebCheck = Date.now();
+  try {
+    const res = await fetch(`/version.json?t=${Date.now()}`, { cache: 'no-store' });
+    if (!res.ok) return;
+    const { version, build } = await res.json();
+    // Mesmo número com build novo (ajuste no servidor): a faixa aparece sem o número.
+    const mine = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : null;
+    if (build && build !== thisBuild) useUpdate.getState().set({ available: { version: version !== mine ? version : null, key: build } });
+  } catch {
+    /* sem rede: confere de novo depois */
+  }
+}
+
+/** Começa a procurar versão nova com o app aberto (uma vez, ao iniciar). */
+export function watchForUpdates() {
+  if (watching || typeof window === 'undefined') return;
+  watching = true;
+  if (isTauri) {
+    setInterval(() => checkApp().catch(() => {}), APP_CHECK_MS);
+    return;
+  }
+  if (!import.meta.env.PROD) return;
+  setInterval(checkWeb, WEB_CHECK_MS);
+  // Voltou para o app (celular desbloqueado, aba de volta): confere na hora.
+  document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && checkWeb());
+  setTimeout(checkWeb, 60 * 1000);
+}
+
+/** "Atualizar": no Windows baixa, instala e reabre (erro: lança); no navegador e no PWA, recarrega na versão nova. */
+export async function installAvailable() {
+  if (isTauri) {
+    if (!pending) return;
+    try {
+      await install(pending);
+    } catch (err) {
+      // Volta para o app; quem chamou mostra o motivo.
+      useUpdate.getState().set({ stage: 'idle' });
+      throw err;
+    }
+    return;
+  }
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    await reg?.update();
+  } catch {
+    /* recarrega mesmo assim (a página vem da rede primeiro) */
+  }
+  location.reload();
 }

@@ -769,7 +769,9 @@ async fn guild_admin(app: &App, guild_id: &Option<String>, user_id: &str) -> Res
 /// Apaga um arquivo: quem enviou ou o dono do servidor onde ele está.
 async fn remove(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): Path<String>) -> ApiResult<StatusCode> {
     let f = file_row(&app, &id).await.ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "Arquivo não encontrado".into()))?;
-    if f.owner_id != me.id && !guild_admin(&app, &f.guild_id, &me.id).await? {
+    // Quem enviou, um administrador do servidor ou, nos servidores, quem vê o painel do administrador do app.
+    let app_admin = f.guild_id.is_some() && crate::admin::can_view(&app, &me).await;
+    if f.owner_id != me.id && !app_admin && !guild_admin(&app, &f.guild_id, &me.id).await? {
         return Err(ApiError(StatusCode::FORBIDDEN, "Só quem enviou ou um administrador do servidor pode apagar".into()));
     }
     delete_files(&app, "SELECT id FROM files WHERE id = ?1", &id).await?;

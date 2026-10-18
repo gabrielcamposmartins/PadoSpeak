@@ -1,5 +1,19 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.9.7 — 18/10/2026
+
+### Novidades
+- **Aviso de nova versão**: quando sai uma versão nova com o PadoSpeak aberto, aparece uma faixa verde com o botão “Atualizar”. No Windows ele instala e reabre o app; no celular e no navegador, recarrega já na versão nova. Numa chamada, a faixa avisa que ela cai ao atualizar.
+- **Novas cenas do perfil**: Sakura, Ameixeira e Folhas verdes, em Configurações → Aparência.
+- **Desligar a cena do perfil**: sem a cena, a imagem de fundo cobre também o topo, e a sua foto e o seu nome ganham um fundo para continuar fáceis de ler.
+- **Sua imagem de fundo nos servidores**: num servidor sem imagem própria, aparece a sua imagem do Início (só para você).
+- **Arquivos de servidores novos valem 7 dias**: o dono muda a validade nas configurações do servidor.
+- **Termos ao criar a conta**: é preciso marcar que leu e aceita os Termos de Serviço e a Política de Privacidade.
+
+### Correções
+- **Borda de voz**: a cor de “em voz” (e de “ao vivo”) aparece só para quem está na mesma chamada; para os outros, a borda mostra o status da pessoa.
+- **Canais privados**: quem não está na lista de um canal privado (mesmo o dono e os administradores, que veem o canal) não recebe avisos de mensagens nem de entradas na voz dele.
+
 ## 1.9.6 — 18/10/2026
 
 ### Novidades
