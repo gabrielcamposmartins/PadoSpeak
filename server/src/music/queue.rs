@@ -5,6 +5,7 @@ use super::{Source, Track};
 use crate::hub::Hub;
 use crate::logs::Logs;
 use crate::models::User;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -575,6 +576,205 @@ impl MusicManager {
     }
 }
 
+// ---------- Reinício do servidor (atualização) ----------
+// Ao desligar para reiniciar, a fila de cada canal vai para um arquivo na pasta de dados; o servidor
+// novo a retoma no mesmo ponto (o relógio da faixa é a hora de verdade, então a música "continuou"
+// tocando enquanto ele subia). Canal que ninguém retomar volta a ficar vazio depois de `RESUME_WAIT`.
+
+const RESUME_FILE: &str = "music-resume.json";
+/// Fila guardada há mais tempo que isso (servidor ficou desligado) não volta.
+const RESUME_MAX_AGE_MS: i64 = 10 * 60 * 1000;
+/// Tempo para as pessoas voltarem para a chamada depois de o servidor subir.
+const RESUME_WAIT: Duration = Duration::from_secs(90);
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedTrack {
+    id: String,
+    title: String,
+    artist: Option<String>,
+    duration_ms: Option<u64>,
+    thumbnail: Option<String>,
+    page_url: String,
+    added_by: Option<User>,
+    youtube: Option<String>,
+    search: Option<String>,
+}
+
+impl SavedTrack {
+    fn of(t: &Track) -> Self {
+        let (youtube, search) = match &t.source {
+            Source::Youtube(u) => (Some(u.clone()), None),
+            Source::Search(q) => (None, Some(q.clone())),
+        };
+        Self {
+            id: t.id.clone(),
+            title: t.title.clone(),
+            artist: t.artist.clone(),
+            duration_ms: t.duration_ms,
+            thumbnail: t.thumbnail.clone(),
+            page_url: t.page_url.clone(),
+            added_by: t.added_by.clone(),
+            youtube,
+            search,
+        }
+    }
+
+    fn track(self) -> Option<Track> {
+        let source = match (self.youtube, self.search) {
+            (Some(u), _) => Source::Youtube(u),
+            (None, Some(q)) => Source::Search(q),
+            (None, None) => return None,
+        };
+        Some(Track {
+            id: self.id,
+            title: self.title,
+            artist: self.artist,
+            duration_ms: self.duration_ms,
+            thumbnail: self.thumbnail,
+            page_url: self.page_url,
+            added_by: self.added_by,
+            source,
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedChannel {
+    channel_id: String,
+    guild_id: String,
+    current: Option<SavedTrack>,
+    started_at: Option<i64>,
+    paused_at: Option<i64>,
+    queue: Vec<SavedTrack>,
+    history: Vec<SavedTrack>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedMusic {
+    saved_at: i64,
+    channels: Vec<SavedChannel>,
+}
+
+/// As filas que estão tocando (ou com músicas esperando), para guardar.
+fn snapshot(channels: &HashMap<String, ChannelMusic>, now: i64) -> SavedMusic {
+    let list = channels
+        .iter()
+        .filter(|(_, c)| !c.is_idle())
+        .map(|(id, c)| SavedChannel {
+            channel_id: id.clone(),
+            guild_id: c.guild_id.clone(),
+            current: c.current.as_ref().map(|p| SavedTrack::of(&p.track)),
+            started_at: c.current.as_ref().and_then(|p| p.started_at),
+            paused_at: c.current.as_ref().and_then(|p| p.paused_at),
+            queue: c.queue.iter().map(SavedTrack::of).collect(),
+            history: c.history.iter().map(SavedTrack::of).collect(),
+        })
+        .collect();
+    SavedMusic { saved_at: now, channels: list }
+}
+
+/// Filas guardadas de volta ao estado (nada, se forem antigas demais).
+fn restore(saved: SavedMusic, now: i64) -> Vec<(String, ChannelMusic)> {
+    if now - saved.saved_at > RESUME_MAX_AGE_MS {
+        return Vec::new();
+    }
+    saved
+        .channels
+        .into_iter()
+        .map(|c| {
+            let current = c.current.and_then(SavedTrack::track).map(|track| Playing {
+                track,
+                started_at: c.started_at,
+                paused_at: c.paused_at,
+            });
+            let chan = ChannelMusic {
+                guild_id: c.guild_id,
+                queue: c.queue.into_iter().filter_map(SavedTrack::track).collect(),
+                current,
+                history: c.history.into_iter().filter_map(SavedTrack::track).collect(),
+                generation: 0,
+            };
+            (c.channel_id, chan)
+        })
+        .filter(|(_, c)| !c.is_idle())
+        .collect()
+}
+
+impl MusicManager {
+    fn resume_path(&self) -> PathBuf {
+        self.data_dir.join(RESUME_FILE)
+    }
+
+    /// Desligando para reiniciar: guarda as filas para o servidor novo continuar.
+    pub fn save_for_restart(&self) {
+        let saved = snapshot(&self.channels.lock().unwrap(), crate::now_ms());
+        let path = self.resume_path();
+        if saved.channels.is_empty() {
+            let _ = std::fs::remove_file(&path);
+            return;
+        }
+        let count = saved.channels.len();
+        match serde_json::to_vec(&saved).map_err(|e| e.to_string()).and_then(|b| std::fs::write(&path, b).map_err(|e| e.to_string())) {
+            Ok(()) => self.logs.info(format!("Música de {count} canal(is) guardada para depois de reiniciar")),
+            Err(e) => self.logs.warn(format!("Não foi possível guardar a música para depois de reiniciar: {e}")),
+        }
+    }
+
+    /// Servidor subiu: retoma as filas guardadas no reinício (o arquivo é apagado ao ler).
+    pub fn restore_after_restart(self: &Arc<Self>) {
+        let path = self.resume_path();
+        let Ok(bytes) = std::fs::read(&path) else { return };
+        let _ = std::fs::remove_file(&path);
+        let Ok(saved) = serde_json::from_slice::<SavedMusic>(&bytes) else { return };
+        let restored = restore(saved, crate::now_ms());
+        if restored.is_empty() {
+            return;
+        }
+        let ids: Vec<String> = restored.iter().map(|(id, _)| id.clone()).collect();
+        self.logs.info(format!("Música de {} canal(is) retomada depois de reiniciar", ids.len()));
+        let mut loads = Vec::new();
+        {
+            let mut channels = self.channels.lock().unwrap();
+            for (id, chan) in restored {
+                if let Some(p) = chan.current.as_ref().filter(|p| p.started_at.is_none()) {
+                    loads.push((id.clone(), p.track.clone(), chan.generation));
+                }
+                channels.insert(id, chan);
+            }
+        }
+        for (id, track, generation) in loads {
+            self.spawn_load(id, track, generation);
+        }
+        for id in &ids {
+            self.schedule_end(id);
+            self.prefetch_next(id);
+            // O áudio da faixa atual já fica pronto para quem voltar (o link do YouTube expira).
+            let current = self.channels.lock().unwrap().get(id).and_then(|c| c.current.as_ref().map(|p| p.track.clone()));
+            if let Some(t) = current {
+                let me = self.clone();
+                tokio::spawn(async move {
+                    if let Ok(tools) = me.tools().await {
+                        let _ = me.cached_or_resolve(&tools, &t.id, &t.source, false).await;
+                    }
+                });
+            }
+        }
+        // Ninguém voltou para a chamada: a fila acaba, como quando o canal esvazia.
+        let me = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(RESUME_WAIT).await;
+            for id in ids {
+                if !me.hub.voice_has_people(&id) {
+                    me.clear(&id);
+                }
+            }
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -702,5 +902,31 @@ mod tests {
         assert_eq!(c.current.as_ref().unwrap().track.id, "b");
         c.advance();
         assert!(c.is_idle());
+    }
+
+    #[test]
+    fn music_survives_restart() {
+        let mut c = ChannelMusic { guild_id: "g".into(), ..Default::default() };
+        c.queue.push_back(track("a", Some(200_000)));
+        c.queue.push_back(Track { source: Source::Search("artista - musica".into()), ..track("b", None) });
+        c.advance();
+        c.start(1_000, Some(200_000));
+        c.pause(5_000);
+        let mut map = HashMap::new();
+        map.insert("ch".to_string(), c);
+        map.insert("vazio".to_string(), ChannelMusic::default());
+        let saved: SavedMusic = serde_json::from_slice(&serde_json::to_vec(&snapshot(&map, 10_000)).unwrap()).unwrap();
+        let back = restore(saved, 20_000);
+        assert_eq!(back.len(), 1);
+        let (id, c) = &back[0];
+        assert_eq!(id, "ch");
+        let p = c.current.as_ref().unwrap();
+        assert_eq!(p.track.id, "a");
+        assert_eq!(p.started_at, Some(1_000 + START_LEAD_MS));
+        assert_eq!(p.paused_at, Some(5_000));
+        assert_eq!(c.queue.front().unwrap().source, Source::Search("artista - musica".into()));
+        // Guardada há muito tempo: não volta.
+        let saved: SavedMusic = serde_json::from_slice(&serde_json::to_vec(&snapshot(&map, 10_000)).unwrap()).unwrap();
+        assert!(restore(saved, 10_000 + RESUME_MAX_AGE_MS + 1).is_empty());
     }
 }

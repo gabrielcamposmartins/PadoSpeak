@@ -2,8 +2,10 @@
 // tela de chamada do celular. Mostra só os sons que estão no atalho (de 1 a 3 linhas de 3); sem nenhum,
 // só a linha "Sons rápidos — Nenhum". Montar o atalho e a biblioteca fica em Configurações → Sons.
 // Na chamada, um toque toca para todos; fora dela, toca só para você ouvir. À direita do título, a
-// caixa de som dos efeitos sonoros dos outros (ver SoundFx.jsx).
+// caixa de som dos efeitos sonoros dos outros (ver SoundFx.jsx). Na barra lateral, clicar no título
+// recolhe os botões (fica só a linha do título; a escolha é lembrada neste aparelho).
 import { useEffect, useState } from 'react';
+import { ChevronDown } from 'lucide-react';
 import { useStore, permsOf } from '../store.js';
 import { useVoiceConn } from './conn.jsx';
 import { SoundIcon } from './SoundIcons.jsx';
@@ -54,6 +56,8 @@ export default function SoundPanel({ variant = 'side' }) {
   const [copied, setCopied] = useState(null);
   const cooldowns = vc((s) => s.soundCooldowns);
   const now = useCooldownClock(cooldowns);
+  const foldable = variant === 'side';
+  const collapsed = useStore((s) => foldable && Boolean(s.prefs.soundsCollapsed));
   if (!me) return null;
   const st = vc.getState();
   const rows = lib?.rows || 1;
@@ -88,24 +92,45 @@ export default function SoundPanel({ variant = 'side' }) {
   };
   const hasSpace = (lib?.sounds.length || 0) < (lib?.max || 10);
   const empty = board.length === 0;
+  const folded = collapsed && !empty;
+  const title = (
+    <>
+      <svg className="orb" viewBox="0 0 32 32" aria-hidden="true">
+        <use href="#snd-orb" />
+      </svg>
+      Sons rápidos
+      {empty && <span className="sp-none">— Nenhum</span>}
+    </>
+  );
 
   return (
-    <section className={`sound-panel aero-glass ${variant}${live ? ' live' : ''}${empty ? ' empty' : ''}`} aria-label="Sons rápidos">
+    <section
+      className={`sound-panel aero-glass ${variant}${live ? ' live' : ''}${empty ? ' empty' : ''}${folded ? ' collapsed' : ''}`}
+      aria-label="Sons rápidos"
+    >
       <div className="sp-head">
-        <span className="aero-title">
-          <svg className="orb" viewBox="0 0 32 32" aria-hidden="true">
-            <use href="#snd-orb" />
-          </svg>
-          Sons rápidos
-          {empty && <span className="sp-none">— Nenhum</span>}
-        </span>
+        {foldable && !empty ? (
+          <button
+            type="button"
+            className="aero-title sp-toggle"
+            aria-expanded={!folded}
+            title={folded ? 'Mostrar os sons rápidos' : 'Recolher os sons rápidos'}
+            onClick={() => useStore.getState().setAppearance({ soundsCollapsed: !folded })}
+          >
+            {title}
+            {folded && <span className="sp-count">{board.length}</span>}
+            <ChevronDown size={14} className="sp-chev" aria-hidden="true" />
+          </button>
+        ) : (
+          <span className="aero-title">{title}</span>
+        )}
         {!empty && variant === 'sheet' && <small className="sp-hint">{live ? 'toque para todos ouvirem' : 'entre numa chamada'}</small>}
         <span className="sp-grow" />
         <SoundFx />
       </div>
-      {guildOff && !empty && <p className="sp-note">Os sons rápidos estão desligados neste servidor.</p>}
-      {!guildOff && noPerm && !empty && <p className="sp-note">Você não tem permissão para tocar efeitos sonoros neste servidor.</p>}
-      {!empty && (
+      {guildOff && !empty && !folded && <p className="sp-note">Os sons rápidos estão desligados neste servidor.</p>}
+      {!guildOff && noPerm && !empty && !folded && <p className="sp-note">Você não tem permissão para tocar efeitos sonoros neste servidor.</p>}
+      {!empty && !folded && (
         <div className="sp-grid">
           {board.map((snd) => {
             const wait = waitOf(snd);

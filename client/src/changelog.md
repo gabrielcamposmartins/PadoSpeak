@@ -1,5 +1,24 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.9.8 — 19/10/2026
+
+### Novidades
+- **A chamada não cai quando o PadoSpeak se atualiza**: quando o servidor reinicia para uma versão nova, o áudio continua e o app volta sozinho para a chamada em um ou dois segundos. Vale a partir da próxima atualização, para quem já estiver nesta versão.
+- **A chamada aguenta a internet oscilar**: se a sua conexão cai por alguns segundos, o seu lugar na chamada fica guardado e o app volta sem ninguém perceber. Quando a internet some sem avisar ou troca (Wi-Fi ↔ 4G), o app percebe em poucos segundos e reconecta, e quem perdeu a internet de vez sai do canal em cerca de um minuto, em vez de ficar lá como fantasma.
+- **A música continua de onde parou**: depois de o servidor reiniciar, a fila e a música tocando voltam no mesmo ponto.
+- **Transmitir jogos sem travar o computador**: a imagem da tela e da câmera agora é codificada pela placa de vídeo (H.264), quando ela sabe fazer isso, e não mais pelo processador. Transmitir em 1080p a 60 fps para 3 pessoas caiu de uns 9 para menos de 2 núcleos do processador.
+- **Uma chamada por conta**: com o PadoSpeak aberto em dois aparelhos, entrar na chamada por um tira o outro dela, com um aviso. Antes os dois podiam ficar na chamada ao mesmo tempo, gastando o dobro da sua internet.
+- **Microfone que cai no meio da chamada**: se o microfone for desconectado (USB, Bluetooth), a chamada continua com o microfone padrão do sistema e o app avisa. Sem nenhum, você continua ouvindo, e a sua voz volta assim que um microfone for conectado. O app também avisa quando o microfone para de mandar som.
+- **Som bloqueado pelo navegador**: quando o navegador impede o som da chamada de tocar sozinho, o app avisa, e um toque em qualquer lugar da tela resolve.
+- **Chamada atendida em outro aparelho**: atender no computador faz o celular parar de tocar, e vice-versa.
+- **Transmitir para várias pessoas**: a qualidade da sua tela e da câmera é dividida entre quem assiste, para não saturar a sua internet e picotar a voz de todos. Para quem só consegue se conectar pelo servidor, a transmissão vai mais leve.
+- **Músicas começam mais rápido**: o servidor prepara cada música mais depressa, sem descompactar a cada vez o programa que busca o áudio.
+- **Tempo da chamada**: cada canal de voz com gente mostra, à direita, há quanto tempo a chamada começou.
+- **Stickers iguais em todo lugar**: a sua coleção agora é da conta, então o que você adiciona no celular aparece no app do Windows e vice-versa. Os stickers que estavam só no PC vão para a conta sozinhos.
+- **Recolher os sons rápidos**: clique no título “Sons rápidos” para deixar só uma linha e dar mais espaço à lista de canais.
+- **Jogos fora da atividade**: em Configurações → Atividade, escolha jogos que não aparecem como “Jogando …” no seu status.
+- **Jogos detectados ficam guardados**: nas listas de jogos sem sobreposição e fora da atividade, os jogos que o PadoSpeak já reconheceu aparecem para adicionar com um clique, sem digitar o nome.
+
 ## 1.9.7 — 18/10/2026
 
 ### Novidades

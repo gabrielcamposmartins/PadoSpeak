@@ -42,7 +42,9 @@ services:
       - padospeak-db:/var/lib/sqld
     # só o servidor enxerga o banco
     networks: [padospeak]
-    mem_limit: 128m
+    # O arquivo do banco passou de 128 MB: com o limite antigo ele não cabia na memória e cada consulta
+    # (inclusive a de entrar num canal de voz) podia esperar o disco lento da VM.
+    mem_limit: 192m
 
 volumes:
   padospeak-data:

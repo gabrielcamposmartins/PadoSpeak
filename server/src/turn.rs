@@ -8,7 +8,8 @@
 use base64::Engine;
 use serde_json::{json, Value};
 
-/// Validade da senha. A renovação acontece a cada reconexão do WebSocket.
+/// Validade da senha. Ela é renovada a cada reconexão do WebSocket, ao entrar numa chamada e, numa
+/// chamada que dura quase isso, pelo `turn:refresh`.
 const TTL_SECS: i64 = 24 * 3600;
 
 #[derive(Clone)]

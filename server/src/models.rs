@@ -1,9 +1,9 @@
 //! Tipos expostos pela API e mapeamento de linhas do banco.
 use crate::db::DbResult;
 use libsql::Row;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct User {
     pub id: String,
@@ -20,7 +20,7 @@ pub struct User {
     /// Cor do banner do perfil (`#rrggbb`); sem ela, o banner usa a cor da foto.
     pub banner_color: Option<String>,
     /// Perfil de outro PC da rede local, conectado como convidado (só nos nós locais).
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lan: bool,
     /// Cor padrão das mensagens da pessoa (`#rrggbb`).
     #[serde(skip_serializing_if = "Option::is_none")]

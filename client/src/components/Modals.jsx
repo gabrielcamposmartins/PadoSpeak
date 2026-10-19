@@ -659,15 +659,40 @@ function OverlayCornerPicker({ value, onChange }) {
  * Jogos sem sobreposição: vale na hora. Pelo nome que aparece no status, então entram tanto os jogos
  * reconhecidos sozinhos quanto os programas adicionados para o status.
  */
-function OverlayBlocklist() {
-  const list = useStore((s) => s.prefs.overlayBlocked) || [];
+/** As duas listas de jogos: sem sobreposição e fora da atividade. */
+const GAME_LISTS = {
+  overlay: {
+    pref: 'overlayBlocked',
+    title: 'Não mostrar a sobreposição em',
+    field: 'Jogo sem sobreposição',
+    remove: (n) => `Mostrar a sobreposição em ${n} de novo`,
+    pick: (n) => `Não mostrar a sobreposição em ${n}`,
+    apply: (next) => setOverlayBlocked(next),
+  },
+  activity: {
+    pref: 'activityBlocked',
+    title: 'Não mostrar na atividade',
+    field: 'Jogo fora da atividade',
+    remove: (n) => `Mostrar ${n} na atividade de novo`,
+    pick: (n) => `Não mostrar ${n} na atividade`,
+    // O jogo aberto agora pode ter entrado (ou saído) da lista: o status muda na hora.
+    apply: () => setMyActivity(currentActivity()),
+  },
+};
+/** Quantos jogos sugeridos aparecem como botões (o campo sugere todos). */
+const GAME_IDEAS_MAX = 12;
+
+function GameBlocklist({ kind }) {
+  const cfg = GAME_LISTS[kind];
+  const list = useStore((s) => s.prefs[cfg.pref]) || [];
   const custom = useStore((s) => s.prefs.customGames) || [];
+  const seen = useStore((s) => s.prefs.seenGames) || [];
   const [name, setName] = useState('');
   const listId = useId();
   const has = (n) => list.some((x) => x.toLowerCase() === n.trim().toLowerCase());
   const save = (next) => {
-    useStore.getState().setAppearance({ overlayBlocked: next });
-    setOverlayBlocked(next);
+    useStore.getState().setAppearance({ [cfg.pref]: next });
+    cfg.apply(next);
   };
   const add = (n) => {
     const nm = n.trim().slice(0, 80);
@@ -675,17 +700,20 @@ function OverlayBlocklist() {
     save([...list, nm].sort((a, b) => a.localeCompare(b, 'pt-BR', { sensitivity: 'base' })));
     setName('');
   };
-  // Sugestões: o jogo aberto agora e os programas adicionados para o status.
+  // Sugestões: o jogo aberto agora, os jogos já detectados (mais recentes primeiro) e os programas do status.
   const now = currentActivity()?.name;
-  const ideas = [...new Set([now, ...custom.map((c) => c.name)].filter(Boolean))].filter((n) => !has(n));
+  const ideas = [...new Set([now, ...seen, ...custom.map((c) => c.name)].filter(Boolean))].filter((n) => !has(n));
   return (
     <div className="block-list overlay-block">
-      <div className="block-title">Não mostrar a sobreposição em{list.length ? ` (${list.length})` : ''}</div>
+      <div className="block-title">
+        {cfg.title}
+        {list.length ? ` (${list.length})` : ''}
+      </div>
       {list.map((n) => (
         <div className="block-row" key={n}>
           <EyeOff size={15} aria-hidden="true" />
           <span className="nm">{n}</span>
-          <button type="button" className="gloss mini" title="Tirar da lista" aria-label={`Mostrar a sobreposição em ${n} de novo`} onClick={() => save(list.filter((x) => x !== n))}>
+          <button type="button" className="gloss mini" title="Tirar da lista" aria-label={cfg.remove(n)} onClick={() => save(list.filter((x) => x !== n))}>
             <X size={13} />
           </button>
         </div>
@@ -702,7 +730,7 @@ function OverlayBlocklist() {
           onChange={(e) => setName(e.target.value)}
           list={listId}
           placeholder="Nome do jogo, como aparece no status"
-          aria-label="Jogo sem sobreposição"
+          aria-label={cfg.field}
         />
         <datalist id={listId}>
           {ideas.map((n) => (
@@ -715,8 +743,8 @@ function OverlayBlocklist() {
       </form>
       {ideas.length > 0 && (
         <div className="overlay-block-ideas">
-          {ideas.map((n) => (
-            <button key={n} type="button" className="chip" onClick={() => add(n)} title={`Não mostrar a sobreposição em ${n}`}>
+          {ideas.slice(0, GAME_IDEAS_MAX).map((n) => (
+            <button key={n} type="button" className="chip" onClick={() => add(n)} title={cfg.pick(n)}>
               <Plus size={12} aria-hidden="true" /> {n}
               {n === now && <small> · aberto agora</small>}
             </button>
@@ -1462,6 +1490,7 @@ function SettingsModal({ close, tab: startTab, focus }) {
               </span>
             </label>
             {shareActivity && <CustomPrograms />}
+            {shareActivity && <GameBlocklist kind="activity" />}
             <label className="checkbox">
               <input type="checkbox" checked={gameOverlay} onChange={(e) => setGameOverlayOn(e.target.checked)} />
               <span>
@@ -1473,7 +1502,7 @@ function SettingsModal({ close, tab: startTab, focus }) {
               </span>
             </label>
             {gameOverlay && <OverlayCornerPicker value={overlayCorner} onChange={setOverlayCorner} />}
-            {gameOverlay && <OverlayBlocklist />}
+            {gameOverlay && <GameBlocklist kind="overlay" />}
           </>
         )}
         <div className="settings-sec">Vistos nas mensagens</div>

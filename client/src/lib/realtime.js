@@ -1,5 +1,8 @@
 // Cliente WebSocket do PadoSpeak: eventos, requisições com resposta e reconexão automática.
 // Protocolo: envia { op, d, id? }; recebe { re, d } (respostas) ou { ev, d } (eventos).
+/** Depois do aviso de reinício, tenta reconectar a cada segundo por este tempo. */
+const RESTART_FAST_MS = 60000;
+
 export class Realtime {
   constructor(urlFactory) {
     this.urlFactory = urlFactory;
@@ -56,6 +59,8 @@ export class Realtime {
           p.resolve(msg.d);
         }
       } else if (msg.ev) {
+        // O servidor vai reiniciar (atualização): reconecta a cada segundo até ele voltar.
+        if (msg.ev === 'server:restarting') this.restartingUntil = Date.now() + RESTART_FAST_MS;
         if (msg.ev === 'ready') {
           this.peerId = msg.d.peerId;
           this.setStatus('connected');
@@ -63,23 +68,43 @@ export class Realtime {
         this.emit(msg.ev, msg.d);
       }
     };
-    ws.onclose = (e) => {
-      for (const p of this.pending.values()) {
-        clearTimeout(p.timer);
-        p.resolve({ error: 'Conexão perdida' });
-      }
-      this.pending.clear();
-      if (this.ws !== ws) return;
-      const wasConnected = this.status === 'connected';
-      this.peerId = null;
-      if (wasConnected) this.emit('disconnected');
-      if (this.closed) return this.setStatus('closed');
-      // Upgrade recusado (token inválido) costuma chegar como 1006 logo de cara; a UI decide pelo /api/me.
-      this.setStatus('reconnecting');
-      const delay = Math.min(1000 * 2 ** this.attempt++, 15000);
-      this.retryTimer = setTimeout(() => this.connect(), delay);
-      this.emit('retry', { code: e.code, delay });
-    };
+    ws.onclose = (e) => this.handleClose(ws, e.code);
+  }
+
+  /** A conexão `ws` acabou: resolve o que esperava resposta e agenda a próxima. */
+  handleClose(ws, code) {
+    if (this.ws !== ws) return;
+    this.ws = null;
+    for (const p of this.pending.values()) {
+      clearTimeout(p.timer);
+      p.resolve({ error: 'Conexão perdida' });
+    }
+    this.pending.clear();
+    const wasConnected = this.status === 'connected';
+    this.peerId = null;
+    if (wasConnected) this.emit('disconnected');
+    if (this.closed) return this.setStatus('closed');
+    // Upgrade recusado (token inválido) costuma chegar como 1006 logo de cara; a UI decide pelo /api/me.
+    this.setStatus('reconnecting');
+    const delay = this.restartingUntil > Date.now() ? 1000 : Math.min(1000 * 2 ** this.attempt++, 15000);
+    this.retryTimer = setTimeout(() => this.connect(), delay);
+    this.emit('retry', { code, delay });
+  }
+
+  /**
+   * O servidor parou de responder sem a conexão fechar (a internet sumiu ou trocou no meio do caminho):
+   * troca por uma nova na hora, sem esperar o navegador desistir da antiga (pode levar minutos).
+   */
+  reconnectNow() {
+    const ws = this.ws;
+    if (!ws || this.closed || this.status !== 'connected') return;
+    ws.onopen = ws.onmessage = ws.onclose = null;
+    try {
+      ws.close(4000, 'sem resposta');
+    } catch {
+      /* já estava fechando */
+    }
+    this.handleClose(ws, 4000);
   }
 
   send(op, d = {}) {

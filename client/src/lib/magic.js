@@ -1,7 +1,8 @@
 // Palavras com efeito nas mensagens: "stars"/"estrelas", "bubbles"/"bolhas", "confete"/"confetti" e
 // "arco-íris"/"rainbow" (a palavra inteira, sem diferenciar maiúsculas). A palavra aparece colorida e,
 // ao abrir a conversa com ela ou passar o mouse por cima, sobem partículas pela janela (o arco-íris
-// cruza a janela de um canto ao outro). Não aparece em nenhuma tela do app: só está documentado no README.
+// cruza a janela de um canto ao outro; na tela em pé do celular, é um arco redondo entre duas nuvens no meio
+// da tela). Não aparece em nenhuma tela do app: só está documentado no README.
 // Quem pediu menos movimento no sistema vê só a palavra colorida.
 
 /** Palavra → efeito. */
@@ -198,11 +199,104 @@ function arc() {
   return total;
 }
 
+/** Estrelinha de quatro pontas (brilho do arco-íris do celular), centrada em (x, y). */
+const sparkle = (x, y, r) =>
+  svgEl('path', {
+    class: 'magic-spark',
+    d: `M ${x} ${y - r} Q ${x + r * 0.16} ${y - r * 0.16} ${x + r} ${y} Q ${x + r * 0.16} ${y + r * 0.16} ${x} ${y + r} Q ${x - r * 0.16} ${y + r * 0.16} ${x - r} ${y} Q ${x - r * 0.16} ${y - r * 0.16} ${x} ${y - r} Z`,
+  });
+
+/**
+ * Arco-íris da tela em pé (celular): o de canto a canto ficaria alto e fininho, então este é um arco
+ * redondo e mais grosso no meio da tela, que nasce de uma nuvem à esquerda e pousa em outra à direita,
+ * com brilhinhos piscando em volta; sobe um pouco enquanto aparece e some.
+ */
+function arcPhone() {
+  const total = 3600;
+  const draw = 1300;
+  const el = layer(total + 200);
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  const R = Math.min(w * 0.42, h * 0.3);
+  const band = R * 0.088;
+  const cx = w / 2;
+  const cy = h * 0.5 + R * 0.35;
+  const svg = svgEl('svg', { viewBox: `0 0 ${w} ${h}`, class: 'magic-arc phone' });
+  const defs = svgEl('defs');
+  const blur = svgEl('filter', { id: 'magic-rb-blur-phone', x: '-10%', y: '-10%', width: '120%', height: '120%' });
+  blur.appendChild(svgEl('feGaussianBlur', { stdDeviation: band * 0.4 }));
+  defs.appendChild(blur);
+  svg.appendChild(defs);
+  const bands = svgEl('g', { filter: 'url(#magic-rb-blur-phone)' });
+  RAINBOW.forEach((color, i) => {
+    const r = R - band * (i + 0.5);
+    const path = svgEl('path', {
+      d: `M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`,
+      stroke: color,
+      'stroke-width': band * 1.3,
+      fill: 'none',
+      pathLength: '1',
+    });
+    path.style.strokeDasharray = '1';
+    bands.appendChild(path);
+    path.animate([{ strokeDashoffset: 1 }, { strokeDashoffset: 0 }], { duration: draw, delay: 250 + i * 35, easing: 'ease-in-out', fill: 'both' });
+  });
+  svg.appendChild(bands);
+  // Nuvens nos pés: a da esquerda já está lá quando o arco começa; a da direita chega com ele.
+  const s = (band * 7 * 1.5) / 133;
+  const foot = R - band * 3.5;
+  [
+    [foam(cx - foot, cy + band * 1.2, s), 0],
+    [foam(cx + foot, cy + band * 1.2, s), draw],
+  ].forEach(([g, delay]) => {
+    svg.appendChild(g);
+    g.animate([{ transform: 'scale(0)', opacity: 0 }, { transform: 'scale(1.1)', opacity: 1, offset: 0.7 }, { transform: 'scale(1)', opacity: 1 }], {
+      duration: 420,
+      delay,
+      easing: 'ease-out',
+      fill: 'both',
+    });
+  });
+  // Brilhinhos em volta do arco, acendendo na ordem em que ele passa.
+  for (let i = 0; i < 12; i++) {
+    const t = (i + rand(0.15, 0.85)) / 12;
+    const ang = Math.PI * (1 - t);
+    const dist = i % 2 ? R + rand(12, 34) : R - band * 7 - rand(12, 30);
+    const sr = rand(8, 14);
+    const sx = Math.min(w - sr - 4, Math.max(sr + 4, cx + Math.cos(ang) * dist));
+    const star = sparkle(sx, cy - Math.sin(ang) * dist, sr);
+    svg.appendChild(star);
+    star.animate(
+      [
+        { transform: 'scale(0) rotate(0deg)', opacity: 0 },
+        { transform: 'scale(1.2) rotate(45deg)', opacity: 1, offset: 0.35 },
+        { transform: 'scale(0.8) rotate(80deg)', opacity: 0.85, offset: 0.7 },
+        { transform: 'scale(0) rotate(120deg)', opacity: 0 },
+      ],
+      { duration: 1100, delay: 250 + t * draw + rand(0, 500), easing: 'ease-out', fill: 'both' },
+    );
+  }
+  el.appendChild(svg);
+  svg.animate(
+    [
+      { transform: 'translateY(16px) scale(0.94)', opacity: 0 },
+      { transform: 'translateY(0) scale(1)', opacity: 0.95, offset: 0.18 },
+      { transform: 'translateY(-10px) scale(1)', opacity: 0.95, offset: 0.78 },
+      { transform: 'translateY(-22px) scale(1)', opacity: 0 },
+    ],
+    { duration: total, easing: 'ease-out', fill: 'both' },
+  );
+  return total;
+}
+
+/** Tela em pé e estreita (celular): o arco-íris redondo no meio em vez do de canto a canto. */
+const portrait = () => window.innerWidth < 700 && window.innerHeight > window.innerWidth * 1.15;
+
 /** Toca o efeito (um de cada vez por tipo: passar o mouse de novo no meio não empilha). */
 export function playMagic(kind) {
   if (!kind || running.has(kind) || reduced() || typeof document === 'undefined') return;
   running.add(kind);
-  const ms = kind === 'rainbow' ? arc() : rise(kind);
+  const ms = kind === 'rainbow' ? (portrait() ? arcPhone() : arc()) : rise(kind);
   setTimeout(() => running.delete(kind), ms);
 }
 

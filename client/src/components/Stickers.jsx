@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ImagePlus, X, LoaderCircle, BookmarkPlus, BookmarkCheck } from 'lucide-react';
 import { PointMenu, Item } from './VoiceMenus.jsx';
-import { useStore, stickerHome, STICKER_RE } from '../store.js';
+import { useStore, useStickerHome, STICKER_RE } from '../store.js';
 import { EMOTES, Emote, Floating } from './Emotes.jsx';
 import { useConn } from './conn.jsx';
 import { magicEmoteKind, playMagic } from '../lib/magic.js';
@@ -18,7 +18,8 @@ export function parseSticker(content) {
 
 /**
  * Sticker dentro da conversa (a imagem é do servidor da conversa). `base`: outro endereço — a prévia de um
- * sticker da minha coleção antes de enviar, que mora onde a coleção mora (no app do Windows, o perfil local).
+ * sticker da minha coleção antes de enviar, que mora onde a coleção mora (a conta no servidor; no app do
+ * Windows sem o servidor, o perfil local).
  */
 export function StickerView({ sticker, base: fromBase }) {
   const connBase = useConn()((s) => s.baseUrl);
@@ -50,7 +51,7 @@ export function StickerView({ sticker, base: fromBase }) {
  */
 export function MessageSticker({ sticker }) {
   const conn = useConn();
-  const home = stickerHome();
+  const home = useStickerHome();
   const mine = home((s) => s.stickers);
   const [menu, setMenu] = useState(null); // { x, y }
   if (sticker.emote) {
@@ -123,7 +124,7 @@ export function MessageSticker({ sticker }) {
 
 /** Janela de stickers: aba "Padrão" (emoticons Aero grandes) e "Meus" (coleção, com GIFs). */
 export function StickerPicker({ anchorRef, onPick, onClose }) {
-  const home = stickerHome();
+  const home = useStickerHome();
   const mine = home((s) => s.stickers);
   const base = home((s) => s.baseUrl);
   const [tab, setTab] = useState('padrao');

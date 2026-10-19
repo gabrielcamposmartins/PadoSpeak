@@ -3,12 +3,13 @@ import { RnnoiseWorkletNode, loadRnnoise } from '@sapphi-red/web-noise-suppresso
 import workletUrl from '@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url';
 import wasmUrl from '@sapphi-red/web-noise-suppressor/rnnoise.wasm?url';
 import simdUrl from '@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?url';
+import { keepAwake } from './audioWake.js';
 
 let wasmPromise = null;
 
 /**
  * Passa o áudio do microfone pelo RNNoise.
- * @returns {Promise<{ stream: MediaStream, close: () => void }>} stream limpo e função para liberar recursos
+ * @returns {Promise<{ stream: MediaStream, ctx: AudioContext, close: () => void }>} stream limpo e função para liberar recursos
  */
 export async function suppressNoise(input) {
   wasmPromise ||= loadRnnoise({ url: wasmUrl, simdUrl }).catch((e) => {
@@ -23,9 +24,13 @@ export async function suppressNoise(input) {
     const dest = ctx.createMediaStreamDestination();
     ctx.createMediaStreamSource(input).connect(node).connect(dest);
     if (ctx.state === 'suspended') await ctx.resume();
+    // Suspenso, ele manda silêncio no lugar do microfone: volta sozinho.
+    const sleepless = keepAwake(ctx);
     return {
       stream: dest.stream,
+      ctx,
       close() {
+        sleepless();
         node.destroy();
         ctx.close().catch(() => {});
       },

@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio_util::sync::CancellationToken;
@@ -108,6 +109,13 @@ pub struct Participant {
     /// Quando entrou no canal (para o registro saber quanto tempo ficou).
     #[serde(skip)]
     joined_at: i64,
+    /// Voltou para a chamada depois de a conexão cair (ou de o servidor reiniciar): o id que tinha antes.
+    /// Os outros trocam a conexão de mídia que já tinham com esse id para o novo, sem refazer nada.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    was: Option<ConnId>,
+    /// A conexão caiu sem a pessoa sair: o lugar fica guardado por `VOICE_RESUME_GRACE`.
+    #[serde(skip)]
+    away: bool,
 }
 
 #[derive(Default)]
@@ -116,6 +124,8 @@ struct HubState {
     user_conns: HashMap<String, HashSet<ConnId>>,
     /// canal de voz -> participantes (na ordem de entrada)
     voice: HashMap<String, Vec<Participant>>,
+    /// canal de voz -> quando a chamada começou (a primeira pessoa entrou; some quando o canal esvazia).
+    voice_since: HashMap<String, i64>,
     conn_voice: HashMap<ConnId, String>,
     /// Avisa (o gerenciador de música) quando um canal de voz fica vazio.
     voice_empty_tx: Option<UnboundedSender<String>>,
@@ -143,9 +153,13 @@ struct HubState {
     left_mobile: HashMap<String, bool>,
     /// Quem está conectado quer que os amigos sejam avisados quando fica online (`ONLINE_NOTIFY_*`).
     online_notify: HashMap<String, i64>,
+    /// Quando este servidor subiu (logo depois de reiniciar, todos reconectam: ninguém "ficou online").
+    started_at: i64,
 }
 
 pub const STATUSES: [&str; 4] = ["online", "away", "busy", "invisible"];
+/// A volta para a chamada (depois de cair) foi recusada: a pessoa já está nela por outro aparelho.
+pub const VOICE_ELSEWHERE: &str = "Você entrou na chamada por outro aparelho";
 /// `users.online_notify`: avisar os amigos quando a pessoa fica online pelo computador / pelo celular.
 pub const ONLINE_NOTIFY_DESKTOP: i64 = 1;
 pub const ONLINE_NOTIFY_PHONE: i64 = 2;
@@ -156,6 +170,16 @@ pub const ONLINE_NOTIFY_DEFAULT: i64 = ONLINE_NOTIFY_DESKTOP;
 const OFFLINE_GRACE_HIDDEN: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 /// Conexão que caiu com o app na tela (internet oscilando, app fechado): espera pouco.
 const OFFLINE_GRACE_VISIBLE: std::time::Duration = std::time::Duration::from_secs(45);
+/// Conexão que caiu no meio de uma chamada (sem sair dela): o lugar fica guardado por este tempo, e o
+/// app volta para a chamada sem que a conexão de mídia com os outros seja refeita.
+const VOICE_RESUME_GRACE: std::time::Duration = std::time::Duration::from_secs(20);
+/// Conexão em chamada que mandava `ping` (o app manda um a cada 2 s durante a chamada, desde a 1.9.0) e
+/// ficou calada este tempo: a internet sumiu sem fechar a conexão (celular sem sinal, PC que dormiu), e
+/// sem isto a pessoa ficaria no canal como fantasma até o TCP desistir (de 15 min a 1 h). Conta como
+/// queda: o lugar fica guardado pela folga de sempre (`VOICE_RESUME_GRACE`).
+const VOICE_SILENCE: std::time::Duration = std::time::Duration::from_secs(45);
+/// Depois de o servidor subir, quem conecta está voltando (reinício/atualização): sem "ficou online".
+const RESTART_QUIET_MS: i64 = 90_000;
 /// Máximo de "chamar atenção" por usuário a cada minuto.
 const NUDGES_PER_MINUTE: usize = 3;
 /// Aparelhos mostrados por rede (uma rede com muito mais que isso é um IP dividido por muita gente).
@@ -164,6 +188,10 @@ const NEARBY_MAX: usize = 30;
 pub struct Hub {
     state: Mutex<HubState>,
     pub shutdown: CancellationToken,
+    /// Id desta execução do servidor: o app sabe se voltou para o mesmo servidor ou para um reiniciado.
+    boot_id: String,
+    /// Desligando para reiniciar (atualização): as chamadas não acabam, o app volta para elas sozinho.
+    restarting: AtomicBool,
 }
 
 fn event(ev: &str, d: impl Serialize) -> String {
@@ -183,8 +211,25 @@ impl Hub {
     /// Cria o hub e o canal que recebe os ids dos canais de voz que ficaram vazios.
     pub fn new() -> (Arc<Self>, UnboundedReceiver<String>) {
         let (tx, rx) = unbounded_channel();
-        let state = HubState { voice_empty_tx: Some(tx), ..Default::default() };
-        (Arc::new(Self { state: Mutex::new(state), shutdown: CancellationToken::new() }), rx)
+        let state = HubState { voice_empty_tx: Some(tx), started_at: crate::now_ms(), ..Default::default() };
+        let hub = Self {
+            state: Mutex::new(state),
+            shutdown: CancellationToken::new(),
+            boot_id: uuid::Uuid::new_v4().simple().to_string(),
+            restarting: AtomicBool::new(false),
+        };
+        (Arc::new(hub), rx)
+    }
+
+    /// O servidor vai reiniciar (atualização): avisa todos para reconectarem logo e não encerra as
+    /// chamadas ao fechar as conexões (cada app volta para a sua sozinho).
+    pub fn announce_restart(&self) {
+        self.restarting.store(true, Ordering::SeqCst);
+        let s = self.state.lock().unwrap();
+        let msg = event("server:restarting", json!({}));
+        for c in s.conns.values() {
+            let _ = c.tx.send(msg.clone());
+        }
     }
 
     /// Liga o registro dos servidores (entradas e saídas da voz, com o tempo).
@@ -380,6 +425,9 @@ impl Hub {
 
     /// Os amigos devem ser avisados de que a pessoa ficou online (pelo aparelho em que ela está)?
     fn announces_online(s: &HubState, user_id: &str) -> bool {
+        if crate::now_ms() - s.started_at < RESTART_QUIET_MS {
+            return false;
+        }
         let bits = s.online_notify.get(user_id).copied().unwrap_or(ONLINE_NOTIFY_DEFAULT);
         let device = if Self::on_mobile(s, user_id) { ONLINE_NOTIFY_PHONE } else { ONLINE_NOTIFY_DESKTOP };
         bits & device != 0
@@ -489,9 +537,13 @@ impl Hub {
     /// Canal de voz de servidor → todos da guild; chamada 1 a 1 → só os dois da conversa.
     fn broadcast_voice_channel(s: &HubState, scope: &Participant, channel_id: &str) {
         let participants = s.voice.get(channel_id).cloned().unwrap_or_default();
+        let since = s.voice_since.get(channel_id);
         let msg = event(
             "voice:channel",
-            json!({ "guildId": scope.guild_id, "channelId": channel_id, "dm": scope.dm_users.is_some(), "participants": participants }),
+            json!({
+                "guildId": scope.guild_id, "channelId": channel_id, "dm": scope.dm_users.is_some(),
+                "participants": participants, "since": since
+            }),
         );
         match &scope.dm_users {
             Some(users) => users.iter().for_each(|u| Self::send_to_user(s, u, &msg)),
@@ -566,6 +618,7 @@ impl Hub {
         }
         if list.is_empty() {
             s.voice.remove(&channel_id);
+            s.voice_since.remove(&channel_id);
             if let Some(tx) = &s.voice_empty_tx {
                 let _ = tx.send(channel_id.clone());
             }
@@ -575,6 +628,35 @@ impl Hub {
             Self::send_to(s, &peer, msg.clone());
         }
         Self::broadcast_voice_channel(s, &me, &channel_id);
+    }
+
+    /// A conexão caiu no meio da chamada: o lugar fica guardado (os outros continuam ouvindo, porque a
+    /// mídia vai direto entre os aparelhos). Devolve se havia chamada.
+    fn mark_away(s: &mut HubState, conn_id: &str) -> bool {
+        let Some(channel_id) = s.conn_voice.get(conn_id) else { return false };
+        let Some(p) = s.voice.get_mut(channel_id).and_then(|l| l.iter_mut().find(|p| p.peer_id == conn_id)) else {
+            return false;
+        };
+        p.away = true;
+        true
+    }
+
+    /// Onde a pessoa está na voz por outras conexões (e se o lugar está só guardado, `away`).
+    fn voice_seats_of(s: &HubState, user_id: &str, except: &str) -> Vec<(ConnId, bool)> {
+        s.voice
+            .values()
+            .flatten()
+            .filter(|p| p.user.id == user_id && p.peer_id != except)
+            .map(|p| (p.peer_id.clone(), p.away))
+            .collect()
+    }
+
+    /// A pessoa entrou numa chamada por outro aparelho: este sai (o app avisa o motivo).
+    fn move_out_of_voice(s: &mut HubState, conn_id: &str) {
+        if let Some(channel_id) = s.conn_voice.get(conn_id).cloned() {
+            Self::leave_voice_locked(s, conn_id);
+            Self::send_to(s, conn_id, event("voice:kicked", json!({ "channelId": channel_id, "reason": "elsewhere" })));
+        }
     }
 
     fn kick_from_voice(s: &mut HubState, conn_id: &str) {
@@ -655,11 +737,7 @@ impl Hub {
         let guilds: HashSet<String> = guild_ids_of(&app, &user.id).await.into_iter().collect();
         let music = app.music.states_for(&guilds);
         let friends: HashSet<String> = crate::social::friend_ids(&app, &user.id).await.into_iter().collect();
-        // STUN/TURN da configuração + o relay com senha temporária deste usuário.
-        let mut ice_servers = app.config.ice_servers.clone();
-        if let Some(turn) = &app.turn {
-            ice_servers.push(turn.ice_server(&user.id, crate::now_ms()));
-        }
+        let ice_servers = ice_servers_for(&app, &user.id);
         let (my_status, online_notify) = app
             .db
             .query_one("SELECT status, online_notify FROM users WHERE id = ?1", [user.id.as_str()], |r| {
@@ -706,12 +784,13 @@ impl Hub {
                 online.iter().filter_map(|u| s.statuses.get(*u).map(|st| (*u, st))).collect();
             let activities: HashMap<&String, &Value> =
                 online.iter().filter_map(|u| s.activities.get(*u).map(|(a, _)| (*u, a))).collect();
+            let voice_since: HashMap<&String, &i64> = voice.keys().filter_map(|ch| s.voice_since.get(*ch).map(|t| (*ch, t))).collect();
             let _ = tx.send(event(
                 "ready",
                 json!({
                     "peerId": conn_id, "online": online, "statuses": statuses, "selfStatus": my_status,
-                    "activities": activities, "voice": voice, "music": music, "serverTime": crate::now_ms(),
-                    "iceServers": ice_servers
+                    "activities": activities, "voice": voice, "voiceSince": voice_since, "music": music,
+                    "serverTime": crate::now_ms(), "iceServers": ice_servers
                 }),
             ));
             s.users.insert(user.id.clone(), user.clone());
@@ -760,30 +839,49 @@ impl Hub {
         // A cada minuto, a sessão do app (painel do administrador) continua contando.
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
         tick.tick().await;
+        // O app fechou a conexão (saiu, recarregou): sai da chamada na hora. Se ela caiu, o lugar fica guardado.
+        let mut closed_by_app = false;
+        // Vigia da chamada: a conexão que pingava e ficou calada caiu sem fechar (veja `VOICE_SILENCE`).
+        let mut watchdog = tokio::time::interval(std::time::Duration::from_secs(5));
+        let mut last_seen = tokio::time::Instant::now();
+        let mut pings = false;
         loop {
             tokio::select! {
+                _ = watchdog.tick() => {
+                    if pings && last_seen.elapsed() > VOICE_SILENCE && self.state.lock().unwrap().conn_voice.contains_key(&conn_id) {
+                        break;
+                    }
+                }
                 _ = tick.tick() => {
                     let session = self.state.lock().unwrap().conns.get(&conn_id).and_then(|c| c.session);
                     if let Some(id) = session {
                         crate::admin::touch_session(&app, id).await;
                     }
                 }
-                msg = stream.next() => match msg {
-                    Some(Ok(WsMessage::Text(text))) => {
-                        if let Ok(req) = serde_json::from_str::<Request>(&text) {
-                            if req.op == "music:add" {
-                                self.spawn_music_add(&app, &conn_id, &user, req.d, req.id, tx.clone());
-                                continue;
-                            }
-                            let reply = self.handle(&app, &conn_id, &user, req.op.as_str(), req.d).await;
-                            if let (Some(id), Some(d)) = (req.id, reply) {
-                                let _ = tx.send(json!({ "re": id, "d": d }).to_string());
+                msg = stream.next() => {
+                    last_seen = tokio::time::Instant::now();
+                    match msg {
+                        Some(Ok(WsMessage::Text(text))) => {
+                            if let Ok(req) = serde_json::from_str::<Request>(&text) {
+                                pings |= req.op == "ping";
+                                if req.op == "music:add" {
+                                    self.spawn_music_add(&app, &conn_id, &user, req.d, req.id, tx.clone());
+                                    continue;
+                                }
+                                let reply = self.handle(&app, &conn_id, &user, req.op.as_str(), req.d).await;
+                                if let (Some(id), Some(d)) = (req.id, reply) {
+                                    let _ = tx.send(json!({ "re": id, "d": d }).to_string());
+                                }
                             }
                         }
+                        Some(Ok(WsMessage::Close(_))) => {
+                            closed_by_app = true;
+                            break;
+                        }
+                        None | Some(Err(_)) => break,
+                        _ => {}
                     }
-                    Some(Ok(WsMessage::Close(_))) | None | Some(Err(_)) => break,
-                    _ => {}
-                },
+                }
                 _ = self.shutdown.cancelled() => break,
             }
         }
@@ -793,9 +891,17 @@ impl Hub {
             crate::admin::touch_session(&app, id).await;
         }
         let mut leaving = None;
+        let mut hold_voice = false;
         {
             let mut s = self.state.lock().unwrap();
-            Self::leave_voice_locked(&mut s, &conn_id);
+            if self.restarting.load(Ordering::SeqCst) {
+                // Reiniciando: ninguém sai da chamada (o servidor novo recebe todos de volta).
+                s.conn_voice.remove(&conn_id);
+            } else if !closed_by_app && Self::mark_away(&mut s, &conn_id) {
+                hold_voice = true;
+            } else {
+                Self::leave_voice_locked(&mut s, &conn_id);
+            }
             if let Some(c) = s.conns.remove(&conn_id) {
                 let now_offline = match s.user_conns.get_mut(&user.id) {
                     Some(set) => {
@@ -826,6 +932,22 @@ impl Hub {
                     Self::send_nearby(&s, &c.net.key);
                 }
             }
+        }
+        if hold_voice {
+            let hub = self.clone();
+            let conn_id = conn_id.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(VOICE_RESUME_GRACE).await;
+                let mut s = hub.state.lock().unwrap();
+                let still_away = s
+                    .conn_voice
+                    .get(&conn_id)
+                    .and_then(|ch| s.voice.get(ch))
+                    .is_some_and(|l| l.iter().any(|p| p.peer_id == conn_id && p.away));
+                if still_away {
+                    Self::leave_voice_locked(&mut s, &conn_id);
+                }
+            });
         }
         if let Some((seq, grace)) = leaving {
             let (hub, user_id) = (self.clone(), user.id.clone());
@@ -1216,6 +1338,9 @@ impl Hub {
 
             "ping" => Some(json!({ "t": crate::now_ms() })),
 
+            // Senha nova do relay (TURN) para uma chamada que já dura perto das 24 h de validade.
+            "turn:refresh" => Some(json!({ "iceServers": ice_servers_for(app, &user.id) })),
+
             "status:set" => {
                 let status = str_field("status");
                 if !STATUSES.contains(&status.as_str()) {
@@ -1311,34 +1436,120 @@ impl Hub {
                         None => return err("Canal de voz não encontrado"),
                     },
                 };
+                let muted = d.get("muted").and_then(Value::as_bool).unwrap_or(false);
+                let deafened = d.get("deafened").and_then(Value::as_bool).unwrap_or(false);
+                // Senha do relay recém-gerada: a do `ready` pode estar perto de vencer (app aberto há dias).
+                let ice = ice_servers_for(app, &user.id);
+                // Voltando para a chamada (a conexão caiu ou o servidor reiniciou): `resume.was` é o id de antes.
+                let resume = d.get("resume").filter(|r| r.is_object());
+                let was = resume
+                    .and_then(|r| r.get("was"))
+                    .and_then(Value::as_str)
+                    .filter(|w| !w.is_empty() && w.len() <= 64 && *w != conn_id)
+                    .map(str::to_string);
                 let mut s = self.state.lock().unwrap();
                 Self::leave_voice_locked(&mut s, conn_id);
+                // O lugar de quando a conexão caiu (mesmo servidor). Não precisa estar marcado como caído: a
+                // internet pode ter sumido sem fechar a conexão (celular sem sinal, Wi-Fi que trocou), e aí,
+                // para o servidor, a antiga ainda parece viva. O app diz que era ele, com a mesma conta.
+                let claimed = was.as_ref().and_then(|w| {
+                    let p = s.voice.get_mut(&ch_id)?.iter_mut().find(|p| &p.peer_id == w && p.user.id == user.id)?;
+                    p.peer_id = conn_id.to_string();
+                    p.was = Some(w.clone());
+                    p.away = false;
+                    p.muted = muted;
+                    p.deafened = deafened;
+                    p.user = user.clone();
+                    Some(p.clone())
+                });
+                if let Some(me) = claimed {
+                    let old = me.was.clone().unwrap_or_default();
+                    s.conn_voice.remove(&old);
+                    s.conn_voice.insert(conn_id.to_string(), ch_id.clone());
+                    let peers: Vec<Participant> =
+                        s.voice.get(&ch_id).into_iter().flatten().filter(|p| p.peer_id != conn_id).cloned().collect();
+                    let joined = event("voice:peer-joined", &me);
+                    for p in &peers {
+                        Self::send_to(&s, &p.peer_id, joined.clone());
+                    }
+                    Self::broadcast_voice_channel(&s, &me, &ch_id);
+                    let since = s.voice_since.get(&ch_id).copied();
+                    return Some(json!({
+                        "ok": true, "channelId": ch_id, "guildId": guild_id, "dm": dm_users.is_some(), "peers": peers,
+                        "bootId": self.boot_id, "resumed": "kept", "since": since, "iceServers": ice
+                    }));
+                }
+                // Uma chamada por conta: dois aparelhos da mesma pessoa na voz dobram o envio de áudio e
+                // vídeo da casa dela (e cada um ouve o outro). Voltando depois de cair, se a pessoa já
+                // entrou por outro aparelho, quem fica é o outro; entrando agora, o outro sai.
+                let elsewhere = Self::voice_seats_of(&s, &user.id, conn_id);
+                if was.is_some() && elsewhere.iter().any(|(_, away)| !away) {
+                    return err(VOICE_ELSEWHERE);
+                }
+                for (id, away) in elsewhere {
+                    if away {
+                        // O app que caiu: só libera o lugar guardado.
+                        Self::leave_voice_locked(&mut s, &id);
+                    } else {
+                        Self::move_out_of_voice(&mut s, &id);
+                    }
+                }
+                let now = crate::now_ms();
+                let flag = |k: &str| resume.and_then(|r| r.get(k)).and_then(Value::as_bool).unwrap_or(false);
+                let stream_id = |k: &str| {
+                    resume.and_then(|r| r.get(k)).and_then(Value::as_str).map(|v| v.chars().take(100).collect::<String>())
+                };
                 let me = Participant {
                     peer_id: conn_id.to_string(),
                     user: user.clone(),
                     guild_id: guild_id.clone(),
                     dm_users: dm_users.clone(),
-                    muted: d.get("muted").and_then(Value::as_bool).unwrap_or(false),
-                    deafened: d.get("deafened").and_then(Value::as_bool).unwrap_or(false),
-                    video: false,
-                    screen: false,
-                    camera_stream_id: None,
-                    screen_stream_id: None,
+                    muted,
+                    deafened,
+                    video: flag("video"),
+                    screen: flag("screen"),
+                    camera_stream_id: stream_id("cameraStreamId"),
+                    screen_stream_id: stream_id("screenStreamId"),
                     server_muted: false,
-                    joined_at: crate::now_ms(),
+                    // Voltando depois de reiniciar: o tempo na chamada continua contando de quando entrou.
+                    joined_at: resume
+                        .and_then(|r| r.get("since"))
+                        .and_then(Value::as_i64)
+                        .filter(|t| *t <= now && now - *t < 24 * 3600 * 1000)
+                        .unwrap_or(now),
+                    was: was.clone(),
+                    away: false,
                 };
-                if dm_users.is_none() {
+                if dm_users.is_none() && was.is_none() {
                     app.audit(crate::audit::Entry::new(&guild_id, "voice.join", &user.id).channel(&ch_id));
                 }
                 let list = s.voice.entry(ch_id.clone()).or_default();
                 let peers = list.clone();
                 list.push(me.clone());
                 s.conn_voice.insert(conn_id.to_string(), ch_id.clone());
+                // Início da chamada: quem abriu o canal; voltando depois de o servidor reiniciar, o início
+                // que o app já conhecia (a chamada não recomeça do zero).
+                let call_since = resume
+                    .and_then(|r| r.get("callSince"))
+                    .and_then(Value::as_i64)
+                    .filter(|t| *t <= now && now - *t < 24 * 3600 * 1000)
+                    .unwrap_or(me.joined_at)
+                    .min(me.joined_at);
+                let since = s.voice_since.entry(ch_id.clone()).or_insert(call_since);
+                *since = (*since).min(call_since);
+                let since = *since;
                 let joined = event("voice:peer-joined", &me);
                 for p in &peers {
                     Self::send_to(&s, &p.peer_id, joined.clone());
                 }
                 Self::broadcast_voice_channel(&s, &me, &ch_id);
+                // Quem está voltando não toca para ninguém nem gera aviso de "entrou".
+                if was.is_some() {
+                    return Some(json!({
+                        "ok": true, "channelId": ch_id, "guildId": guild_id, "dm": dm_users.is_some(), "peers": peers,
+                        "bootId": self.boot_id, "resumed": "new", "since": since, "iceServers": ice
+                    }));
+                }
                 // Chamada 1 a 1: toca para o outro lado se ele ainda não estiver na chamada.
                 let mut ringing = None;
                 if let Some(users) = &dm_users {
@@ -1374,7 +1585,10 @@ impl Hub {
                         },
                     );
                 }
-                Some(json!({ "ok": true, "channelId": ch_id, "guildId": guild_id, "dm": dm_users.is_some(), "peers": peers }))
+                Some(json!({
+                    "ok": true, "channelId": ch_id, "guildId": guild_id, "dm": dm_users.is_some(), "peers": peers,
+                    "bootId": self.boot_id, "since": since, "iceServers": ice
+                }))
             }
 
             "voice:leave" => {
@@ -1953,6 +2167,68 @@ mod tests {
     }
 
     #[test]
+    fn uma_chamada_por_conta() {
+        let (hub, _rx) = Hub::new();
+        let user = |id: &str| -> User {
+            serde_json::from_value(json!({
+                "id": id, "username": id, "displayName": id, "avatarColor": "#000000", "avatarUrl": null, "bio": "",
+                "nameColor": null, "bioColor": null, "bannerColor": null
+            }))
+            .unwrap()
+        };
+        let seat = |peer: &str, who: &str, away: bool| Participant {
+            peer_id: peer.into(),
+            user: user(who),
+            guild_id: "g".into(),
+            dm_users: None,
+            muted: false,
+            deafened: false,
+            video: false,
+            screen: false,
+            camera_stream_id: None,
+            screen_stream_id: None,
+            server_muted: false,
+            joined_at: 1,
+            was: None,
+            away,
+        };
+        let (tx, mut pc) = unbounded_channel();
+        let mut s = hub.state.lock().unwrap();
+        s.conns.insert(
+            "pc".into(),
+            Conn {
+                tx,
+                user_id: "ana".into(),
+                guilds: HashSet::new(),
+                friends: HashSet::new(),
+                visible: true,
+                net: Net::from_ip("10.0.0.1".parse().unwrap()),
+                nearby: false,
+                device: String::new(),
+                mobile: false,
+                session: None,
+            },
+        );
+        s.voice.insert("geral".into(), vec![seat("pc", "ana", false), seat("bia1", "bia", false)]);
+        s.voice.insert("sala2".into(), vec![seat("velho", "ana", true)]);
+        for (conn, ch) in [("pc", "geral"), ("bia1", "geral"), ("velho", "sala2")] {
+            s.conn_voice.insert(conn.into(), ch.into());
+        }
+        // Ana entrando pelo celular: o PC (na chamada) e o lugar guardado de um app que caiu.
+        let mut outros = Hub::voice_seats_of(&s, "ana", "cel");
+        outros.sort();
+        assert_eq!(outros, vec![("pc".to_string(), false), ("velho".to_string(), true)]);
+        assert!(Hub::voice_seats_of(&s, "bia", "bia1").is_empty());
+        Hub::move_out_of_voice(&mut s, "pc");
+        let msg: Value = serde_json::from_str(&pc.try_recv().unwrap()).unwrap();
+        assert_eq!(msg["ev"], "voice:kicked");
+        assert_eq!(msg["d"]["reason"], "elsewhere");
+        assert_eq!(msg["d"]["channelId"], "geral");
+        assert!(!s.conn_voice.contains_key("pc"));
+        assert_eq!(s.voice["geral"].len(), 1, "a Bia continua");
+    }
+
+    #[test]
     fn presenca_diz_se_e_pelo_celular() {
         let (hub, _rx) = Hub::new();
         let conn = |mobile: bool| Conn {
@@ -1971,6 +2247,11 @@ mod tests {
         s.user_conns.entry("ana".into()).or_default().insert("cel".into());
         s.conns.insert("cel".into(), conn(true));
         assert!(Hub::on_mobile(&s, "ana"));
+        // Logo depois de o servidor subir (reinício), todos estão voltando: ninguém "ficou online".
+        s.online_notify.insert("ana".into(), ONLINE_NOTIFY_DESKTOP | ONLINE_NOTIFY_PHONE);
+        assert!(!Hub::announces_online(&s, "ana"));
+        s.online_notify.remove("ana");
+        s.started_at = 0;
         // Padrão: avisa os amigos só pelo computador.
         assert!(!Hub::announces_online(&s, "ana"));
         s.online_notify.insert("ana".into(), ONLINE_NOTIFY_DESKTOP | ONLINE_NOTIFY_PHONE);
@@ -1989,6 +2270,15 @@ mod tests {
         assert!(Hub::on_mobile(&s, "ana"));
         assert!(!Hub::on_mobile(&s, "bia"));
     }
+}
+
+/// STUN/TURN da configuração + o relay com senha temporária (vale 24 h) deste usuário.
+fn ice_servers_for(app: &App, user_id: &str) -> Vec<Value> {
+    let mut list = app.config.ice_servers.clone();
+    if let Some(turn) = &app.turn {
+        list.push(turn.ice_server(user_id, crate::now_ms()));
+    }
+    list
 }
 
 /// A mensagem respondida, se ela estiver na mesma conversa/canal (o texto citado já decifrado).

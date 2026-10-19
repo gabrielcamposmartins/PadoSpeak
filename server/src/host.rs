@@ -188,6 +188,7 @@ impl HostManager {
             voice_empty,
         );
         music.warm_up();
+        music.restore_after_restart();
         let lan = if self.local_node {
             Some(crate::lan::Lan::new(self.node_id().await, cfg.port, self.hosting.lock().unwrap().clone()))
         } else {
@@ -297,6 +298,20 @@ impl HostManager {
         *running = Some(Running { app, handle, task, started_at: crate::now_ms(), urls });
         drop(running);
         Ok(self.status().await)
+    }
+
+    /// Desliga para reiniciar (atualização, SIGTERM do Docker): avisa os apps para voltarem logo, sem
+    /// encerrar as chamadas, e guarda a música para o servidor novo continuar.
+    pub async fn stop_for_restart(&self) -> HostStatus {
+        if !self.local_node {
+            if let Some(r) = self.running.lock().await.as_ref() {
+                r.app.hub.announce_restart();
+                r.app.music.save_for_restart();
+            }
+            // Tempo para o aviso sair antes de as conexões fecharem.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+        self.stop().await
     }
 
     pub async fn stop(&self) -> HostStatus {

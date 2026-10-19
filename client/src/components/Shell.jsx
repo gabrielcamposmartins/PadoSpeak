@@ -2,6 +2,7 @@ import {
   Plus,
   Hash,
   Volume2,
+  Clock,
   Mic,
   MicOff,
   Headphones,
@@ -469,6 +470,48 @@ function VoiceMemberRow({ p, channelId, guildId, speaking, watch, trouble }) {
 /** Tipo do arrastar de canais (para não se confundir com arrastar pessoas entre canais de voz). */
 const DRAG_CHANNEL = 'application/x-padospeak-channel';
 
+/** Relógio que anda uma vez por segundo, compartilhado por todos os contadores na tela. */
+const secondTick = (() => {
+  const subs = new Set();
+  let timer = null;
+  return (fn) => {
+    subs.add(fn);
+    if (!timer) timer = setInterval(() => subs.forEach((f) => f()), 1000);
+    return () => {
+      subs.delete(fn);
+      if (!subs.size) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+  };
+})();
+
+/** `23:41`, ou `1:05:12` a partir de uma hora. */
+const callDuration = (ms) => {
+  const t = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const sec = String(t % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
+};
+
+/** Há quanto tempo a chamada do canal começou (some quando não há ninguém). */
+function CallTimer({ channelId }) {
+  const since = useStore((s) => (s.voiceStates[channelId]?.length ? s.voiceSince[channelId] : null));
+  const offset = useStore((s) => s.serverOffset || 0);
+  const [, tick] = useState(0);
+  useEffect(() => (since ? secondTick(() => tick((n) => n + 1)) : undefined), [since]);
+  if (!since) return null;
+  const text = callDuration(Date.now() + offset - since);
+  return (
+    <span className="call-timer" title={`Chamada em andamento há ${text}`} aria-label={`Chamada em andamento há ${text}`}>
+      <Clock size={12} aria-hidden="true" />
+      {text}
+    </span>
+  );
+}
+
 function VoiceChannelRow({ c, active, children }) {
   const [over, setOver] = useState(false);
   return (
@@ -561,6 +604,7 @@ function ChannelGroup({ title, type, list, canManage, guildId, activeId }) {
             {type === 'text' ? <Hash size={16} /> : <Volume2 size={16} />}
             <span className="label-text">{c.name}</span>
             {c.private && <Lock size={12} className="ch-lock" aria-label="Canal privado" />}
+            {type === 'voice' && <CallTimer channelId={c.id} />}
             {alerts[c.id]?.n > 0 && activeId !== c.id && (
               <span className="badge ch-badge" aria-label={`${alerts[c.id].n} ${alerts[c.id].n === 1 ? 'aviso' : 'avisos'}`}>
                 {alerts[c.id].n > 99 ? '99+' : alerts[c.id].n}

@@ -2,6 +2,8 @@ import { suppressNoise } from './noise.js';
 import { plain } from './text.js';
 import { isTauri } from './env.js';
 import { startNativeScreenAudio } from './screenAudio.js';
+import { keepAwake } from './audioWake.js';
+import { videoTarget } from './videoBudget.js';
 
 // Voz, câmera e compartilhamento de tela via WebRTC em malha (P2P), com "perfect negotiation".
 // O servidor Rust só repassa a sinalização (oferta/resposta/ICE) entre quem está no mesmo canal.
@@ -25,8 +27,56 @@ const RESET_EVERY_MS = 20000;
 const TROUBLE_AFTER_MS = 5000;
 /** Eventos guardados por par (para o diagnóstico). */
 const PEER_LOG = 30;
+// Conexão com o servidor caiu (internet oscilou, servidor reiniciando para atualizar): o áudio continua,
+// porque vai direto entre os aparelhos. O app volta para a chamada quando reconecta; sem voltar a
+// tempo, a chamada acaba.
+const RESUME_MS = 45000;
+/** Depois de voltar, quanto tempo esperar por quem ainda não voltou (antes de tirar da chamada). */
+const ORPHAN_MS = 30000;
+/**
+ * Pings seguidos sem resposta (um a cada 2 s, cada um espera 3 s) antes de trocar a conexão com o
+ * servidor: a internet pode sumir sem fechar a conexão, e o navegador leva minutos para desistir dela.
+ */
+const MISSED_PINGS = 3;
+/** A senha do relay (TURN) vale 24 h: numa chamada mais longa, pede outra quando falta menos que isto. */
+const ICE_REFRESH_BEFORE_MS = 60 * 60 * 1000;
+/** A rede mudou (Wi-Fi ↔ 4G): reinicia o ICE de cada par que ainda não reiniciou nesse intervalo. */
+const NET_CHANGE_WINDOW_MS = 15000;
+/** Microfone emudecido pelo sistema (parou de entregar som) por mais que isto: avisa. */
+const MIC_STALL_MS = 2500;
+
+/**
+ * Codec do vídeo que eu envio (câmera e tela). Sem escolha, o navegador usa VP8, que no Windows é
+ * codificado pelo processador, uma vez para cada pessoa assistindo (a chamada é em malha): transmitir um
+ * jogo em 1080p60 para 3 pessoas ocupava uns 9 dos 12 núcleos de um Ryzen 5 5600X, e o computador
+ * travava. Com um codificador de H.264 na placa de vídeo (NVENC, AMF, Quick Sync, o do celular), a mesma
+ * transmissão custa menos de 2 núcleos. Sem ele, fica o padrão do navegador.
+ */
+let videoCodec;
+function hardwareVideoCodec() {
+  videoCodec ??= (async () => {
+    if (typeof VideoEncoder === 'undefined' || !VideoEncoder.isConfigSupported) return null;
+    // High e Constrained Baseline 4.2 (1080p60): basta a placa saber um deles.
+    for (const codec of ['avc1.64002a', 'avc1.42e02a']) {
+      const { supported } = await VideoEncoder.isConfigSupported({
+        codec,
+        hardwareAcceleration: 'prefer-hardware',
+        width: 1920,
+        height: 1080,
+        framerate: 60,
+        bitrate: 6_000_000,
+      }).catch(() => ({}));
+      if (supported) return 'video/H264';
+    }
+    return null;
+  })();
+  return videoCodec;
+}
 
 // Com o RNNoise ligado, o supressor nativo do navegador fica desligado para não processar o áudio duas vezes.
+/** Chave local de cada par (não muda quando ele volta com outro id). */
+let peerSeq = 0;
+
 const audioConstraints = (deviceId, rnnoise) => ({
   deviceId: deviceId ? { exact: deviceId } : undefined,
   channelCount: 1,
@@ -69,6 +119,9 @@ export class VoiceClient {
     this.lastLoud = {};
     this.meters = new Map();
     this.unsubs = [];
+    // Desligam o `keepAwake` dos AudioContext da chamada.
+    this.sleepless = [];
+    this.missedPings = 0;
   }
 
   // ---------- Ciclo de vida ----------
@@ -79,6 +132,7 @@ export class VoiceClient {
     this.noiseSuppression = noiseSuppression;
     this.state.muted = muted;
     this.state.deafened = deafened;
+    const codec = hardwareVideoCodec();
     try {
       await this.acquireMic();
     } catch (e) {
@@ -87,11 +141,13 @@ export class VoiceClient {
       this.state.micAvailable = false;
     }
     this.applyMicEnabled();
+    this.videoCodec = await codec;
     this.audioCtx = new AudioContext();
+    this.sleepless.push(keepAwake(this.audioCtx));
 
     const on = (ev, fn) => this.unsubs.push(this.rt.on(ev, fn));
     on('voice:peer-joined', (p) => {
-      this.ensurePeer(p.peerId, p);
+      this.adopt(p);
       this.changed();
     });
     on('voice:peer-left', ({ peerId }) => this.removePeer(peerId));
@@ -100,7 +156,10 @@ export class VoiceClient {
       this.changed();
     });
     on('voice:signal', ({ from, data }) => this.handleSignal(from, data));
-    on('voice:kicked', () => this.cleanup('Você foi removido do canal de voz'));
+    // Uma chamada por conta: entrar por outro aparelho tira este da chamada.
+    on('voice:kicked', ({ reason } = {}) =>
+      this.cleanup(reason === 'elsewhere' ? 'Você entrou na chamada por outro aparelho' : 'Você foi removido do canal de voz'),
+    );
     // Um moderador me silenciou (ou tirou o silêncio) para todos.
     on('voice:server-mute', ({ muted, by }) => {
       this.state.serverMuted = muted;
@@ -108,14 +167,42 @@ export class VoiceClient {
       this.onNotice?.(muted ? `${by.displayName} silenciou você para todos neste canal.` : `${by.displayName} tirou o seu silêncio.`);
       this.changed();
     });
-    on('disconnected', () => this.cleanup('Conexão com o servidor perdida'));
+    on('disconnected', () => this.suspend());
+    // Quando a chamada deste canal começou (volta junto se o servidor reiniciar: o contador continua).
+    on('voice:channel', (d) => {
+      if (d.channelId === this.state.channelId && d.since) this.callSince = d.since;
+    });
+    on('ready', (d) => {
+      if (d?.iceServers) this.setIceServers(d.iceServers);
+      this.resume();
+    });
+    // Rede trocada: o caminho da mídia morreu, mas a conexão só percebe em uns 10 s (veja checkPeers).
+    this.onNetwork = () => {
+      this.netChangedAt = Date.now();
+    };
+    this.netType = navigator.connection?.type;
+    this.onConnection = () => {
+      const type = navigator.connection?.type;
+      if (type === this.netType) return;
+      this.netType = type;
+      this.onNetwork();
+    };
+    window.addEventListener('online', this.onNetwork);
+    navigator.connection?.addEventListener?.('change', this.onConnection);
+    // Microfone que voltou a ser conectado, depois de a chamada ter ficado sem nenhum.
+    this.onDevices = () => this.findMic();
+    navigator.mediaDevices?.addEventListener?.('devicechange', this.onDevices);
 
     const res = await this.rt.request('voice:join', { channelId, muted, deafened });
     if (res.error) {
       this.cleanup();
       throw new Error(res.error);
     }
+    if (res.iceServers) this.setIceServers(res.iceServers);
     this.selfId = this.rt.peerId;
+    this.bootId = res.bootId || null;
+    this.joinedAt = Date.now();
+    this.callSince = res.since || null;
     this.state.channelId = res.channelId;
     this.state.guildId = res.guildId;
     this.state.dm = Boolean(res.dm);
@@ -128,6 +215,7 @@ export class VoiceClient {
       this.collectStats();
       this.startLateSenders();
       this.checkPeers();
+      this.refreshIce();
     }, 2000);
     this.changed();
   }
@@ -137,9 +225,143 @@ export class VoiceClient {
     this.cleanup();
   }
 
+  /** A conexão com o servidor caiu: mantém a chamada esperando a volta (até RESUME_MS). */
+  suspend() {
+    if (!this.state.channelId || this.suspended) return;
+    this.suspended = { was: this.selfId };
+    clearTimeout(this.resumeTimer);
+    this.resumeTimer = setTimeout(() => this.cleanup('Conexão com o servidor perdida'), RESUME_MS);
+    this.changed();
+  }
+
+  /**
+   * Reconectou: volta para a chamada. No mesmo servidor, o lugar guardado é retomado; num servidor que
+   * reiniciou, cada um volta por conta própria e as conexões de mídia são reaproveitadas pelo id antigo.
+   */
+  async resume() {
+    const pending = this.suspended;
+    if (!pending || !this.state.channelId) return;
+    const res = await this.rt.request('voice:join', {
+      channelId: this.state.channelId,
+      muted: this.state.muted,
+      deafened: this.state.deafened,
+      resume: {
+        was: pending.was,
+        since: this.joinedAt,
+        callSince: this.callSince,
+        video: Boolean(this.camera),
+        screen: Boolean(this.screen),
+        cameraStreamId: this.camera?.id || null,
+        screenStreamId: this.screen?.id || null,
+      },
+    });
+    if (this.suspended !== pending) return;
+    // Caiu de novo enquanto pedia: espera a próxima reconexão.
+    if (res.error === 'Sem conexão com o servidor' || res.error === 'Conexão perdida' || res.error === 'Tempo esgotado') return;
+    if (res.error) return this.cleanup(res.error);
+    clearTimeout(this.resumeTimer);
+    this.suspended = null;
+    if (res.iceServers) this.setIceServers(res.iceServers);
+    this.selfId = this.rt.peerId;
+    const sameServer = Boolean(res.bootId) && res.bootId === this.bootId;
+    this.bootId = res.bootId || null;
+    if (sameServer && res.resumed === 'new') {
+      // Demorou demais e o servidor já tinha tirado você: os outros fecharam a conexão, então refaz todas.
+      for (const id of [...this.peers.keys()]) this.removePeer(id, false);
+      for (const p of res.peers) this.ensurePeer(p.peerId, p);
+      for (const peer of this.peers.values()) this.applyAutoWatch(peer);
+    } else {
+      const back = new Set();
+      for (const p of res.peers) back.add(this.adopt(p).id);
+      // Quem ainda não voltou (servidor reiniciado) fica até ORPHAN_MS.
+      const now = Date.now();
+      for (const peer of this.peers.values()) if (!back.has(peer.id)) peer.orphanSince = now;
+      for (const peer of this.peers.values()) peer.polite = this.selfId < peer.id;
+    }
+    this.changed();
+  }
+
+  /** Senhas novas do relay (TURN): valem para as conexões novas e para as próximas reconexões das atuais. */
+  setIceServers(list) {
+    if (!Array.isArray(list) || !list.length) return;
+    this.iceServers = list;
+    // O usuário da senha começa pelo horário (em segundos) em que ela vence.
+    const ends = list.map((s) => /^(\d+):/.exec(s.username || '')?.[1]).filter(Boolean);
+    this.iceExpiresAt = ends.length ? Math.min(...ends.map(Number)) * 1000 : null;
+    for (const peer of this.peers.values()) {
+      if (peer.pc.signalingState === 'closed') continue;
+      try {
+        peer.pc.setConfiguration({ ...peer.pc.getConfiguration(), iceServers: list });
+      } catch (e) {
+        console.warn('[voz] senha do relay', e);
+      }
+    }
+  }
+
+  /** Chamada chegando às 24 h da senha do relay: pede uma nova (no máximo uma vez por minuto). */
+  async refreshIce() {
+    const now = Date.now();
+    if (!this.iceExpiresAt || now < this.iceExpiresAt - ICE_REFRESH_BEFORE_MS || now - (this.iceRefreshAt || 0) < 60000) return;
+    this.iceRefreshAt = now;
+    const res = await this.rt.request('turn:refresh');
+    if (res?.iceServers) this.setIceServers(res.iceServers);
+  }
+
+  /** Alguém na chamada (entrando ou voltando com outro id, `was`): reaproveita a conexão de mídia que já existe. */
+  adopt(info) {
+    if (info.was && info.was !== info.peerId && this.peers.has(info.was) && !this.peers.has(info.peerId)) {
+      this.rekey(info.was, info.peerId);
+    }
+    const peer = this.ensurePeer(info.peerId, info);
+    peer.orphanSince = null;
+    return peer;
+  }
+
+  /** A mesma pessoa com um id novo (reconectou): troca a chave sem mexer na conexão. */
+  rekey(oldId, newId) {
+    const peer = this.peers.get(oldId);
+    this.peers.delete(oldId);
+    peer.id = newId;
+    peer.info.peerId = newId;
+    peer.polite = (this.selfId || this.rt.peerId || '') < newId;
+    this.peers.set(newId, peer);
+    for (const [key, m] of [...this.meters]) {
+      if (m.owner !== oldId) continue;
+      this.meters.delete(key);
+      m.owner = newId;
+      this.meters.set(`${newId}:${m.stream.id}`, m);
+    }
+    for (const map of [this.speaking, this.lastLoud]) {
+      if (oldId in map) {
+        map[newId] = map[oldId];
+        delete map[oldId];
+      }
+    }
+    for (const map of [this.peerNames, this.peerSlots]) {
+      if (map.has(oldId)) {
+        map.set(newId, map.get(oldId));
+        map.delete(oldId);
+      }
+    }
+    this.peerLog(peer, 'voltou depois de reconectar ao servidor');
+  }
+
   cleanup(reason = null) {
+    clearTimeout(this.resumeTimer);
+    clearTimeout(this.micMuteTimer);
+    this.suspended = null;
     this.unsubs.forEach((u) => u());
     this.unsubs = [];
+    window.removeEventListener('online', this.onNetwork);
+    navigator.connection?.removeEventListener?.('change', this.onConnection);
+    navigator.mediaDevices?.removeEventListener?.('devicechange', this.onDevices);
+    if (this.unblock) {
+      window.removeEventListener('click', this.unblock, true);
+      window.removeEventListener('keydown', this.unblock, true);
+      this.unblock = null;
+    }
+    this.sleepless.forEach((stop) => stop());
+    this.sleepless = [];
     for (const id of [...this.peers.keys()]) this.removePeer(id, false);
     for (const s of [this.rawMic, this.mic, this.camera, this.screen]) s?.getTracks().forEach((t) => t.stop());
     this.screenAudio?.stop();
@@ -178,6 +400,8 @@ export class VoiceClient {
     const pc = new RTCPeerConnection({ iceServers: this.iceServers });
     peer = {
       id: peerId,
+      // Não muda quando a pessoa volta com outro id (sons de entrada/saída, listas na tela).
+      key: `p${++peerSeq}`,
       info: { peerId, ...(info || {}) },
       pc,
       // Um lado "educado" cede em colisões de oferta; o critério só precisa ser determinístico.
@@ -209,7 +433,7 @@ export class VoiceClient {
       try {
         peer.makingOffer = true;
         await pc.setLocalDescription();
-        this.signal(peerId, { description: pc.localDescription });
+        this.signal(peer.id, { description: pc.localDescription });
       } catch (e) {
         console.warn('[voz] negotiationneeded', e);
       } finally {
@@ -217,7 +441,7 @@ export class VoiceClient {
       }
     };
     pc.onicecandidate = ({ candidate }) => {
-      if (candidate) this.signal(peerId, { candidate });
+      if (candidate) this.signal(peer.id, { candidate });
     };
     pc.onconnectionstatechange = () => {
       peer.connectionState = pc.connectionState;
@@ -238,7 +462,7 @@ export class VoiceClient {
       peer.streams.set(stream.id, stream);
       if (track.kind === 'audio') {
         this.playAudio(peer, stream);
-        this.watchLevel(peerId, stream);
+        this.watchLevel(peer.id, stream);
       }
       stream.onremovetrack = () => {
         if (stream.getTracks().length === 0) {
@@ -322,8 +546,11 @@ export class VoiceClient {
     const { pc, senders, wants } = peer;
     if (pc.signalingState === 'closed' || peer.lateSenders) return;
     const camTrack = this.camera?.getVideoTracks()[0];
-    if (camTrack && wants.camera && !senders.camera) senders.camera = pc.addTrack(camTrack, this.camera);
-    else if ((!camTrack || !wants.camera) && senders.camera) {
+    const before = [Boolean(senders.camera), Boolean(senders.screenVideo)];
+    if (camTrack && wants.camera && !senders.camera) {
+      senders.camera = pc.addTrack(camTrack, this.camera);
+      this.preferVideoCodec(pc, senders.camera);
+    } else if ((!camTrack || !wants.camera) && senders.camera) {
       pc.removeTrack(senders.camera);
       senders.camera = null;
     }
@@ -334,6 +561,13 @@ export class VoiceClient {
         senders[k] = null;
       }
     }
+    // Mudou quantos assistem: o teto de envio é redividido entre todos.
+    if (before[0] !== Boolean(senders.camera) || before[1] !== Boolean(senders.screenVideo)) this.retuneVideo();
+  }
+
+  /** Recalcula o envio de vídeo para todos (o teto de envio é dividido entre quem assiste). */
+  retuneVideo() {
+    for (const peer of this.peers.values()) this.tuneSenders(peer);
   }
 
   removePeer(peerId, notify = true) {
@@ -356,9 +590,9 @@ export class VoiceClient {
     if (peer.log.length > PEER_LOG) peer.log.shift();
   }
 
-  /** Reinicia o ICE (só o lado não educado; o educado responde à oferta). */
-  restartIce(peer) {
-    if (peer.polite || peer.pc.signalingState === 'closed' || Date.now() - peer.lastRestart < RESTART_AFTER_MS) return;
+  /** Reinicia o ICE (só o lado não educado; o educado responde à oferta). `force`: a rede mudou. */
+  restartIce(peer, force = false) {
+    if (peer.polite || peer.pc.signalingState === 'closed' || (!force && Date.now() - peer.lastRestart < RESTART_AFTER_MS)) return;
     peer.lastRestart = Date.now();
     this.peerLog(peer, 'reiniciando o ICE');
     peer.pc.restartIce();
@@ -373,6 +607,8 @@ export class VoiceClient {
     if (!old) return;
     if (!fromRemote) this.signal(peerId, { reset: true });
     const keep = {
+      key: old.key,
+      orphanSince: old.orphanSince,
       info: old.info,
       volume: old.volume,
       streamVolume: old.streamVolume,
@@ -384,6 +620,9 @@ export class VoiceClient {
     this.removePeer(peerId, false);
     const peer = this.ensurePeer(peerId, keep.info);
     Object.assign(peer, {
+      key: keep.key,
+      // Esperando voltar depois de o servidor reiniciar: refazer a conexão não zera a espera.
+      orphanSince: keep.orphanSince,
       volume: keep.volume,
       streamVolume: keep.streamVolume,
       streamMuted: keep.streamMuted,
@@ -403,8 +642,25 @@ export class VoiceClient {
 
   /** A cada 2 s: quem está sem conexão há um tempo tem o ICE reiniciado e, se não voltar, a conexão refeita. */
   checkPeers() {
+    // Sem servidor não há como sinalizar (reiniciar o ICE ou refazer): só espera.
+    if (this.suspended) return;
     const now = Date.now();
+    // A rede mudou há pouco (e o servidor já responde): cada par reinicia o ICE uma vez, sem esperar.
+    const netChange = this.netChangedAt && now - this.netChangedAt < NET_CHANGE_WINDOW_MS ? this.netChangedAt : 0;
     for (const peer of [...this.peers.values()]) {
+      if (peer.orphanSince && now - peer.orphanSince > ORPHAN_MS) {
+        this.peerLog(peer, 'não voltou depois de o servidor reiniciar');
+        this.removePeer(peer.id);
+        continue;
+      }
+      if (netChange && (peer.netRestartAt || 0) < netChange) {
+        peer.netRestartAt = now;
+        this.peerLog(peer, 'a rede mudou: reiniciando o ICE');
+        // Quem reinicia é o lado não educado; o educado pede.
+        if (peer.polite) this.signal(peer.id, { restartRequest: true });
+        else this.restartIce(peer, true);
+        continue;
+      }
       if (!peer.badSince || peer.pc.connectionState === 'connected') continue;
       const bad = now - peer.badSince;
       if (bad > RESET_AFTER_MS && now - Math.max(peer.lastReset, peer.createdAt) > RESET_EVERY_MS) {
@@ -424,6 +680,11 @@ export class VoiceClient {
     const peer = this.ensurePeer(from);
     if (data.resetRequest) {
       if (!peer.polite) this.resetPeer(from);
+      return;
+    }
+    // A rede do outro lado mudou: reinicio o ICE na hora.
+    if (data.restartRequest) {
+      if (!peer.polite) this.restartIce(peer, true);
       return;
     }
     // Processa em ordem: a negociação não pode intercalar descrições.
@@ -456,27 +717,45 @@ export class VoiceClient {
     }
   }
 
-  /** Bitrate/fps alvo por tipo de vídeo — é o que garante a tela nítida em 1080p. */
+  /**
+   * Bitrate/fps/resolução do vídeo que vai para este par: a qualidade escolhida, dividida entre quem
+   * assiste e reduzida quando a conexão passa pelo relay ou o envio é codificado pelo processador
+   * (veja videoBudget.js).
+   */
   tuneSenders(peer) {
+    const viewers = (key) => [...this.peers.values()].filter((p) => p.senders[key]).length;
     const targets = [
-      [peer.senders.camera, CAMERA, null],
-      [peer.senders.screenVideo, SCREEN_PRESETS[this.state.screenPreset], 'screen'],
+      [peer.senders.camera, CAMERA, 'camera', 'camera'],
+      [peer.senders.screenVideo, SCREEN_PRESETS[this.state.screenPreset], 'screen', 'screenVideo'],
     ];
-    for (const [sender, preset, kind] of targets) {
+    for (const [sender, preset, kind, key] of targets) {
       if (!sender?.track) continue;
+      const target = videoTarget({
+        kind,
+        preset,
+        viewers: viewers(key),
+        relay: peer.stats?.route === 'relay',
+        software: kind === 'screen' && Boolean(peer.softwareScreen),
+      });
+      const apply = (params) => {
+        Object.assign(params.encodings[0], {
+          maxBitrate: target.bitrate,
+          maxFramerate: target.fps,
+          scaleResolutionDownBy: target.scale,
+          priority: kind === 'screen' ? 'high' : 'medium',
+          networkPriority: kind === 'screen' ? 'high' : 'medium',
+        });
+        return params;
+      };
       const params = sender.getParameters();
       if (!params.encodings?.length) continue;
-      Object.assign(params.encodings[0], {
-        maxBitrate: preset.bitrate,
-        maxFramerate: preset.fps,
-        scaleResolutionDownBy: 1,
-        priority: kind ? 'high' : 'medium',
-        networkPriority: kind ? 'high' : 'medium',
-      });
-      if (kind) params.degradationPreference = preset.hint === 'motion' ? 'maintain-framerate' : 'maintain-resolution';
+      apply(params);
+      if (kind === 'screen') params.degradationPreference = preset.hint === 'motion' ? 'maintain-framerate' : 'maintain-resolution';
       sender.setParameters(params).catch(() => {
-        delete params.degradationPreference;
-        sender.setParameters(params).catch((e) => console.warn('[voz] setParameters', e));
+        // Navegador sem degradationPreference: de novo sem ela (com parâmetros novos, os de antes venceram).
+        const again = sender.getParameters();
+        if (!again.encodings?.length) return;
+        sender.setParameters(apply(again)).catch((e) => console.warn('[voz] setParameters', e));
       });
     }
   }
@@ -489,9 +768,36 @@ export class VoiceClient {
     el.autoplay = true;
     el.srcObject = stream;
     if (this.devices.output && el.setSinkId) el.setSinkId(this.devices.output).catch(() => {});
-    el.play().catch(() => {});
+    this.play(el);
     peer.audioEls.set(stream.id, el);
     this.applyAudio(peer);
+  }
+
+  /** Toca um áudio da chamada. Se o navegador bloquear (a página ainda não recebeu um toque), pede um. */
+  play(el) {
+    el.play().catch((e) => {
+      if (e?.name === 'NotAllowedError') this.audioBlocked();
+    });
+  }
+
+  /** O navegador bloqueou o som: avisa e tenta de novo no primeiro clique ou tecla. */
+  audioBlocked() {
+    if (this.unblock || !this.state.channelId) return;
+    this.state.audioBlocked = true;
+    this.onNotice?.('O navegador bloqueou o som da chamada: toque em qualquer lugar da tela para ouvir.');
+    this.unblock = () => {
+      window.removeEventListener('click', this.unblock, true);
+      window.removeEventListener('keydown', this.unblock, true);
+      this.unblock = null;
+      this.state.audioBlocked = false;
+      for (const peer of this.peers.values()) for (const el of peer.audioEls.values()) if (el.paused) this.play(el);
+      this.audioCtx?.resume().catch(() => {});
+      this.boostCtx?.resume().catch(() => {});
+      this.changed();
+    };
+    window.addEventListener('click', this.unblock, true);
+    window.addEventListener('keydown', this.unblock, true);
+    this.changed();
   }
 
   /**
@@ -526,6 +832,8 @@ export class VoiceClient {
     try {
       if (!this.boostCtx) {
         this.boostCtx = new AudioContext();
+        // Suspenso, quem está acima de 100% fica mudo (o <audio> dele está sem som).
+        this.sleepless.push(keepAwake(this.boostCtx));
         if (this.devices.output && this.boostCtx.setSinkId) this.boostCtx.setSinkId(this.devices.output).catch(() => {});
       }
       this.boostCtx.resume?.().catch(() => {});
@@ -650,10 +958,17 @@ export class VoiceClient {
   async acquireMic() {
     // Fora de contexto seguro (HTTP sem ser localhost) o navegador nem expõe mediaDevices.
     if (!navigator.mediaDevices) throw new Error('mediaDevices indisponível (página sem HTTPS)');
-    const raw = await navigator.mediaDevices.getUserMedia({
-      audio: audioConstraints(this.devices.mic, this.noiseSuppression),
-      video: false,
-    });
+    let raw;
+    try {
+      raw = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints(this.devices.mic, this.noiseSuppression), video: false });
+    } catch (e) {
+      // O microfone escolhido nas configurações não está conectado: usa o padrão do sistema.
+      if (!this.devices.mic || !['OverconstrainedError', 'NotFoundError'].includes(e.name)) throw e;
+      this.devices.mic = '';
+      raw = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints('', this.noiseSuppression), video: false });
+      this.onNotice?.('O microfone escolhido nas configurações não está conectado: usando o padrão do sistema.');
+    }
+    this.watchMicTrack(raw.getAudioTracks()[0]);
     let pipe = null;
     if (this.noiseSuppression) {
       try {
@@ -667,6 +982,78 @@ export class VoiceClient {
     this.nsPipe = pipe;
     this.mic = pipe ? pipe.stream : raw;
     this.applyMicEnabled();
+  }
+
+  /** Microfone que cai (desconectado, bloqueado) ou que o sistema parou de entregar no meio da chamada. */
+  watchMicTrack(track) {
+    if (!track) return;
+    const current = () => track === this.rawMic?.getAudioTracks()[0];
+    track.onended = () => current() && this.recoverMic();
+    track.onmute = () => {
+      clearTimeout(this.micMuteTimer);
+      // Trocas de aparelho emudecem por um instante: só avisa se continuar.
+      this.micMuteTimer = setTimeout(() => {
+        if (!current() || !this.state.channelId) return;
+        this.state.micStalled = true;
+        this.onNotice?.('Seu microfone parou de mandar som. Confira se outro programa ou o sistema bloqueou o acesso a ele.');
+        this.changed();
+      }, MIC_STALL_MS);
+    };
+    track.onunmute = () => {
+      clearTimeout(this.micMuteTimer);
+      if (!this.state.micStalled) return;
+      this.state.micStalled = false;
+      this.changed();
+    };
+  }
+
+  /** O microfone sumiu no meio da chamada: continua com o padrão do sistema; sem nenhum, só ouvindo. */
+  async recoverMic() {
+    if (!this.state.channelId || this.recoveringMic) return;
+    this.recoveringMic = true;
+    clearTimeout(this.micMuteTimer);
+    this.state.micStalled = false;
+    this.devices.mic = '';
+    try {
+      await this.replaceMic();
+      this.onNotice?.('O microfone foi desconectado: a chamada continua com o microfone padrão do sistema.');
+    } catch (e) {
+      console.warn('[voz] nenhum microfone', e);
+      this.dropMic();
+      this.onNotice?.('O microfone foi desconectado e não há outro: você continua na chamada só ouvindo.');
+    } finally {
+      this.recoveringMic = false;
+    }
+    this.changed();
+  }
+
+  /** Sem microfone nenhum: os outros deixam de receber a minha voz, e eu continuo ouvindo. */
+  dropMic() {
+    for (const peer of this.peers.values()) peer.senders.mic?.replaceTrack(null).catch(() => {});
+    for (const s of [this.rawMic, this.mic]) s?.getTracks().forEach((t) => t.stop());
+    this.nsPipe?.close();
+    this.nsPipe = null;
+    this.rawMic = this.mic = null;
+    for (const k of [...this.meters.keys()]) if (k.startsWith('me:')) this.meters.delete(k);
+    this.state.micAvailable = false;
+    this.lostMic = true;
+  }
+
+  /** Um aparelho foi conectado depois de a chamada perder o microfone: volta a mandar a voz. */
+  async findMic() {
+    if (!this.lostMic || this.mic || this.recoveringMic || !this.state.channelId) return;
+    this.recoveringMic = true;
+    try {
+      await this.replaceMic();
+      this.lostMic = false;
+      this.state.micAvailable = true;
+      this.onNotice?.('Microfone encontrado: os outros voltaram a ouvir você.');
+      this.changed();
+    } catch {
+      /* ainda sem microfone */
+    } finally {
+      this.recoveringMic = false;
+    }
   }
 
   /** Troca o microfone em uso (dispositivo ou supressão) sem renegociar a chamada. */
@@ -775,8 +1162,25 @@ export class VoiceClient {
     const [video] = this.screen.getVideoTracks();
     const [audio] = this.screen.getAudioTracks();
     peer.senders.screenVideo = peer.pc.addTrack(video, this.screen);
+    this.preferVideoCodec(peer.pc, peer.senders.screenVideo);
     if (audio) peer.senders.screenAudio = peer.pc.addTrack(audio, this.screen);
     this.tuneSenders(peer);
+  }
+
+  /** Põe o codec da placa de vídeo (`hardwareVideoCodec`) na frente, antes de negociar a trilha nova. */
+  preferVideoCodec(pc, sender) {
+    if (!this.videoCodec) return;
+    const transceiver = pc.getTransceivers().find((t) => t.sender === sender);
+    const codecs = RTCRtpReceiver.getCapabilities?.('video')?.codecs;
+    if (!transceiver?.setCodecPreferences || !codecs) return;
+    // H.264 com packetization-mode=1 primeiro: é o que os codificadores das placas usam.
+    const mode1 = (c) => /packetization-mode=1/.test(c.sdpFmtpLine || '');
+    const first = codecs.filter((c) => c.mimeType === this.videoCodec).sort((a, b) => mode1(b) - mode1(a));
+    try {
+      transceiver.setCodecPreferences([...first, ...codecs.filter((c) => !first.includes(c))]);
+    } catch (e) {
+      console.warn('[voz] codec do vídeo', e);
+    }
   }
 
   /**
@@ -987,6 +1391,8 @@ export class VoiceClient {
             : null;
         };
         const codec = (s) => byId.get(s.codecId)?.mimeType?.replace('video/', '') || '?';
+        const screenTrack = this.screen?.getVideoTracks()[0]?.id;
+        let screenPowerEfficient;
         const video = {};
         const audio = { in: [], out: [] };
         let path = null;
@@ -1019,6 +1425,7 @@ export class VoiceClient {
             };
           } else if (s.type === 'outbound-rtp' && s.kind === 'video') {
             const trackId = byId.get(s.mediaSourceId)?.trackIdentifier;
+            if (trackId && trackId === screenTrack && typeof s.powerEfficientEncoder === 'boolean') screenPowerEfficient = s.powerEfficientEncoder;
             if (trackId)
               video[trackId] = {
                 dir: 'out',
@@ -1047,7 +1454,17 @@ export class VoiceClient {
         peer.prevStats = byId;
         const route = path ? (path.local.startsWith('relay') || path.remote.startsWith('relay') ? 'relay' : 'direto') : null;
         if (route && route !== peer.stats?.route) this.peerLog(peer, `caminho: ${route} (${path.local} → ${path.remote})`);
+        // A tela para este par sendo codificada pelo processador (sem placa, ou a placa sem vaga para mais
+        // um envio): duas amostras seguidas (4 s) antes de reduzir, porque o começo pode oscilar.
+        if (screenPowerEfficient === false) peer.softwareSamples = (peer.softwareSamples || 0) + 1;
+        else if (screenPowerEfficient === true || !screenTrack) peer.softwareSamples = 0;
+        const software = (peer.softwareSamples || 0) >= 2;
+        if (software !== Boolean(peer.softwareScreen))
+          this.peerLog(peer, software ? 'tela codificada pelo processador: indo em 720p' : 'tela codificada pela placa de vídeo');
+        const retune = route !== (peer.stats?.route ?? null) || software !== Boolean(peer.softwareScreen);
+        peer.softwareScreen = software;
         peer.stats = { connection: peer.pc.connectionState, ice: peer.pc.iceConnectionState, path, route, video, audio };
+        if (retune) this.tuneSenders(peer);
       } catch (e) {
         console.warn('[voz] getStats', e);
       }
@@ -1060,6 +1477,15 @@ export class VoiceClient {
   async sampleLatency() {
     const t0 = performance.now();
     const pong = await this.rt.request('ping', {}, 3000);
+    // O servidor parou de responder sem a conexão cair: troca de conexão e volta para a chamada.
+    if (pong?.error === 'Tempo esgotado') {
+      this.missedPings += 1;
+      if (this.missedPings >= MISSED_PINGS && !this.suspended && this.rt.status === 'connected') {
+        this.missedPings = 0;
+        console.warn('[voz] o servidor parou de responder: trocando de conexão');
+        this.rt.reconnectNow?.();
+      }
+    } else if (!pong?.error) this.missedPings = 0;
     const sample = { t: Date.now(), server: pong?.error ? null : Math.round(performance.now() - t0), peers: {} };
     for (const p of this.peers.values()) {
       if (p.info.user) this.peerNames.set(p.id, plain(p.info.user.displayName));
@@ -1103,13 +1529,20 @@ export class VoiceClient {
       `ICE: ${JSON.stringify((this.iceServers || []).map((s) => ({ urls: s.urls, ...(s.credential ? { senha: 'temporária' } : {}) })))}`,
       `local: mudo=${this.state.muted} surdo=${this.state.deafened} silenciado-pelo-mod=${Boolean(this.state.serverMuted)} microfone-ativo=${Boolean(this.mic?.getAudioTracks()[0]?.enabled)} saída=${this.devices.output || 'padrão'}`,
       `local: câmera=${Boolean(this.camera)} tela=${Boolean(this.screen)} preset=${this.state.screenPreset}${this.screenAudio ? ` som-da-tela=${this.screenAudio.mode}${this.screenAudio.source ? `(${this.screenAudio.source})` : ''}` : ''}`,
+      `local: microfone-parado=${Boolean(this.state.micStalled)} som-bloqueado=${Boolean(this.state.audioBlocked)} codec-da-placa=${this.videoCodec || 'nenhum'} senha-do-relay-até=${this.iceExpiresAt ? new Date(this.iceExpiresAt).toISOString() : '?'}`,
     ];
+    const limit = (sender) => {
+      const e = sender?.track && sender.getParameters().encodings?.[0];
+      return e ? `${Math.round((e.maxBitrate || 0) / 1000)} kbps · ${e.maxFramerate ?? '?'} fps · ÷${e.scaleResolutionDownBy ?? 1}` : '-';
+    };
     for (const p of this.peers.values()) {
       lines.push(
         '',
         `par ${p.info.user?.username || p.id}: conexão=${p.pc.connectionState} ice=${p.pc.iceConnectionState} sinalização=${p.pc.signalingState}`,
       );
       lines.push(`  caminho: ${p.stats?.route || 'nenhum'} ${JSON.stringify(p.stats?.path || null)} · conexões refeitas: ${p.resets}`);
+      if (p.senders.camera || p.senders.screenVideo)
+        lines.push(`  envio de vídeo: tela=${limit(p.senders.screenVideo)} câmera=${limit(p.senders.camera)}${p.softwareScreen ? ' (tela pelo processador)' : ''}`);
       for (const a of p.stats?.audio?.in || [])
         lines.push(
           `  voz recebida: ${a.kbps ?? '?'} kbps · pacotes=${a.packets} perdidos=${a.lost} jitter=${a.jitterMs ?? '?'}ms nível=${a.level ?? '?'} preenchido=${a.concealed}%`,
@@ -1167,9 +1600,12 @@ export class VoiceClient {
       cameraViewers: [...this.peers.values()].filter((p) => p.senders.camera).length,
       screenViewers: [...this.peers.values()].filter((p) => p.senders.screenVideo).length,
       linked: Boolean(this.linked),
+      // Sem conexão com o servidor, esperando para voltar (o áudio continua).
+      resuming: Boolean(this.suspended),
       speaking: { ...this.speaking },
       peers: [...this.peers.values()].map((p) => ({
         peerId: p.id,
+        key: p.key,
         user: p.info.user,
         muted: Boolean(p.info.muted),
         deafened: Boolean(p.info.deafened),

@@ -70,16 +70,17 @@ function voiceSounds(prev, next, notify) {
   if (!prev?.channelId && next?.channelId) return playSound('join');
   if (prev?.channelId && !next?.channelId) return playSound('leave');
   if (!prev || !next || prev.channelId !== next.channelId) return;
-  const before = new Map(prev.peers.map((p) => [p.peerId, p]));
-  const after = new Map(next.peers.map((p) => [p.peerId, p]));
+  // Pela chave local: quem volta depois de reconectar (id novo) não "entra" de novo.
+  const before = new Map(prev.peers.map((p) => [p.key, p]));
+  const after = new Map(next.peers.map((p) => [p.key, p]));
   if ([...after.keys()].some((id) => !before.has(id))) return playSound('join');
   if ([...before.keys()].some((id) => !after.has(id))) return playSound('leave');
-  const streamer = next.peers.find((p) => p.screenAnnounced && before.get(p.peerId)?.screenAnnounced === false);
+  const streamer = next.peers.find((p) => p.screenAnnounced && before.get(p.key)?.screenAnnounced === false);
   if (streamer) notify(`${streamer.user.displayName} começou a transmitir.`, 'presence', streamer.user);
   if ((!prev.screen && next.screen) || streamer) return playSound('streamStart');
   const stopped =
     (prev.screen && !next.screen) ||
-    next.peers.some((p) => !p.screenAnnounced && before.get(p.peerId)?.screenAnnounced);
+    next.peers.some((p) => !p.screenAnnounced && before.get(p.key)?.screenAnnounced);
   if (stopped) playSound('streamStop');
 }
 
@@ -132,10 +133,23 @@ export function channelNotifyLevel(n, channelId) {
 export const connRegistry = new Map();
 /** O jogo em foco no app do Windows ({ type, name, since } ou null), contado a todas as conexões. */
 let myActivity = null;
+/** Jogos já detectados que ficam guardados (para escolher nas listas sem digitar o nome). */
+const SEEN_GAMES_MAX = 40;
 export function setMyActivity(activity) {
   myActivity = activity;
+  if (activity?.name) rememberGame(activity.name);
   for (const c of connRegistry.values()) c.getState()._sendActivity();
 }
+/** Guarda o jogo detectado (o mais recente primeiro). */
+function rememberGame(name) {
+  const st = useStore.getState();
+  const seen = st.prefs.seenGames || [];
+  if (seen[0] === name) return;
+  const next = [name, ...seen.filter((n) => n.toLowerCase() !== name.toLowerCase())].slice(0, SEEN_GAMES_MAX);
+  st.setAppearance({ seenGames: next });
+}
+/** O jogo está na lista "não mostrar na atividade"? */
+const activityHidden = (name) => Boolean(name) && (useStore.getState().prefs.activityBlocked || []).some((n) => n.toLowerCase() === name.toLowerCase());
 const syncConnKeys = () => useStore?.setState({ connKeys: [...connRegistry.keys()] });
 
 /**
@@ -253,6 +267,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
     nudgeSettings: null, // { allowNudges, nudgeBlocks: User[], blocks: User[], onlineNotifyDesktop, onlineNotifyPhone }
     marks: { hidden: {}, nsfw: {} }, // só para mim: mensagens excluídas e fotos marcadas como NSFW (id -> true)
     voiceStates: {}, // channelId -> participantes (visão do servidor)
+    voiceSince: {}, // channelId -> quando a chamada começou (relógio do servidor)
     typing: {}, // channelId -> { userId: { user, until } }
     lanPeers: [], // perfis da rede local (só no nó local)
     stickers: null, // minha coleção de stickers neste servidor (null = ainda não carregada)
@@ -402,6 +417,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
         statuses: {},
         activities: {},
         voiceStates: {},
+        voiceSince: {},
         music: {},
         typing: {},
         voice: null,
@@ -538,6 +554,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
           statuses: d.statuses || {},
           myStatus: d.selfStatus || 'online',
           voiceStates: d.voice || {},
+          voiceSince: d.voiceSince || {},
           music: Object.fromEntries((d.music || []).map((m) => [m.channelId, m])),
           serverOffset: d.serverTime - Date.now(),
           activities: d.activities || {},
@@ -791,7 +808,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
         if (ui().getState().selfDeafened || (p.soundboardOff && by.id !== get().me?.id)) return;
         playSoundboard(`${baseUrl}${sound.url}`, p.soundboardVolume ?? 0.8).catch((e) => console.warn('[sons]', e));
       });
-      rt.on('voice:channel', ({ guildId, channelId, dm, participants }) => {
+      rt.on('voice:channel', ({ guildId, channelId, dm, participants, since }) => {
         // Notificações do servidor: alguém entrou num canal de voz ou começou a transmitir.
         const s0 = get();
         const n = !dm && guildId && s0.guildNotify[guildId];
@@ -801,7 +818,9 @@ export function createConnStore({ key, kind, base, primary = false }) {
           const ch = s0.guildData[guildId]?.channels.find((c) => c.id === channelId);
           for (const p of participants) {
             if (p.user.id === s0.me?.id) continue;
-            const was = before.get(p.peerId);
+            const was = before.get(p.peerId) || (p.was && before.get(p.was));
+            // Voltando para a chamada depois de a conexão cair (ou o servidor reiniciar): não "entrou" de novo.
+            if (!was && p.was) continue;
             // O canal pode ter o aviso de entrada desligado pelos administradores.
             if (!was && n.voiceJoin && ch?.announceJoin !== false && !participants.some((o) => o !== p && o.user.id === p.user.id)) {
               notify(`${p.user.displayName} entrou em 🔊 ${ch?.name || 'um canal de voz'}.`, 'presence', p.user);
@@ -814,15 +833,22 @@ export function createConnStore({ key, kind, base, primary = false }) {
         }
         set((s) => {
           const voiceStates = { ...s.voiceStates };
+          const voiceSince = { ...s.voiceSince };
           if (participants.length) voiceStates[channelId] = participants;
           else delete voiceStates[channelId];
-          return { voiceStates };
+          if (participants.length && since) voiceSince[channelId] = since;
+          else delete voiceSince[channelId];
+          return { voiceStates, voiceSince };
         });
-        // Quem ligou desistiu antes de atender.
         const call = get().incomingCall;
-        if (call?.dmId === channelId && !participants.some((p) => p.user.id === call.from.id)) {
-          set({ incomingCall: null });
-          notify(`Chamada perdida de ${call.from.displayName}`, 'info');
+        if (call?.dmId === channelId) {
+          // Atendida em outro aparelho da mesma conta: para de tocar neste.
+          if (participants.some((p) => p.user.id === get().me?.id)) set({ incomingCall: null });
+          // Quem ligou desistiu antes de atender.
+          else if (!participants.some((p) => p.user.id === call.from.id)) {
+            set({ incomingCall: null });
+            notify(`Chamada perdida de ${call.from.displayName}`, 'info');
+          }
         }
       });
       rt.on('channel:created', (ch) =>
@@ -1139,6 +1165,8 @@ export function createConnStore({ key, kind, base, primary = false }) {
       set((s) => ({ stickers: (s.stickers || []).filter((x) => x.id !== id) }));
     },
     stickerBlob: (id) => api.blob(`/api/stickers/${id}/image`),
+    /** A coleção sem guardar no estado (para copiar de uma conexão para outra). */
+    listStickers: () => api.get('/api/stickers'),
 
     /** Baixa a própria foto (para copiar o perfil local para outro servidor). */
     avatarBlob: () => {
@@ -1707,7 +1735,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
     /** Conta a esta conexão o jogo em foco (o app do Windows detecta; veja lib/activity.js). */
     _sendActivity() {
       if (rt?.status !== 'connected') return;
-      const mine = prefs().shareActivity === false ? null : myActivity;
+      const mine = prefs().shareActivity === false || activityHidden(myActivity?.name) ? null : myActivity;
       rt.send('activity:set', { activity: mine });
       const me = get().me?.id;
       if (me) set((st) => ({ activities: { ...st.activities, [me]: mine || undefined } }));
@@ -2641,6 +2669,7 @@ export async function pullProfileFrom(target) {
       storage.set(`padospeak.avatarSync:${base}#${theirs.id}`, local.getState().me?.avatarUrl || '');
     }
     for (const [key, store] of connRegistry) if (key.startsWith('peer:')) syncProfileTo(store);
+    if (target === useStore) syncLocalStickers();
   } catch (e) {
     console.warn('[perfil] cópia do servidor', e);
   }
@@ -2784,8 +2813,51 @@ export async function openLanDm(peer, { call = false } = {}) {
 
 // ---------- Stickers ----------
 
-/** Onde mora a minha coleção de stickers: o perfil local no desktop, o servidor no navegador. */
-export const stickerHome = () => primaryConn();
+/**
+ * Onde mora a minha coleção de stickers: a conta no servidor, a mesma no celular, no navegador e no app do
+ * Windows. No app do Windows sem a conta conectada (servidor fora do ar), a do perfil local deste PC.
+ */
+export const stickerHome = () => (useStore.getState().me ? useStore : primaryConn());
+
+/** Hook de `stickerHome()`: troca de coleção quando a conta do servidor conecta ou cai. */
+export function useStickerHome() {
+  const online = useStore((s) => Boolean(s.me));
+  return online ? useStore : primaryConn();
+}
+
+/**
+ * App do Windows: leva para a conta do servidor os stickers que só estão no perfil local (os de antes da
+ * coleção ficar na conta, e os adicionados com o servidor fora do ar). Cada um vai uma vez só (fica
+ * anotado), então apagar no celular não traz o sticker de volta. O servidor não duplica a mesma imagem.
+ */
+let stickerSync = null;
+export function syncLocalStickers() {
+  const local = isDesktop && connRegistry.get('local');
+  const server = useStore.getState();
+  const mine = local?.getState().me;
+  if (!local || local === useStore || !mine || !server.me) return Promise.resolve();
+  if (server.me.username.toLowerCase() !== mine.username.toLowerCase()) return Promise.resolve();
+  stickerSync ||= (async () => {
+    const key = `padospeak.stickerSync:${server.baseUrl}#${server.me.id}`;
+    let done;
+    try {
+      done = new Set(JSON.parse(storage.get(key) || '[]'));
+    } catch {
+      done = new Set();
+    }
+    const list = await local.getState().listStickers();
+    for (const st of list) {
+      if (done.has(st.id)) continue;
+      const blob = await local.getState().stickerBlob(st.id);
+      await useStore.getState().uploadSticker(blob, st.name);
+      done.add(st.id);
+      storage.set(key, JSON.stringify([...done]));
+    }
+  })()
+    .catch((e) => console.warn('[stickers] cópia para a conta', e))
+    .finally(() => (stickerSync = null));
+  return stickerSync;
+}
 
 /**
  * Manda um sticker numa conversa de qualquer conexão. Se a conversa for em outro servidor (ou num PC

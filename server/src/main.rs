@@ -104,7 +104,7 @@ async fn main() {
     }
 
     shutdown_signal().await;
-    host.stop().await;
+    host.stop_for_restart().await;
 }
 
 /// Ctrl+C no terminal ou SIGTERM (systemd/Docker).

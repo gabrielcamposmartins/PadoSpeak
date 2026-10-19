@@ -1800,6 +1800,29 @@ html.framed .overlay {
 .channel .ch-del:hover {
   color: var(--danger-ink);
 }
+/* Há quanto tempo a chamada do canal de voz começou (à direita). Quem gerencia o canal vê, ao passar o
+   mouse, os botões de editar e excluir no lugar dele; no toque os botões ficam sempre, depois do contador. */
+.call-timer {
+  margin-left: auto;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+html:not([data-touch]) .channel .call-timer ~ .ch-del {
+  display: none;
+}
+html:not([data-touch]) .channel:hover .call-timer ~ .ch-del {
+  display: inline-flex;
+}
+html:not([data-touch]) .channel:hover .call-timer:has(~ .ch-del) {
+  display: none;
+}
 .voice-members {
   display: flex;
   flex-direction: column;
@@ -5153,6 +5176,17 @@ fieldset.plain {
   transform-origin: center bottom;
   fill: #fff;
   filter: drop-shadow(0 0 1px rgba(90, 140, 190, 0.6)) drop-shadow(0 2px 4px rgba(60, 110, 160, 0.3));
+}
+.magic-arc.phone {
+  transform-origin: 50% 60%;
+}
+.magic-spark {
+  transform-box: fill-box;
+  transform-origin: center;
+  fill: #ffe45c;
+  stroke: #f5b400;
+  stroke-width: 0.8;
+  filter: drop-shadow(0 0 4px rgba(255, 200, 0, 0.85));
 }
 
 /* Barra acima da caixa de mensagem */
@@ -11691,6 +11725,60 @@ html[data-touch] .call-screen .tile-tools,
   font-weight: 600;
   color: var(--muted);
   text-shadow: none;
+}
+/* Sons rápidos recolhidos: o título é o botão; a setinha só se destaca ao passar o mouse */
+.sp-toggle {
+  font-family: inherit;
+  margin: -3px 0 -3px -5px;
+  padding: 3px 6px 3px 5px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  cursor: pointer;
+}
+.sp-toggle:hover {
+  background: var(--hover-tint);
+}
+.sp-toggle:focus-visible {
+  outline: 2px solid var(--brand-accent);
+  outline-offset: 1px;
+}
+.sp-chev {
+  flex: none;
+  color: var(--muted);
+  opacity: 0.45;
+  transition:
+    transform 0.18s ease,
+    opacity 0.15s ease;
+}
+.sp-toggle:hover .sp-chev,
+.sp-toggle:focus-visible .sp-chev {
+  opacity: 1;
+}
+.sound-panel.collapsed .sp-chev {
+  transform: rotate(-90deg);
+}
+.sp-count {
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  color: var(--muted);
+  background: var(--panel-border);
+  text-shadow: none;
+}
+.sound-panel.collapsed {
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+.sound-panel.collapsed .sp-head {
+  margin-bottom: 0;
+}
+.sound-panel.collapsed .sp-recent {
+  margin-top: 6px;
 }
 /* Caixa de som dos efeitos sonoros: volume ao passar o mouse, clique muta, botão direito abre o menu */
 .sp-fx {

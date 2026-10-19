@@ -8,10 +8,15 @@ use crate::logs::Logs;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
+use tokio::sync::Semaphore;
 
 const EXE: &str = if cfg!(windows) { ".exe" } else { "" };
+
+/// Um yt-dlp por vez: cada um, com o runtime JS, ocupa 100 MB ou mais, e na VM pequena dois juntos
+/// encostavam o servidor no limite de memória (a sinalização das chamadas atrasava junto).
+static SLOT: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(1));
 
 /// Como invocar o yt-dlp (binário próprio ou `python -m yt_dlp`).
 #[derive(Clone, Debug)]
@@ -25,6 +30,10 @@ pub struct Tools {
     cookies: Vec<String>,
     /// Índice da variante (ver `VARIANTS`) que funcionou por último.
     preferred: Arc<AtomicUsize>,
+    /// Pasta temporária só do yt-dlp. A versão "um arquivo só" se descompacta nela a cada execução, e
+    /// as que estouram o tempo deixam a cópia (80 MB) para trás: aqui dá para limpar sem mexer nos
+    /// temporários de outros programas.
+    tmp: Option<PathBuf>,
 }
 
 /// Variantes tentadas quando o YouTube bloqueia (anti-robô): família de IP × cliente do player.
@@ -59,6 +68,9 @@ impl Tools {
     pub fn ytdlp(&self) -> tokio::process::Command {
         let mut cmd = super::command(self.program.as_os_str());
         cmd.args(&self.prefix).envs(self.envs.iter().map(|(k, v)| (k, v)));
+        if let Some(tmp) = &self.tmp {
+            cmd.env("TMPDIR", tmp).env("TEMP", tmp).env("TMP", tmp);
+        }
         cmd.args(["--no-warnings", "--no-progress"]).args(&self.cookies);
         if let Some(js) = &self.js_runtime {
             cmd.args(["--js-runtimes", js]);
@@ -91,10 +103,7 @@ impl Tools {
                 cmd.args(["--extractor-args", &format!("youtube:player_client={c}")]);
             }
             cmd.args(args);
-            let out = tokio::time::timeout(timeout, cmd.output())
-                .await
-                .map_err(|_| "o YouTube demorou demais para responder".to_string())?
-                .map_err(|e| format!("yt-dlp: {e}"))?;
+            let out = self.output(cmd, timeout).await?;
             if out.status.success() {
                 self.preferred.store(idx, Ordering::Relaxed);
                 return Ok(out.stdout);
@@ -122,10 +131,7 @@ impl Tools {
                 cmd.arg(f);
             }
             cmd.args(["--extractor-args", &format!("youtube:player_client={client}")]).args(args);
-            let out = tokio::time::timeout(timeout, cmd.output())
-                .await
-                .map_err(|_| "o YouTube demorou demais para responder".to_string())?
-                .map_err(|e| format!("yt-dlp: {e}"))?;
+            let out = self.output(cmd, timeout).await?;
             if out.status.success() {
                 return Ok(out.stdout);
             }
@@ -138,10 +144,39 @@ impl Tools {
         Err(last)
     }
 
+    /// Roda um yt-dlp na sua vez (veja `SLOT`). A espera pela vez também conta no tempo.
+    async fn output(&self, mut cmd: tokio::process::Command, timeout: Duration) -> Result<std::process::Output, String> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let _vez = tokio::time::timeout_at(deadline, SLOT.acquire())
+            .await
+            .map_err(|_| "o servidor está ocupado buscando outras músicas; tente de novo daqui a pouco".to_string())?
+            .map_err(|_| "yt-dlp indisponível".to_string())?;
+        match tokio::time::timeout_at(deadline, cmd.output()).await {
+            Ok(out) => out.map_err(|e| format!("yt-dlp: {e}")),
+            Err(_) => {
+                // Morto no meio: a cópia descompactada fica para trás.
+                if let Some(tmp) = &self.tmp {
+                    sweep_extractions(tmp);
+                }
+                Err("o YouTube demorou demais para responder".into())
+            }
+        }
+    }
+
     pub fn describe(&self) -> String {
         let prog = self.program.display();
         let js = self.js_runtime.as_deref().unwrap_or("nenhum");
         if self.prefix.is_empty() { format!("{prog} (JS: {js})") } else { format!("{prog} -m yt_dlp (JS: {js})") }
+    }
+}
+
+/// Apaga as cópias descompactadas (`_MEI…`) que o yt-dlp deixou na pasta temporária dele.
+fn sweep_extractions(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        if entry.file_name().to_string_lossy().starts_with("_MEI") {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
     }
 }
 
@@ -211,7 +246,15 @@ fn deno_npm_package() -> Option<&'static str> {
 }
 
 async fn find_ytdlp(http: &reqwest::Client, bin: &Path, data_dir: &Path, logs: &Logs) -> Result<Tools, String> {
-    let plain = |program: PathBuf| Tools { program, prefix: vec![], envs: vec![], js_runtime: None, cookies: vec![], preferred: Default::default() };
+    let plain = |program: PathBuf| Tools {
+        program,
+        prefix: vec![],
+        envs: vec![],
+        js_runtime: None,
+        cookies: vec![],
+        preferred: Default::default(),
+        tmp: None,
+    };
 
     if let Some(p) = env("YTDLP_PATH") {
         return Ok(plain(p.into()));
@@ -256,6 +299,7 @@ async fn find_ytdlp(http: &reqwest::Client, bin: &Path, data_dir: &Path, logs: &
         js_runtime: None,
         cookies: vec![],
         preferred: Default::default(),
+        tmp: None,
     })
 }
 
@@ -316,6 +360,12 @@ pub async fn provision(http: &reqwest::Client, data_dir: &Path, logs: &Logs) -> 
     let bin = data_dir.join("bin");
     let mut tools = find_ytdlp(http, &bin, data_dir, logs).await?;
     tools.js_runtime = find_js_runtime(http, &bin, logs).await;
+    // Pasta temporária própria, começando vazia (sobras de execuções interrompidas antes de reiniciar).
+    let tmp = data_dir.join("tmp").join("yt-dlp");
+    let _ = std::fs::remove_dir_all(&tmp);
+    if std::fs::create_dir_all(&tmp).is_ok() {
+        tools.tmp = Some(tmp);
+    }
     if tools.js_runtime.is_none() {
         logs.warn("Música: nenhum runtime JavaScript (Deno/Node) — o YouTube pode recusar parte dos vídeos");
     }
@@ -337,7 +387,19 @@ pub async fn provision(http: &reqwest::Client, data_dir: &Path, logs: &Logs) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{is_blocked, last_error};
+    use super::{is_blocked, last_error, sweep_extractions};
+
+    #[test]
+    fn limpa_so_as_copias_do_yt_dlp() {
+        let dir = std::env::temp_dir().join(format!("padospeak-teste-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("_MEIabc123/lib")).unwrap();
+        std::fs::write(dir.join("_MEIabc123/lib/x.so"), b"x").unwrap();
+        std::fs::write(dir.join("cookies.txt"), b"c").unwrap();
+        sweep_extractions(&dir);
+        assert!(!dir.join("_MEIabc123").exists());
+        assert!(dir.join("cookies.txt").exists(), "outros arquivos ficam");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn distingue_bloqueio_de_video_indisponivel() {
