@@ -1,5 +1,24 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.9.9 — 20/10/2026
+
+### Novidades
+- **Prévia das mensagens não lidas**: na lista de conversas, a última mensagem que chegou aparece no lugar do recado da pessoa, até você abrir a conversa. Foto, áudio ou sticker aparecem como “Enviou uma foto”, “Enviou uma mensagem de voz” etc.
+- **Tamanho da fonte**: em Configurações → Formatação de texto, escolha entre Pequena, Normal, Grande, Maior e Enorme. Vale para todo o app, neste aparelho. No celular as letras ficaram um pouco maiores.
+- **Arrastar para responder**: no celular, arraste uma mensagem para a direita para respondê-la.
+- **Arrastar avisos para dispensar**: no celular, o aviso de mensagem nova no topo some se você arrastá-lo para a direita.
+- **Conversas no celular**: fotos e nomes maiores, e “Amigos online” fica acima de “Conversas”, recolhido (aberto enquanto você não tiver conversas).
+- **Menu “Aa” no celular**: botões maiores e tudo em uma linha; negrito, itálico, sublinhado e riscado ficam juntos atrás da setinha.
+- **Enviar ou gravar**: no celular, o botão de enviar aparece quando há algo digitado; sem texto, fica o microfone.
+- **Abas dos stickers embaixo**, mais perto do dedo.
+
+### Correções
+- **O PadoSpeak abre mais rápido**, principalmente no celular: o app abre na hora com as suas conversas e se atualiza em seguida, e baixa bem menos dados na primeira abertura depois de uma atualização.
+- **Câmera no Android**: o botão da câmera agora abre a câmera, já na traseira.
+- **Editar mensagens no celular**: segure a mensagem e toque em “Editar”; a edição tem os botões “Cancelar” e “Salvar”.
+- **Abrir uma conversa no celular** não abre mais o teclado sozinho.
+- **Carregando mensagens**: aparece uma animação enquanto as mensagens chegam, e um botão “Tentar de novo” se elas não carregarem.
+
 ## 1.9.8 — 19/10/2026
 
 ### Novidades

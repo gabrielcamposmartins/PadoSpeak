@@ -65,6 +65,16 @@ const savePrefs = (p) => {
   }
 };
 
+/** Tamanhos da fonte (Configurações → Aparência): multiplicador e nome. */
+export const FONT_SCALES = [
+  [0.9, 'Pequena'],
+  [1, 'Normal'],
+  [1.12, 'Grande'],
+  [1.25, 'Maior'],
+  [1.4, 'Enorme'],
+];
+export const fontScaleOf = (p) => (FONT_SCALES.some(([v]) => v === p.fontScale) ? p.fontScale : 1);
+
 /** Sons a partir da diferença entre dois estados da chamada (no máximo um por mudança). */
 function voiceSounds(prev, next, notify) {
   if (!prev?.channelId && next?.channelId) return playSound('join');
@@ -159,6 +169,36 @@ const syncConnKeys = () => useStore?.setState({ connKeys: [...connRegistry.keys(
 let profileScope = null;
 const tokenScope = (kind) => (isDesktop && kind === 'server' ? profileScope : null);
 
+/**
+ * Navegador e celular: o que a última abertura trouxe (perfil, servidores, amigos e conversas). Com ele o
+ * app aparece na hora, sem esperar o servidor, e se atualiza assim que as respostas chegam.
+ */
+const SNAPSHOT_KEY = 'padospeak.snapshot';
+/** Só a ponta do token: o que foi guardado é da sessão que está abrindo (não de outra conta). */
+const tokenTag = (token) => String(token || '').slice(-12);
+function readSnapshot(base, token) {
+  try {
+    const snap = JSON.parse(localStorage.getItem(SNAPSHOT_KEY));
+    return snap?.base === base && snap.token === tokenTag(token) && snap.me && Array.isArray(snap.guilds) ? snap : null;
+  } catch {
+    return null;
+  }
+}
+function saveSnapshot(base, token, me, [config, guilds, friends, dms]) {
+  try {
+    localStorage.setItem(SNAPSHOT_KEY, JSON.stringify({ base, token: tokenTag(token), me, config, guilds, friends, dms }));
+  } catch {
+    /* sem espaço: abre pelo caminho normal */
+  }
+}
+function dropSnapshot() {
+  try {
+    localStorage.removeItem(SNAPSHOT_KEY);
+  } catch {
+    /* nada guardado */
+  }
+}
+
 /** Store de uma conexão. `primary`: o store principal (`server`), que também guarda a interface. */
 export function createConnStore({ key, kind, base, primary = false }) {
   let rt = null;
@@ -198,6 +238,10 @@ export function createConnStore({ key, kind, base, primary = false }) {
   let baseUrl = base;
   // No desktop, o servidor só tem token depois que um perfil local entra (veja `reloadToken`).
   let token = isDesktop && kind === 'server' ? null : loadToken(baseUrl, tokenScope(kind));
+  // A abertura instantânea (veja `readSnapshot`) vale só para a conta do navegador e do celular.
+  const snapshots = primary && kind === 'server' && !isDesktop;
+  // Abriu com o que estava guardado e o servidor ainda não respondeu: a conexão recarrega as listas.
+  let staleSession = false;
   const api = createApi(
     () => baseUrl,
     () => token,
@@ -206,6 +250,24 @@ export function createConnStore({ key, kind, base, primary = false }) {
     token = t;
     profiles.clear();
     saveToken(baseUrl, t, tokenScope(kind));
+    if (!t && snapshots) dropSnapshot();
+  };
+  /** As listas que a abertura busca: `[config, guilds, friends, dms]`. */
+  const sessionRequests = () => [api.get('/api/config'), api.get('/api/guilds'), api.get('/api/friends'), api.get('/api/dms')];
+  const sessionState = (me, [config, guilds, friends, dms]) => ({
+    me,
+    config,
+    guilds,
+    dms,
+    friends: Object.fromEntries(friends.map((f) => [f.user.id, f])),
+    statuses: Object.fromEntries(friends.filter((f) => f.presence).map((f) => [f.user.id, f.presence])),
+  });
+  /** Respostas novas do servidor: valem na hora e ficam guardadas para a próxima abertura. */
+  const applySession = (me, lists) => {
+    staleSession = false;
+    const next = sessionState(me, lists);
+    store.setState((s) => ({ ...next, statuses: { ...s.statuses, ...next.statuses } }));
+    if (snapshots) saveSnapshot(baseUrl, token, me, lists);
   };
   let store = null;
   /** Store da interface (este mesmo, se for o principal). */
@@ -258,6 +320,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
     lastChannel: {},
 
     messages: {}, // channelId -> Message[]
+    loadFailed: {}, // channelId -> true quando as mensagens não carregaram
     hasMore: {},
     online: {},
     statuses: {}, // userId -> online | away | busy (de quem está visível)
@@ -292,6 +355,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
     friends: {}, // userId -> { user, status: friend | incoming | outgoing }
     dms: [], // conversas diretas, mais recentes primeiro
     unread: {}, // dmId -> mensagens não lidas
+    lastUnread: {}, // dmId -> última mensagem não lida da outra pessoa (a prévia na lista de conversas)
     // Avisos dos servidores ainda não vistos (a bolinha vermelha no ícone do servidor): por canal
     // (mensagens que avisaram, chamar atenção) e `g:<servidor>` (entrou na voz, transmissão, membro novo).
     alerts: {}, // chave -> { g: guildId, n }
@@ -355,10 +419,29 @@ export function createConnStore({ key, kind, base, primary = false }) {
       if (isPanel) return;
       if (isDesktop) return bootDesktop();
       if (!token) return set({ phase: 'auth' });
+      set({ bootText: 'Abrindo sua conta…' });
+      // Tudo de uma vez: o perfil junto com as listas (antes eram duas idas e voltas ao servidor).
+      const fresh = Promise.all([api.get('/api/me'), ...sessionRequests()]);
+      const snap = snapshots ? readSnapshot(baseUrl, token) : null;
+      if (snap) {
+        fresh.catch(() => {});
+        staleSession = true;
+        await get().enterApp(snap.me, [snap.config, snap.guilds, snap.friends, snap.dms]);
+        try {
+          const [me, ...lists] = await fresh;
+          applySession(me, lists);
+        } catch (e) {
+          // Sessão encerrada em outro aparelho (ou senha trocada): volta para a entrada.
+          if (!(e instanceof ApiError && e.status === 401)) return;
+          get().teardown();
+          setToken(null);
+          set({ phase: 'auth', me: null });
+        }
+        return;
+      }
       try {
-        set({ bootText: 'Abrindo sua conta…' });
-        const me = await api.get('/api/me');
-        await get().enterApp(me);
+        const [me, ...lists] = await fresh;
+        await get().enterApp(me, lists);
       } catch (e) {
         if (e instanceof ApiError && e.status === 401) setToken(null);
         set({ phase: 'auth' });
@@ -412,6 +495,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
         guilds: [],
         guildData: {},
         messages: {},
+        loadFailed: {},
         hasMore: {},
         online: {},
         statuses: {},
@@ -425,6 +509,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
         friends: {},
         dms: [],
         unread: {},
+        lastUnread: {},
         alerts: {},
         incomingCall: null,
         lanPeers: [],
@@ -437,24 +522,14 @@ export function createConnStore({ key, kind, base, primary = false }) {
       }
     },
 
-    async enterApp(me) {
+    /** `lists`: `[config, guilds, friends, dms]` já buscados (ou os guardados da última abertura). */
+    async enterApp(me, lists) {
       // Tela de carregamento (abrindo o app ou entrando): o passo que está acontecendo.
       if (ui().getState().phase !== 'app') ui().setState({ bootText: 'Carregando mensagens…' });
-      const [config, guilds, friends, dms] = await Promise.all([
-        api.get('/api/config'),
-        api.get('/api/guilds'),
-        api.get('/api/friends'),
-        api.get('/api/dms'),
-      ]);
+      const [, guilds] = lists || (lists = await Promise.all(sessionRequests()));
       setSoundsEnabled(prefs().sounds !== false);
-      set({
-        me,
-        config,
-        guilds,
-        dms,
-        friends: Object.fromEntries(friends.map((f) => [f.user.id, f])),
-        statuses: Object.fromEntries(friends.filter((f) => f.presence).map((f) => [f.user.id, f.presence])),
-      });
+      if (staleSession) set(sessionState(me, lists));
+      else applySession(me, lists);
       api
         .get('/api/me/settings')
         .then((nudgeSettings) => set({ nudgeSettings, myBackground: nudgeSettings.backgroundUrl || null }))
@@ -565,7 +640,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
         get().loadMarks();
         get().loadSounds();
         // O que mudou entre o carregamento inicial e a conexão (ou durante uma queda) não chegou por evento.
-        if (!firstReady) get().resync();
+        if (!firstReady || staleSession) get().resync();
         else {
           get().loadFriends();
           get().loadDms();
@@ -668,14 +743,13 @@ export function createConnStore({ key, kind, base, primary = false }) {
           // Só conta como lida se a pessoa está mesmo olhando: conversa aberta e janela em foco (com a
           // janela atrás de outro programa ou na bandeja, a mensagem avisa e fica como não lida).
           const viewing = isViewing(m.channelId) && appHasFocus();
+          const counts = !viewing && m.author.id !== s.me?.id;
           set((st) => ({
             dms: st.dms
               .map((d) => (d.id === m.channelId ? { ...d, lastMessageAt: m.createdAt } : d))
               .sort((a, b) => b.lastMessageAt - a.lastMessageAt),
-            unread:
-              viewing || m.author.id === st.me?.id
-                ? st.unread
-                : { ...st.unread, [m.channelId]: (st.unread[m.channelId] || 0) + 1 },
+            unread: counts ? { ...st.unread, [m.channelId]: (st.unread[m.channelId] || 0) + 1 } : st.unread,
+            lastUnread: counts ? { ...st.lastUnread, [m.channelId]: m } : st.lastUnread,
           }));
           if (!viewing && m.author.id !== s.me?.id) {
             alertSound('message');
@@ -743,8 +817,11 @@ export function createConnStore({ key, kind, base, primary = false }) {
       rt.on('message:updated', (u) =>
         set((s) => {
           const list = s.messages[u.channelId];
-          if (!list) return {};
+          const preview = s.lastUnread[u.channelId];
+          const lastUnread = preview?.id === u.id ? { ...s.lastUnread, [u.channelId]: { ...preview, content: u.content } } : s.lastUnread;
+          if (!list) return { lastUnread };
           return {
+            lastUnread,
             messages: {
               ...s.messages,
               [u.channelId]: list.map((m) => (m.id === u.id ? { ...m, content: u.content, editedAt: u.editedAt } : m)),
@@ -767,8 +844,9 @@ export function createConnStore({ key, kind, base, primary = false }) {
       rt.on('message:deleted', ({ id, channelId }) =>
         set((s) => {
           const list = s.messages[channelId];
-          if (!list) return {};
-          return { messages: { ...s.messages, [channelId]: list.filter((m) => m.id !== id) } };
+          const lastUnread = s.lastUnread[channelId]?.id === id ? { ...s.lastUnread, [channelId]: undefined } : s.lastUnread;
+          if (!list) return { lastUnread };
+          return { messages: { ...s.messages, [channelId]: list.filter((m) => m.id !== id) }, lastUnread };
         }),
       );
       rt.on('typing', ({ channelId, user }) => {
@@ -915,6 +993,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
     async resync() {
       const guilds = await api.get('/api/guilds').catch(() => null);
       if (!guilds) return;
+      staleSession = false;
       get().loadFriends();
       get().loadDms();
       if (kind === 'local') api.get('/api/lan/peers').then((lanPeers) => set({ lanPeers }), () => {});
@@ -1301,6 +1380,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
     async loadMessages(channelId, older = false) {
       const current = get().messages[channelId] || [];
       const before = older && current.length ? `&before=${current[0].createdAt}` : '';
+      if (!older && get().loadFailed[channelId]) set((s) => ({ loadFailed: { ...s.loadFailed, [channelId]: undefined } }));
       try {
         const list = await api.get(`/api/channels/${channelId}/messages?limit=50${before}`);
         if (!older) {
@@ -1314,8 +1394,11 @@ export function createConnStore({ key, kind, base, primary = false }) {
         set((s) => ({
           messages: { ...s.messages, [channelId]: older ? [...list, ...(s.messages[channelId] || [])] : list },
           hasMore: { ...s.hasMore, [channelId]: list.length === 50 },
+          loadFailed: { ...s.loadFailed, [channelId]: undefined },
         }));
       } catch (e) {
+        // A conversa mostra "tentar de novo" no lugar do carregando.
+        if (!older) set((s) => ({ loadFailed: { ...s.loadFailed, [channelId]: true } }));
         notify(e.message);
       }
     },
@@ -2917,6 +3000,8 @@ function applyAppearance(p) {
   if (theme) root.dataset.theme = theme;
   else delete root.dataset.theme;
   root.dataset.scene = String(p.scene ?? 0);
+  // Tamanho da fonte escolhido (o CSS multiplica todos os tamanhos de letra por ele; veja vite.config.js).
+  root.style.setProperty('--fs-user', String(fontScaleOf(p)));
   // Cena do perfil desligada: a imagem de fundo cobre também o topo.
   root.toggleAttribute('data-scene-off', p.sceneOn === false);
   // Cor do sistema: o CSS deriva dela os tons de seleção, abas, links e a cena "Sistema".

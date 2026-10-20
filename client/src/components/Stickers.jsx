@@ -122,7 +122,7 @@ export function MessageSticker({ sticker }) {
   );
 }
 
-/** Janela de stickers: aba "Padrão" (emoticons Aero grandes) e "Meus" (coleção, com GIFs). */
+/** Janela de stickers: abas (embaixo) "Padrão" (emoticons Aero grandes) e "Meus" (coleção, com GIFs). */
 export function StickerPicker({ anchorRef, onPick, onClose }) {
   const home = useStickerHome();
   const mine = home((s) => s.stickers);
@@ -157,14 +157,6 @@ export function StickerPicker({ anchorRef, onPick, onClose }) {
 
   return (
     <Floating anchorRef={anchorRef} onClose={onClose} className="sticker-picker" role="dialog" aria-label="Stickers">
-      <div className="aero-tabs" role="tablist" aria-label="Stickers">
-        <button type="button" role="tab" aria-selected={tab === 'padrao'} className={`tab${tab === 'padrao' ? ' on' : ''}`} onClick={() => setTab('padrao')}>
-          Padrão
-        </button>
-        <button type="button" role="tab" aria-selected={tab === 'meus'} className={`tab${tab === 'meus' ? ' on' : ''}`} onClick={() => setTab('meus')}>
-          Meus stickers
-        </button>
-      </div>
       {tab === 'padrao' ? (
         <div className="sticker-grid">
           {EMOTES.map((e) => (
@@ -214,6 +206,15 @@ export function StickerPicker({ anchorRef, onPick, onClose }) {
       )}
       <div className="popover-hint">
         {tab === 'padrao' ? 'Clique para escolher (dá para escrever algo junto antes de mandar).' : 'Seus stickers valem em todas as conversas · GIF animado também · até 2 MB.'}
+      </div>
+      {/* Abas embaixo: no celular ficam ao alcance do polegar. */}
+      <div className="aero-tabs bottom" role="tablist" aria-label="Stickers">
+        <button type="button" role="tab" aria-selected={tab === 'padrao'} className={`tab${tab === 'padrao' ? ' on' : ''}`} onClick={() => setTab('padrao')}>
+          Padrão
+        </button>
+        <button type="button" role="tab" aria-selected={tab === 'meus'} className={`tab${tab === 'meus' ? ' on' : ''}`} onClick={() => setTab('meus')}>
+          Meus stickers
+        </button>
       </div>
     </Floating>
   );

@@ -488,12 +488,22 @@ const EMOTE_RE = new RegExp(
     .join('|'),
 );
 
-export function Emote({ code, size = 20 }) {
+/** `inText`: emoticon no meio do texto, que cresce junto com o tamanho da fonte escolhido. */
+export function Emote({ code, size = 20, inText = false }) {
   const id = useId().replace(/:/g, '');
   const e = BY_CODE.get(code);
   if (!e) return code;
+  const scaled = inText ? `calc(${size}px * var(--fs, 1))` : undefined;
   return (
-    <svg className="emote" width={size} height={size} viewBox="0 0 32 32" role="img" aria-label={e.name}>
+    <svg
+      className="emote"
+      width={size}
+      height={size}
+      style={scaled && { width: scaled, height: scaled }}
+      viewBox="0 0 32 32"
+      role="img"
+      aria-label={e.name}
+    >
       <title>{`${e.name} ${e.code}`}</title>
       {e.draw(id)}
     </svg>
@@ -585,10 +595,10 @@ function parse(text, opts, key = 'k') {
       out.push(
         fx ? (
           <span key={k} className="magic-emote" onMouseEnter={() => playMagic(fx)}>
-            <Emote code={m[0]} size={opts.emoteSize} />
+            <Emote code={m[0]} size={opts.emoteSize} inText />
           </span>
         ) : (
-          <Emote key={k} code={m[0]} size={opts.emoteSize} />
+          <Emote key={k} code={m[0]} size={opts.emoteSize} inText />
         ),
       );
     }

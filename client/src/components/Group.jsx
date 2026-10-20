@@ -28,8 +28,18 @@ export function useCollapsed(id) {
   return [collapsed, toggle];
 }
 
-/** O título é um botão: clicar recolhe ou mostra a lista. `children`: botões ao lado (ex.: "+"). */
+/**
+ * O título é um botão: clicar recolhe ou mostra a lista. `children`: botões ao lado (ex.: "+").
+ * Sem `onToggle`, a lista fica sempre aberta (o título não é botão).
+ */
 export function GroupHeader({ title, collapsed, onToggle, children }) {
+  if (!onToggle)
+    return (
+      <div className="grp">
+        <span className="grp-title">{title}</span>
+        {children}
+      </div>
+    );
   return (
     <div className="grp">
       <button type="button" className="grp-toggle" aria-expanded={!collapsed} onClick={onToggle} title={collapsed ? 'Mostrar' : 'Recolher'}>

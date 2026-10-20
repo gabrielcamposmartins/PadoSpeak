@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { AlertTriangle, Info } from 'lucide-react';
 import { useStore, primaryConn, openFromUrl } from './store.js';
 import { isPanel, isTauri } from './lib/env.js';
@@ -19,18 +19,77 @@ import { FormattedText } from './components/Emotes.jsx';
 import { DownloadsIndicator } from './components/Files.jsx';
 import { useAcross, unreadTotal } from './components/conn.jsx';
 import { setUnreadBadge } from './lib/badge.js';
+import { useLayout } from './lib/layout.js';
 import { hasShared, takeShared } from './lib/share.js';
+
+/** Celular: arrastar o aviso para a direita o dispensa (soltando antes do ponto, ele volta). */
+function useSwipeAway(ref, onDismiss) {
+  const drag = useRef(null); // { x, y, dx, on }
+  const swiped = useRef(false); // o toque que arrastou não conta como clique
+  const settle = (el, transform, opacity) => {
+    el.style.transition = 'transform 0.18s ease-out, opacity 0.18s ease-out';
+    el.style.transform = transform;
+    el.style.opacity = opacity;
+  };
+  const handlers = {
+    onTouchStart: (e) => {
+      const t = e.touches[0];
+      swiped.current = false;
+      drag.current = e.touches.length === 1 ? { x: t.clientX, y: t.clientY, dx: 0, on: false } : null;
+    },
+    onTouchMove: (e) => {
+      const d = drag.current;
+      const el = ref.current;
+      if (!d || !el) return;
+      const t = e.touches[0];
+      const dx = t.clientX - d.x;
+      const dy = t.clientY - d.y;
+      if (!d.on) {
+        if (Math.abs(dy) > 10 && Math.abs(dy) >= Math.abs(dx)) return (drag.current = null);
+        if (dx < 8) return;
+        d.on = true;
+        swiped.current = true;
+        el.style.transition = 'none';
+      }
+      d.dx = Math.max(0, dx - 8);
+      el.style.transform = `translateX(${d.dx}px)`;
+      el.style.opacity = String(Math.max(0.15, 1 - d.dx / el.offsetWidth));
+    },
+    onTouchEnd: () => {
+      const d = drag.current;
+      const el = ref.current;
+      drag.current = null;
+      if (!d?.on || !el) return;
+      if (d.dx > Math.min(110, el.offsetWidth * 0.3)) {
+        settle(el, `translateX(${el.offsetWidth + 24}px)`, '0');
+        setTimeout(onDismiss, 180);
+      } else settle(el, '', '');
+    },
+  };
+  handlers.onTouchCancel = handlers.onTouchEnd;
+  return { handlers, swiped };
+}
 
 /** Aviso que sobe no canto, como o "fulano acabou de entrar" do Messenger. */
 function Toast({ toast }) {
+  const ref = useRef(null);
+  const phone = useLayout() === 'phone';
+  const { handlers, swiped } = useSwipeAway(ref, useStore.getState().dismissToast);
   return (
-    <div className={`toast window ${toast.kind}${toast.url ? ' clickable' : ''}`} role="status" key={toast.id}>
+    <div
+      ref={ref}
+      className={`toast window ${toast.kind}${toast.url ? ' clickable' : ''}`}
+      role="status"
+      key={toast.id}
+      {...(phone ? handlers : {})}
+    >
       <TitleBar title="PadoSpeak" onClose={useStore.getState().dismissToast} />
       <div
         className="toast-body"
         onClick={
           toast.url
             ? () => {
+                if (swiped.current) return;
                 useStore.getState().dismissToast();
                 openFromUrl(toast.url);
               }

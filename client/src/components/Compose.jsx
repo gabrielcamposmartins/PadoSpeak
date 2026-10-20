@@ -202,17 +202,18 @@ export function fromPhoneCamera(file) {
 
 /**
  * Câmera para tirar uma foto ou gravar um vídeo e mandar na conversa. `onDone(file)` com o
- * resultado (vai para a prévia antes de enviar).
+ * resultado (vai para a prévia antes de enviar). `rear`: começa pela câmera de trás (celular);
+ * `fullScreen`: já abre ocupando a tela.
  */
-export function CameraCapture({ onDone, onClose }) {
+export function CameraCapture({ onDone, onClose, rear = false, fullScreen = false }) {
   const video = useRef(null);
   const [stream, setStream] = useState(null);
   const [mode, setMode] = useState('photo'); // photo | video
-  const [full, setFull] = useState(false); // tela cheia
+  const [full, setFull] = useState(fullScreen); // tela cheia
   const [error, setError] = useState('');
   const [devices, setDevices] = useState([]);
   const [deviceIdx, setDeviceIdx] = useState(0);
-  const [facing, setFacing] = useState('user');
+  const [facing, setFacing] = useState(rear ? 'environment' : 'user');
   const [rec, setRec] = useState(null); // { recorder, started, chunks, mic }
   const [now, setNow] = useState(Date.now());
   const [flash, setFlash] = useState(false);
@@ -231,7 +232,8 @@ export function CameraCapture({ onDone, onClose }) {
           ? { deviceId: { ideal: saved } }
           : {};
     navigator.mediaDevices
-      ?.getUserMedia({ video: { ...constraints, width: { ideal: 1280 }, height: { ideal: 720 } } })
+      // No celular, a foto sai na resolução boa da câmera (o vídeo continua leve pelo bitrate da gravação).
+      ?.getUserMedia({ video: { ...constraints, width: { ideal: isTouch ? 1920 : 1280 }, height: { ideal: isTouch ? 1080 : 720 } } })
       .then(async (s) => {
         if (!alive) return s.getTracks().forEach((t) => t.stop());
         opened = s;

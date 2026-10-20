@@ -71,6 +71,8 @@ import {
   PERM,
   DEFAULT_NOTIFY,
   setMyActivity,
+  FONT_SCALES,
+  fontScaleOf,
 } from '../store.js';
 import { currentActivity, listPrograms, setCustomPrograms } from '../lib/activity.js';
 import { setGameOverlay, setOverlayBlocked } from '../lib/gameOverlay.js';
@@ -102,7 +104,7 @@ import {
   onHotkeyProblems,
   soloRecorder,
 } from '../lib/hotkeys.js';
-import { isTouch as touchDevice } from '../lib/layout.js';
+import { isTouch as touchDevice, currentLayout } from '../lib/layout.js';
 
 const TITLES = {
   profile: 'Perfil',
@@ -939,7 +941,7 @@ function AppsTab() {
   );
 }
 
-/** Cores da paleta pessoal (Ctrl+1…8) e a lista de atalhos. */
+/** Tamanho da fonte, cores da paleta pessoal (Ctrl+1…8) e a lista de atalhos. */
 function TextFormatting() {
   const palette = usePalette();
   const set = (i, hex) => {
@@ -948,8 +950,33 @@ function TextFormatting() {
     useStore.getState().setAppearance({ textPalette: next });
   };
   const isDefault = palette.every((c, i) => c.toLowerCase() === DEFAULT_PALETTE[i].toLowerCase());
+  const fontScale = useStore((s) => fontScaleOf(s.prefs));
   return (
     <>
+      <div className="settings-sec">Tamanho da fonte</div>
+      <div className="field">
+        <div className="font-pick" role="radiogroup" aria-label="Tamanho da fonte">
+          {FONT_SCALES.map(([value, name]) => (
+            <button
+              key={value}
+              type="button"
+              role="radio"
+              aria-checked={fontScale === value}
+              className={`font-opt${fontScale === value ? ' on' : ''}`}
+              onClick={() => useStore.getState().setAppearance({ fontScale: value })}
+            >
+              <span className="font-opt-aa" style={{ '--fo': value }} aria-hidden="true">
+                Aa
+              </span>
+              {name}
+            </button>
+          ))}
+        </div>
+        <small>
+          As letras de todo o app, neste aparelho.
+          {currentLayout() === 'phone' ? ' No celular elas já ficam um pouco maiores que no computador.' : ''}
+        </small>
+      </div>
       <div className="settings-sec">Sua paleta</div>
       <p className="kv">
         Pinte o texto com {MOD}+1 a {MOD}+8. Sem nada selecionado, a cor pinta a mensagem toda (repetir a mesma cor tira).

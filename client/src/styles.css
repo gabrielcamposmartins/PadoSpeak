@@ -651,6 +651,15 @@
 }
 
 /* ---------- Base ---------- */
+/* Tamanho da fonte (Configurações → Aparência): no build, todo font-size em px deste arquivo vira
+   calc(Npx * var(--fs)) (veja vite.config.js). No celular as letras ficam um pouco maiores. */
+:root {
+  --fs-user: 1;
+  --fs: var(--fs-user);
+}
+html[data-layout='phone'] {
+  --fs: calc(var(--fs-user) * 1.08);
+}
 * {
   box-sizing: border-box;
 }
@@ -1996,9 +2005,83 @@ html:not([data-touch]) .channel:hover .call-timer:has(~ .ch-del) {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* arrastar uma mensagem para responder (celular) não cria rolagem para o lado */
+  overflow-x: hidden;
   padding: 8px 18px 8px;
   display: flex;
   flex-direction: column;
+}
+/* Mensagens ainda chegando do servidor (ou o "tentar de novo" se não vieram). */
+.msgs-loading {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 120px;
+  color: var(--brand-accent);
+  text-align: center;
+}
+.msgs-loading.failed {
+  color: var(--muted);
+  font-size: 13px;
+}
+/* Computador: mensagens "fantasmas" (foto, nome e linhas) brilhando enquanto a conversa carrega. */
+.msgs-skeleton {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 12px 0 6px;
+}
+.sk-msg {
+  display: flex;
+  gap: 10px;
+}
+.sk-pic {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+}
+.sk-lines {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding-top: 2px;
+}
+.sk-lines i {
+  display: block;
+  height: 11px;
+  border-radius: 6px;
+}
+.sk-lines .sk-name {
+  width: 110px;
+  height: 12px;
+  opacity: 0.85;
+}
+.sk-pic,
+.sk-lines i {
+  background: linear-gradient(90deg, var(--line) 0%, color-mix(in srgb, var(--line) 35%, transparent) 45%, var(--line) 90%);
+  background-size: 300% 100%;
+  animation: sk-shine 1.4s ease-in-out infinite;
+}
+@keyframes sk-shine {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sk-pic,
+  .sk-lines i {
+    animation: none;
+  }
 }
 .welcome {
   display: flex;
@@ -2226,6 +2309,15 @@ html:not([data-touch]) .channel:hover .call-timer:has(~ .ch-del) {
 .edit-box small {
   color: var(--muted);
   font-size: 12px;
+}
+.edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+.edit-actions .btn {
+  min-height: 38px;
 }
 .composer {
   flex: none;
@@ -2481,6 +2573,21 @@ html:not([data-touch]) .channel:hover .call-timer:has(~ .ch-del) {
   flex: 0 0 34px;
   color: var(--ico-green);
 }
+/* Abas embaixo do conteúdo (janela de stickers): a linha fica em cima e as abas penduradas nela. */
+.aero-tabs.bottom {
+  border-bottom: 0;
+  border-top: 1px solid var(--tab-line);
+}
+.aero-tabs.bottom .tab {
+  margin: -1px 0 0;
+  border-top: 0;
+  border-bottom: 1px solid var(--tab-border);
+  border-radius: 0 0 6px 6px;
+}
+.aero-tabs.bottom .tab.on {
+  border-color: var(--tab-on-border);
+  box-shadow: inset 0 -2px 0 var(--tab-accent);
+}
 .request-row {
   display: flex;
   align-items: center;
@@ -2543,6 +2650,36 @@ html:not([data-touch]) .channel:hover .call-timer:has(~ .ch-del) {
 }
 .dm-row .badge {
   margin-top: 6px;
+}
+/* Última mensagem não lida no lugar da mensagem pessoal: em pé e mais forte que o recado. */
+.dm-preview {
+  font-style: normal;
+  font-weight: 600;
+  color: var(--ink);
+}
+.row.sel .dm-preview {
+  color: inherit;
+}
+/* Celular, Conversas: foto e nome cerca de 70% maiores. */
+.m-chats .dm-row {
+  align-items: center;
+  gap: 10px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+.m-chats .dm-row .member-name {
+  font-size: 23px;
+  line-height: 1.2;
+}
+.m-chats .dm-row .dm-call-icon {
+  width: 18px;
+  height: 18px;
+}
+.m-chats .dm-row .pm {
+  font-size: 13px;
+}
+.m-chats .dm-row .badge {
+  margin-top: 0;
 }
 .dm-call-icon {
   color: var(--ico-green);
@@ -3698,6 +3835,45 @@ html:not([data-touch]) .channel:hover .call-timer:has(~ .ch-del) {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
+}
+.font-pick {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+}
+.font-opt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  min-height: 62px;
+  padding: 6px 4px;
+  border-radius: 10px;
+  border: 1px solid var(--panel-border);
+  background: var(--row-hover);
+  font-size: 11.5px;
+  color: var(--text-2);
+}
+.font-opt:hover {
+  border-color: #5cc0ef;
+}
+.font-opt.on {
+  border-color: #3aa6e6;
+  color: var(--ink);
+  font-weight: 700;
+  box-shadow: 0 0 0 2px rgba(92, 192, 239, 0.45);
+}
+.font-opt-aa {
+  font-size: calc(17px * var(--fo, 1));
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--ink);
+}
+@media (max-width: 420px) {
+  .font-pick {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 .theme-opt {
   display: flex;
@@ -5248,7 +5424,7 @@ fieldset.plain {
   .mobile-app .composer-tools {
     gap: 2px;
   }
-  .mobile-app .composer-tools .tool-sq {
+  .mobile-app .composer-tools:not(.phone-tools) .tool-sq {
     width: 25px;
   }
   .mobile-app .composer-tools .tool-sep {
@@ -5271,6 +5447,56 @@ fieldset.plain {
 }
 .tools-head {
   padding: 5px 8px 5px 10px;
+}
+/* Celular: sempre uma linha, com botões cerca de 60% maiores (28×26 → 45×42). Negrito, itálico,
+   sublinhado e riscado ficam atrás da setinha, que abre para o lado no lugar dos outros botões; o
+   "Chamar atenção" encolhe (Chamar atenção → Atenção → só o ícone) com o espaço que sobra. */
+.mobile-app .composer-tools.phone-tools {
+  gap: 4px;
+  flex-wrap: nowrap;
+}
+.mobile-app .phone-tools .tool-nudge {
+  flex: 1 1 45px;
+}
+.mobile-app .phone-tools .tool-sq {
+  width: 45px;
+  height: 42px;
+  border-radius: 8px;
+}
+.mobile-app .phone-tools .tool-sq svg {
+  width: 24px;
+  height: 24px;
+}
+.mobile-app .phone-tools .tool-nudge {
+  height: 42px;
+  min-width: 45px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.mobile-app .phone-tools .tool-nudge svg {
+  width: 22px;
+  height: 22px;
+}
+.mobile-app .phone-tools .tool-sep {
+  height: 28px;
+}
+.tool-effects {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 4px;
+  border-radius: 10px;
+}
+.tool-effects.open {
+  padding: 2px;
+  margin: -2px 0;
+  background: var(--row-hover);
+  box-shadow: inset 0 0 0 1px var(--panel-border);
+}
+.tool-more svg {
+  transition: rotate 0.15s;
+}
+.tool-effects.open .tool-more svg {
+  rotate: 180deg;
 }
 .tools-head .composer-tools {
   flex: 1;
@@ -5976,8 +6202,12 @@ fieldset.plain {
 .sticker-picker {
   width: 320px;
 }
-.sticker-picker .aero-tabs {
-  margin-bottom: 8px;
+.sticker-picker .aero-tabs.bottom {
+  margin-top: 8px;
+}
+html[data-touch] .sticker-picker .aero-tabs .tab {
+  height: 40px;
+  font-size: 14px;
 }
 .sticker-grid {
   display: grid;
@@ -6060,7 +6290,7 @@ html[data-layout='phone'] body {
 html[data-touch] input:not([type='range']):not([type='checkbox']):not([type='radio']):not([type='file']),
 html[data-touch] textarea,
 html[data-touch] select {
-  font-size: 16px;
+  font-size: max(16px, calc(16px * var(--fs, 1)));
 }
 html[data-touch] .channel .ch-del,
 html[data-touch] .sticker-del {
@@ -6079,6 +6309,34 @@ html[data-touch] .msg.tools-open .tools {
 }
 html[data-touch] .msg.tools-open {
   background: var(--hover-tint);
+}
+/* Arrastar a mensagem para a direita responde: a seta aparece atrás dela e fica cheia ao passar do ponto. */
+html[data-touch] .msg {
+  touch-action: pan-y;
+}
+.swipe-reply {
+  position: absolute;
+  top: 50%;
+  left: -36px;
+  width: 28px;
+  height: 28px;
+  margin-top: -14px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--brand-accent);
+  background: var(--row-hover);
+  opacity: var(--swipe, 0);
+  scale: calc(0.6 + var(--swipe, 0) * 0.4);
+  pointer-events: none;
+  transition: background 0.12s, color 0.12s;
+}
+.msg:not(.swiping) .swipe-reply {
+  visibility: hidden;
+}
+.msg.swipe-armed .swipe-reply {
+  color: #fff;
+  background: var(--brand-accent);
 }
 /* Reações rápidas na barra da mensagem */
 .msg .tools .quick-react.on {
@@ -6577,8 +6835,8 @@ html[data-layout='phone'] .modal {
   max-height: 100%;
 }
 html[data-layout='phone'] .toast {
-  /* Não bloqueia o "voltar" e os botões do topo enquanto aparece (some sozinho). */
-  pointer-events: none;
+  /* Some sozinho, ou arrastando para a direita (App.jsx); a rolagem na vertical continua do app. */
+  touch-action: pan-y;
   left: 8px;
   right: 8px;
   width: auto;

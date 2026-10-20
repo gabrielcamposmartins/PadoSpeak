@@ -17,7 +17,7 @@ import {
   Monitor,
   Globe,
 } from 'lucide-react';
-import { useStore, connRegistry, openLanDm, changeServer } from '../store.js';
+import { useStore, connRegistry, openLanDm, changeServer, messageSummary } from '../store.js';
 import { isDesktop } from '../lib/env.js';
 import Avatar, { Orb, useUser, usePresence, useActivity, UserName, STATUS_INFO, colorClass, colorStyle } from './Avatar.jsx';
 import { useUserMenu } from './ContextMenus.jsx';
@@ -136,11 +136,25 @@ function RequestRow({ entry }) {
   );
 }
 
+/** Prévia da última mensagem não lida (no lugar da mensagem pessoal): o texto, ou "Enviou uma foto". */
+function UnreadPreview({ content }) {
+  const { verb, text } = messageSummary(content);
+  const said = plain(text).replace(/\s+/g, ' ').trim().slice(0, 140);
+  const what = verb === 'diz' ? '' : `${verb[0].toUpperCase()}${verb.slice(1)}`;
+  return (
+    <span className="pm dm-preview">
+      <FormattedText text={what && said ? `${what}: ${said}` : what || said} size={14} />
+    </span>
+  );
+}
+
 function DmRow({ dm, active }) {
   const useC = useConn();
   const lan = useC((s) => s.kind !== 'server');
   const recipient = useUser(dm.recipient);
   const unread = useC((s) => s.unread[dm.id] || 0);
+  const preview = useC((s) => (s.unread[dm.id] ? s.lastUnread[dm.id] : null));
+  const phone = useLayout() === 'phone';
   const inCall = useC((s) => Boolean(s.voiceStates[dm.id]?.length));
   const activity = useActivity(recipient.id);
   const status = usePresence(recipient.id);
@@ -154,14 +168,21 @@ function DmRow({ dm, active }) {
       onClick={() => useC.getState().selectDm(dm.id)}
       onContextMenu={userMenu.onContextMenu}
     >
-      <Avatar user={recipient} size={30} />
+      {/* Celular: foto e nome maiores, para achar a conversa de relance. */}
+      <Avatar user={recipient} size={phone ? 51 : 30} />
       <span className="member-text">
         <span className="member-name">
           <UserName user={recipient} className="nm label-text" />
           {lan && <LanTag />}
           {inCall && <Phone size={13} className="dm-call-icon" aria-label="em chamada" />}
         </span>
-        {activity ? <Bio text={activity} /> : recipient.bio ? <Bio user={recipient} /> : null}
+        {preview ? (
+          <UnreadPreview content={preview.content} />
+        ) : activity ? (
+          <Bio text={activity} />
+        ) : recipient.bio ? (
+          <Bio user={recipient} />
+        ) : null}
       </span>
       {unread > 0 && <span className="badge">{unread > 99 ? '99+' : unread}</span>}
       <span
@@ -395,8 +416,29 @@ export function HomeSidebar() {
   const shown = tab === 'online' ? mates.filter((f) => online[f.user.id]) : mates;
   const [reqCollapsed, toggleReq] = useCollapsed('friend-requests');
   const [dmsCollapsed, toggleDms] = useCollapsed('dms');
-  const [friendsCollapsed, toggleFriends] = useCollapsed('friends');
+  const [savedFriendsCollapsed, toggleSavedFriends] = useCollapsed('friends');
   const phone = useLayout() === 'phone';
+  // Celular: os amigos online ficam acima das conversas, sempre começando recolhidos (a escolha não fica
+  // guardada); sem nenhuma conversa, ficam abertos.
+  const [phoneFriendsCollapsed, setPhoneFriendsCollapsed] = useState(true);
+  const friendsLocked = phone && dmCount === 0;
+  const friendsCollapsed = phone ? !friendsLocked && phoneFriendsCollapsed : savedFriendsCollapsed;
+  const toggleFriends = friendsLocked ? null : phone ? () => setPhoneFriendsCollapsed((v) => !v) : toggleSavedFriends;
+  const friendsList = (
+    <>
+      <GroupHeader
+        title={`${tab === 'online' ? 'Amigos online' : 'Amigos'} (${shown.length})`}
+        collapsed={friendsCollapsed}
+        onToggle={toggleFriends}
+      />
+      {!friendsCollapsed && shown.length === 0 && (
+        <p className="home-empty-dm">{tab === 'online' ? 'Nenhum amigo online agora.' : 'Nenhum amigo ainda.'}</p>
+      )}
+      {!friendsCollapsed && shown.map((f) => (
+        <FriendOrbRow key={f.user.id} entry={f} />
+      ))}
+    </>
+  );
   return (
     <>
       <FriendTabs />
@@ -410,6 +452,7 @@ export function HomeSidebar() {
             ))}
           </>
         )}
+        {phone && friendsList}
         <GroupHeader title={`Conversas (${dmCount})`} collapsed={dmsCollapsed} onToggle={toggleDms}>
           <button
             className="grp-add"
@@ -428,17 +471,7 @@ export function HomeSidebar() {
         ))}
         <LanSection />
         <NearbySection />
-        <GroupHeader
-          title={`${tab === 'online' ? 'Amigos online' : 'Amigos'} (${shown.length})`}
-          collapsed={friendsCollapsed}
-          onToggle={toggleFriends}
-        />
-        {!friendsCollapsed && shown.length === 0 && (
-          <p className="home-empty-dm">{tab === 'online' ? 'Nenhum amigo online agora.' : 'Nenhum amigo ainda.'}</p>
-        )}
-        {!friendsCollapsed && shown.map((f) => (
-          <FriendOrbRow key={f.user.id} entry={f} />
-        ))}
+        {!phone && friendsList}
       </div>
     </>
   );

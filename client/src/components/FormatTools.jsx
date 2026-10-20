@@ -5,7 +5,7 @@
 // Ctrl+Shift+X riscado e Ctrl+1…8 as cores da paleta pessoal (Configurações → Formatação de texto).
 // Sem nada selecionado, a cor pinta a mensagem toda; repetir a mesma cor tira a cor.
 import { useRef, useState } from 'react';
-import { Bold, Italic, Underline, Strikethrough, Smile, Baseline } from 'lucide-react';
+import { Bold, Italic, Underline, Strikethrough, Smile, Baseline, ChevronRight } from 'lucide-react';
 import { useStore } from '../store.js';
 import { EmojiPicker, ColorPicker, editField, insertText } from './Emotes.jsx';
 import { DEFAULT_PALETTE, paletteOf, colorSpans } from '../lib/text.js';
@@ -127,9 +127,13 @@ export function formatKey(e, el, text, setText, maxRaw) {
 /**
  * `maxRaw`: tamanho máximo do texto com as tags (o servidor recusa acima disso).
  * `children`: botões extras no fim da barra (stickers, chamar atenção).
+ * `phone`: a barra da caixa de mensagem no celular, sempre numa linha só, com botões maiores: a cor fica
+ * à mão e negrito, itálico, sublinhado e riscado ficam atrás de uma setinha. Aberta, a setinha ocupa o
+ * lugar dos outros botões (que voltam ao fechar).
  */
-export default function FormatTools({ inputRef, text, setText, maxRaw, children, label = 'Opções de texto' }) {
+export default function FormatTools({ inputRef, text, setText, maxRaw, children, label = 'Opções de texto', phone = false }) {
   const [open, setOpen] = useState(null); // 'emoji' | 'color'
+  const [effects, setEffects] = useState(false); // celular: itálico, sublinhado e riscado à mostra
   const colorBtn = useRef(null);
   const palette = usePalette();
   const emojiBtn = useRef(null);
@@ -145,13 +149,14 @@ export default function FormatTools({ inputRef, text, setText, maxRaw, children,
     [Underline, 'Sublinhado', `${MOD}+U`, () => wrap('__', '__', 'sublinhado')],
     [Strikethrough, 'Riscado', `${MOD}+Shift+X`, () => wrap('~~', '~~', 'riscado')],
   ];
+  const button = ([Icon, name, keys, fn]) => (
+    <button key={name} type="button" className="gloss tool-sq" title={`${name} (${keys})`} aria-label={name} onClick={fn}>
+      <Icon size={15} />
+    </button>
+  );
   return (
-    <div className="composer-tools" role="toolbar" aria-label={label}>
-      {tools.map(([Icon, name, keys, fn]) => (
-        <button key={name} type="button" className="gloss tool-sq" title={`${name} (${keys})`} aria-label={name} onClick={fn}>
-          <Icon size={15} />
-        </button>
-      ))}
+    <div className={`composer-tools${phone ? ' phone-tools' : ''}`} role="toolbar" aria-label={label}>
+      {!phone && tools.map(button)}
       <span className="tool-wrap">
         <button
           ref={colorBtn}
@@ -176,31 +181,51 @@ export default function FormatTools({ inputRef, text, setText, maxRaw, children,
           />
         )}
       </span>
-      <span className="tool-sep" />
-      <span className="tool-wrap">
-        <button
-          ref={emojiBtn}
-          type="button"
-          className={`gloss tool-sq${open === 'emoji' ? ' pressed' : ''}`}
-          title="Emoticons"
-          aria-label="Emoticons"
-          aria-expanded={open === 'emoji'}
-          onClick={() => setOpen(open === 'emoji' ? null : 'emoji')}
-        >
-          <Smile size={15} className="ico-gold" />
-        </button>
-        {open === 'emoji' && (
-          <EmojiPicker
-            anchorRef={emojiBtn}
-            onClose={() => setOpen(null)}
-            onPick={(code) => {
-              setOpen(null);
-              insertText(inputRef.current, text, guarded, code);
-            }}
-          />
-        )}
-      </span>
-      {children}
+      {phone && (
+        <span className={`tool-effects${effects ? ' open' : ''}`}>
+          <button
+            type="button"
+            className={`gloss tool-sq tool-more${effects ? ' pressed' : ''}`}
+            title={effects ? 'Esconder negrito, itálico, sublinhado e riscado' : 'Negrito, itálico, sublinhado e riscado'}
+            aria-label="Mais efeitos de texto"
+            aria-expanded={effects}
+            onClick={() => setEffects((v) => !v)}
+          >
+            <ChevronRight size={15} />
+          </button>
+          {effects && tools.map(button)}
+        </span>
+      )}
+      {/* Celular: com a setinha aberta, os efeitos ocupam a linha toda. */}
+      {!(phone && effects) && (
+        <>
+          <span className="tool-sep" />
+          <span className="tool-wrap">
+            <button
+              ref={emojiBtn}
+              type="button"
+              className={`gloss tool-sq${open === 'emoji' ? ' pressed' : ''}`}
+              title="Emoticons"
+              aria-label="Emoticons"
+              aria-expanded={open === 'emoji'}
+              onClick={() => setOpen(open === 'emoji' ? null : 'emoji')}
+            >
+              <Smile size={15} className="ico-gold" />
+            </button>
+            {open === 'emoji' && (
+              <EmojiPicker
+                anchorRef={emojiBtn}
+                onClose={() => setOpen(null)}
+                onPick={(code) => {
+                  setOpen(null);
+                  insertText(inputRef.current, text, guarded, code);
+                }}
+              />
+            )}
+          </span>
+          {children}
+        </>
+      )}
     </div>
   );
 }

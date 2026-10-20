@@ -2,6 +2,8 @@
 // mostra as notificações push com o app fechado.
 const CACHE = 'padospeak-v2';
 const SHELL = ['/', '/manifest.webmanifest', '/icons/icon-192.png', '/icons/badge-96.png'];
+/** Quanto a abertura espera a página nova antes de usar a guardada. */
+const NAV_WAIT_MS = 1500;
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).catch(() => {}));
@@ -84,20 +86,31 @@ self.addEventListener('fetch', (e) => {
   if (req.method !== 'GET' || url.origin !== location.origin) return;
   // API, WebSocket e música sempre pela rede.
   if (url.pathname.startsWith('/api/') || url.pathname === '/ws') return;
-  // A página: rede primeiro (sempre a versão nova); sem rede, a última que abriu.
+  // A página: rede primeiro (sempre a versão nova); sem rede, a última que abriu. Com a rede lenta (sinal
+  // fraco no celular), depois de um instante abre a última guardada, e a nova fica para a próxima vez.
   if (req.mode === 'navigate') {
     // Páginas avulsas (privacidade, termos): direto da rede, sem trocar o app guardado.
     if (/^\/(privacidade|termos)(\.html)?$/.test(url.pathname)) return;
+    const net = fetch(req).then((res) => {
+      if (res.ok) {
+        const copy = res.clone();
+        e.waitUntil(caches.open(CACHE).then((c) => c.put('/', copy)));
+      }
+      return res;
+    });
+    e.waitUntil(net.catch(() => {}));
     e.respondWith(
-      fetch(req)
-        .then((res) => {
-          if (res.ok) {
-            const copy = res.clone();
-            caches.open(CACHE).then((c) => c.put('/', copy));
-          }
-          return res;
-        })
-        .catch(() => caches.match('/')),
+      new Promise((resolve) => {
+        let done = false;
+        const answer = (res) => {
+          if (done || !res) return;
+          done = true;
+          clearTimeout(slow);
+          resolve(res);
+        };
+        const slow = setTimeout(() => caches.match('/').then(answer), NAV_WAIT_MS);
+        net.then(answer, async () => answer((await caches.match('/')) || Response.error()));
+      }),
     );
     return;
   }

@@ -188,6 +188,9 @@ export async function installAvailable() {
   try {
     const reg = await navigator.serviceWorker?.getRegistration();
     await reg?.update();
+    // A página nova já fica guardada: com a rede lenta, o service worker abre a guardada (public/sw.js).
+    const page = await fetch('/', { cache: 'no-store' });
+    if (page.ok && reg) await (await caches.open('padospeak-v2')).put('/', page);
   } catch {
     /* recarrega mesmo assim (a página vem da rede primeiro) */
   }

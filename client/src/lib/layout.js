@@ -42,6 +42,9 @@ export const isIOS =
   typeof navigator !== 'undefined' &&
   (/iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1));
 
+/** Android (celular ou tablet). */
+export const isAndroid = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
+
 /** Instalado na tela de início (PWA) ou aberto pelo app. */
 export const isStandalone =
   Boolean(media('(display-mode: standalone)')?.matches) ||

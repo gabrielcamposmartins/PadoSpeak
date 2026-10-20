@@ -17,7 +17,7 @@ import {
   CheckCheck,
   Eye,
   EyeOff,
-  ClipboardPaste,
+  LoaderCircle,
 } from 'lucide-react';
 import { useStore, sendSticker, sendFile, sendVoice, usePerms } from '../store.js';
 import { FileView, UploadList, parseFile, parseVoice, isBlockedFile, VoiceNote, ExpiresTag } from './Files.jsx';
@@ -29,8 +29,8 @@ import { addRecent } from '../lib/recent.js';
 import { magicOf, playMagic } from '../lib/magic.js';
 import { useConn, useConnKey } from './conn.jsx';
 import Avatar, { UserName, Orb, usePresence, useUser, colorClass, colorStyle } from './Avatar.jsx';
-import { RichText, FormattedText, plain, EmojiText, EmojiPicker, Floating, insertText, EMOTES, mentionsUser } from './Emotes.jsx';
-import { useLayout, isTouch } from '../lib/layout.js';
+import { RichText, FormattedText, plain, EmojiText, EmojiPicker, Floating, EMOTES, mentionsUser } from './Emotes.jsx';
+import { useLayout, isTouch, isAndroid } from '../lib/layout.js';
 
 /** Abre o perfil de alguém desta conexão (servidor ou PC da rede). */
 function useOpenProfile() {
@@ -39,6 +39,10 @@ function useOpenProfile() {
 }
 
 const GROUP_MS = 5 * 60 * 1000;
+/** Celular: quanto arrastar a mensagem para a direita até soltar responder a ela. */
+const SWIPE_REPLY_PX = 64;
+/** Computador, carregando a conversa: largura (%) das linhas de cada mensagem "fantasma". */
+const SKELETON = [[62, 38], [45], [70, 55, 30], [40], [58, 26]];
 const EMPTY = [];
 const NOBODY = { id: null };
 const MAX = 4000;
@@ -73,45 +77,6 @@ function Notice({ n, dm, name }) {
   );
 }
 
-/** Extensão do arquivo para uma imagem colada. */
-const pastedExt = (type) => ({ 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' })[type] || 'png';
-
-/**
- * Cola o que estiver copiado (botão do celular, onde não há Ctrl+V): imagens viram anexos e texto entra
- * na caixa, onde estiver o cursor. O navegador pode pedir permissão (ou mostrar "Colar" para tocar).
- */
-async function pasteFromClipboard({ inputRef, text, setText, onFiles }) {
-  const notify = useStore.getState().notify;
-  const clip = navigator.clipboard;
-  try {
-    if (clip?.read) {
-      const files = [];
-      let pasted = '';
-      for (const item of await clip.read()) {
-        const image = item.types.find((t) => t.startsWith('image/'));
-        if (image) {
-          const blob = await item.getType(image);
-          const n = files.length + 1;
-          files.push(new File([blob], `colado-${Date.now()}${n > 1 ? `-${n}` : ''}.${pastedExt(image)}`, { type: image }));
-        } else if (item.types.includes('text/plain')) pasted += await (await item.getType('text/plain')).text();
-      }
-      if (files.length) {
-        onFiles(files);
-        addRecent(files, 'colado');
-      }
-      if (pasted) insertText(inputRef.current, text, setText, pasted);
-      if (!files.length && !pasted) notify('Não há nada copiado para colar.', 'info');
-      return;
-    }
-    if (!clip?.readText) throw new Error('sem acesso');
-    const pasted = await clip.readText();
-    if (pasted) insertText(inputRef.current, text, setText, pasted);
-    else notify('Não há nada copiado para colar.', 'info');
-  } catch {
-    notify('O navegador não deixou colar daqui. Toque e segure na caixa de texto e escolha “Colar”.', 'info');
-  }
-}
-
 /** Reações rápidas: as 3 que eu mais uso (contadas neste aparelho); sem histórico, coração, risada e surpresa. */
 const QUICK_DEFAULT = ['(L)', ':D', ':O'];
 function quickReactions(use = {}) {
@@ -129,7 +94,7 @@ function countReaction(code) {
   st.setAppearance({ reactionUse: Object.fromEntries(Object.entries(use).sort((a, b) => b[1] - a[1]).slice(0, 20)) });
 }
 
-/** Barra acima da caixa de texto: formatação, cor, emoticons, colar (celular) e chamar atenção. */
+/** Barra acima da caixa de texto: formatação, cor, emoticons, arquivos, stickers e chamar atenção. */
 function ComposerTools({ inputRef, text, setText, channelId, target, onFiles, onSticker, onCamera }) {
   const phone = useLayout() === 'phone';
   const [sheet, setSheet] = useState(false); // celular: menu rápido do clipe (recentes, galeria, câmera, arquivos)
@@ -140,8 +105,10 @@ function ComposerTools({ inputRef, text, setText, channelId, target, onFiles, on
     const el = nudgeRef.current;
     if (!phone || !el || typeof ResizeObserver === 'undefined') return setNudgeFit('full');
     const ro = new ResizeObserver(([entry]) => {
+      // O espaço que cada nome pede cresce com a letra (tamanho da fonte escolhido e botões do celular).
       const w = entry.contentRect.width;
-      setNudgeFit(w >= 116 ? 'full' : w >= 72 ? 'short' : 'icon');
+      const fs = parseFloat(getComputedStyle(el).fontSize) || 12;
+      setNudgeFit(w >= fs * 11 ? 'full' : w >= fs * 7 ? 'short' : 'icon');
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -151,7 +118,7 @@ function ComposerTools({ inputRef, text, setText, channelId, target, onFiles, on
   const stickerBtn = useRef(null);
   const fileInput = useRef(null);
   return (
-    <FormatTools inputRef={inputRef} text={text} setText={setText} maxRaw={MAX}>
+    <FormatTools inputRef={inputRef} text={text} setText={setText} maxRaw={MAX} phone={phone}>
       <button
         type="button"
         className="gloss tool-sq"
@@ -196,17 +163,6 @@ function ComposerTools({ inputRef, text, setText, channelId, target, onFiles, on
           />
         )}
       </span>
-      {phone && (
-        <button
-          type="button"
-          className="gloss tool-sq"
-          title="Colar o que foi copiado"
-          aria-label="Colar"
-          onClick={() => pasteFromClipboard({ inputRef, text, setText, onFiles })}
-        >
-          <ClipboardPaste size={15} className="ico-blue" />
-        </button>
-      )}
       <button
         ref={nudgeRef}
         type="button"
@@ -394,18 +350,75 @@ function Message({ m, head, canEdit: canEditText, canDelete, onReply, me, receip
     document.addEventListener('pointerdown', close);
     return () => document.removeEventListener('pointerdown', close);
   }, [toolsOpen]);
+  // Toque: arrastar a mensagem para a direita (e soltar depois da seta) responde a ela.
+  const swipe = useRef(null); // { x, y, dx, on, armed }
+  const held = useRef(false); // o toque atual já abriu a barra (segurou)
+  const endSwipe = () => {
+    const sw = swipe.current;
+    swipe.current = null;
+    const el = rowRef.current;
+    if (!sw?.on || !el) return;
+    el.style.transition = 'transform 0.18s ease-out';
+    el.style.transform = '';
+    el.style.removeProperty('--swipe');
+    el.classList.remove('swiping', 'swipe-armed');
+    setTimeout(() => el && (el.style.transition = ''), 200);
+    if (sw.armed) onReply(m);
+  };
   const longPress =
     isTouch && hasTools
       ? {
-          onTouchStart: () => {
+          onTouchStart: (e) => {
+            held.current = false;
+            // Editando: o toque é da caixa de texto (cursor, seleção, colar).
+            if (editing) return (swipe.current = null);
+            const t = e.touches[0];
+            swipe.current = e.touches.length === 1 ? { x: t.clientX, y: t.clientY, dx: 0, on: false, armed: false } : null;
             press.current = setTimeout(() => {
+              held.current = true;
               setToolsOpen(true);
               navigator.vibrate?.(12);
             }, 450);
           },
-          onTouchEnd: () => clearTimeout(press.current),
-          onTouchMove: () => clearTimeout(press.current),
-          onContextMenu: (e) => e.preventDefault(),
+          onTouchEnd: (e) => {
+            clearTimeout(press.current);
+            // Soltar depois de segurar não vira toque: a barra aparece embaixo do dedo, e o clique caía num
+            // botão dela (uma reação) e fechava a barra antes de dar para tocar em "Editar".
+            if (held.current) e.preventDefault();
+            held.current = false;
+            endSwipe();
+          },
+          onTouchCancel: () => {
+            clearTimeout(press.current);
+            if (swipe.current) swipe.current.armed = false;
+            endSwipe();
+          },
+          onTouchMove: (e) => {
+            clearTimeout(press.current);
+            const sw = swipe.current;
+            const el = rowRef.current;
+            if (!sw || !el) return;
+            const t = e.touches[0];
+            const dx = t.clientX - sw.x;
+            const dy = t.clientY - sw.y;
+            if (!sw.on) {
+              // Rolando a conversa (ou arrastando para a esquerda): não é resposta.
+              if (Math.abs(dy) > 10 && Math.abs(dy) >= Math.abs(dx)) return (swipe.current = null);
+              if (dx < 12 || dx < Math.abs(dy) * 1.5) return;
+              sw.on = true;
+              el.classList.add('swiping');
+            }
+            sw.dx = Math.max(0, Math.min(dx - 12, SWIPE_REPLY_PX * 1.5));
+            el.style.transform = `translateX(${sw.dx}px)`;
+            el.style.setProperty('--swipe', Math.min(1, sw.dx / SWIPE_REPLY_PX).toFixed(2));
+            const armed = sw.dx >= SWIPE_REPLY_PX;
+            if (armed !== sw.armed) {
+              sw.armed = armed;
+              el.classList.toggle('swipe-armed', armed);
+              if (armed) navigator.vibrate?.(10);
+            }
+          },
+          onContextMenu: (e) => !editing && e.preventDefault(),
         }
       : {};
 
@@ -422,6 +435,11 @@ function Message({ m, head, canEdit: canEditText, canDelete, onReply, me, receip
       className={`msg${head ? ' head' : ''}${toolsOpen ? ' tools-open' : ''}${mentionsMe ? ' mentioned' : ''}`}
       {...longPress}
     >
+      {isTouch && (
+        <span className="swipe-reply" aria-hidden="true">
+          <CornerUpLeft size={16} />
+        </span>
+      )}
       {/* A fotinha de quem escreveu, nos canais e nas conversas privadas. */}
       <div className="msg-pic">
         {head && <Avatar user={m.author} size={30} guildId={guildId} onClick={() => openProfile(m.author.id)} />}
@@ -451,7 +469,19 @@ function Message({ m, head, canEdit: canEditText, canDelete, onReply, me, receip
                 } else if (e.key === 'Escape') setEditing(false);
               }}
             />
-            <small>Esc para cancelar · Enter para salvar</small>
+            {isTouch ? (
+              // Celular: não há Esc, e o Enter do teclado pode ser a quebra de linha.
+              <div className="edit-actions">
+                <button type="button" className="btn secondary" onClick={() => setEditing(false)}>
+                  Cancelar
+                </button>
+                <button type="button" className="btn" onClick={save}>
+                  Salvar
+                </button>
+              </div>
+            ) : (
+              <small>Esc para cancelar · Enter para salvar</small>
+            )}
           </div>
         ) : (
           <div className="content" title={head ? undefined : hhmm(m.createdAt)}>
@@ -642,6 +672,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
   const hiddenForMe = useC((s) => s.marks.hidden);
   const messages = useMemo(() => allMessages.filter((m) => !hiddenForMe[m.id]), [allMessages, hiddenForMe]);
   const loaded = useC((s) => channel.id in s.messages);
+  const loadFailed = useC((s) => Boolean(s.loadFailed[channel.id]));
   const hasMore = useC((s) => s.hasMore[channel.id]);
   const typing = useC((s) => s.typing[channel.id]);
   const me = useC((s) => s.me) || NOBODY;
@@ -679,9 +710,10 @@ export default function ChatView({ channel, variant = 'channel' }) {
   const toggleNsfw = (i) => setAttach((a) => a.map((it, j) => (j === i ? { ...it, nsfw: !it.nsfw } : it)));
   const [camera, setCamera] = useState(false);
   const cameraInput = useRef(null);
-  // No celular e no tablet a câmera é a do próprio aparelho (com o zoom, o flash e a tela cheia dele);
-  // no computador, a câmera do PadoSpeak.
-  const openCamera = () => (isTouch ? cameraInput.current?.click() : setCamera(true));
+  // iPhone e iPad: a câmera do próprio aparelho (com o zoom, o flash e a tela cheia dele). No Android o
+  // seletor do sistema abria a galeria em vez da câmera, então lá (e no computador) é a câmera do PadoSpeak.
+  const nativeCamera = isTouch && !isAndroid;
+  const openCamera = () => (nativeCamera ? cameraInput.current?.click() : setCamera(true));
   const [recording, setRecording] = useState(false);
   const connKey = useConnKey();
   const listRef = useRef(null);
@@ -698,7 +730,8 @@ export default function ChatView({ channel, variant = 'channel' }) {
     setText('');
     setAttach([]);
     setReply(null);
-    inputRef.current?.focus();
+    // No celular, focar a caixa abriria o teclado por cima da conversa recém-aberta.
+    if (!isTouch) inputRef.current?.focus();
   }, [channel.id]);
 
   // Abriu a conversa e uma das 10 últimas mensagens tem efeito (lib/magic.js): toca cada efeito uma vez.
@@ -997,6 +1030,34 @@ export default function ChatView({ channel, variant = 'channel' }) {
           </div>
         )
       )}
+      {!loaded &&
+        (loadFailed ? (
+          <div className="msgs-loading failed" role="alert">
+            <span>Não foi possível carregar as mensagens.</span>
+            <button className="btn secondary" onClick={() => useC.getState().loadMessages(channel.id)}>
+              Tentar de novo
+            </button>
+          </div>
+        ) : phone ? (
+          <div className="msgs-loading" role="status" aria-label="Carregando mensagens">
+            <LoaderCircle size={30} className="spin" />
+          </div>
+        ) : (
+          // Computador: o contorno das mensagens no lugar delas enquanto chegam.
+          <div className="msgs-skeleton" role="status" aria-label="Carregando mensagens">
+            {SKELETON.map((widths, i) => (
+              <div key={i} className="sk-msg">
+                <span className="sk-pic" />
+                <span className="sk-lines">
+                  <i className="sk-name" />
+                  {widths.map((w, j) => (
+                    <i key={j} style={{ width: `${w}%` }} />
+                  ))}
+                </span>
+              </div>
+            ))}
+          </div>
+        ))}
       {messages.map((m, i) => {
         const prev = messages[i - 1];
         const newDay = !prev || new Date(prev.createdAt).toDateString() !== new Date(m.createdAt).toDateString();
@@ -1103,6 +1164,8 @@ export default function ChatView({ channel, variant = 'channel' }) {
     },
   };
   const dropHint = dragging && <div className="drop-overlay">Solte para enviar à conversa</div>;
+  // Celular: com a caixa vazia, o microfone; com algo escrito (ou um anexo), o enviar no lugar dele.
+  const hasDraft = Boolean(text.trim()) || attach.length > 0;
   const sendBtn = (
     <>
       <button
@@ -1114,22 +1177,26 @@ export default function ChatView({ channel, variant = 'channel' }) {
       >
         <Camera size={17} className="ico-blue" />
       </button>
-      <button
-        type="button"
-        className="gloss compose-ico"
-        title="Gravar mensagem de voz"
-        aria-label="Gravar mensagem de voz"
-        onClick={() => {
-          requestMic();
-          setRecording(true);
-        }}
-      >
-        <Mic size={17} className="ico-green" />
-      </button>
-      <button className="go send-btn" onClick={send} disabled={!text.trim() && !attach.length}>
-        <Send size={16} />
-        Enviar
-      </button>
+      {!(phone && hasDraft) && (
+        <button
+          type="button"
+          className="gloss compose-ico"
+          title="Gravar mensagem de voz"
+          aria-label="Gravar mensagem de voz"
+          onClick={() => {
+            requestMic();
+            setRecording(true);
+          }}
+        >
+          <Mic size={17} className="ico-green" />
+        </button>
+      )}
+      {(!phone || hasDraft) && (
+        <button className="go send-btn" onClick={send} disabled={!hasDraft}>
+          <Send size={16} />
+          Enviar
+        </button>
+      )}
     </>
   );
   // Gravando áudio: o gravador fica no lugar da caixa de texto.
@@ -1183,6 +1250,8 @@ export default function ChatView({ channel, variant = 'channel' }) {
     <>
       {camera && (
         <CameraCapture
+          rear={isAndroid}
+          fullScreen={isAndroid && phone}
           onClose={() => setCamera(false)}
           onDone={(file) => {
             setCamera(false);
@@ -1191,7 +1260,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
           }}
         />
       )}
-      {isTouch && (
+      {nativeCamera && (
         <input
           ref={cameraInput}
           type="file"
