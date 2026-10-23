@@ -1,6 +1,7 @@
 // Painel do administrador do app: usuários, servidores, tempo de uso por plataforma e os dias e
 // horários de mais acesso. Só o dono do app (e quem ele liberar) vê. Cada servidor abre com os
 // integrantes, as mensagens dos canais de texto e os arquivos. As tabelas ordenam por qualquer coluna.
+// Na aba Arquivos ficam as regras dos arquivos (tamanhos e validades), que só o dono muda.
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
@@ -20,11 +21,13 @@ import {
   Lock,
   Paperclip,
   Trash2,
+  HardDrive,
+  Sticker,
 } from 'lucide-react';
 import { useStore } from '../store.js';
 import Avatar, { UserName } from './Avatar.jsx';
 import { SceneArt } from './Aero.jsx';
-import { fmtSize, FileView, VoiceNote, parseFile, parseVoice } from './Files.jsx';
+import { fmtSize, ttlWords, FileView, VoiceNote, parseFile, parseVoice } from './Files.jsx';
 import { MessageSticker, parseSticker } from './Stickers.jsx';
 import { RichText, EmojiText } from './Emotes.jsx';
 import { plain } from '../lib/text.js';
@@ -854,6 +857,204 @@ function Viewers({ owner }) {
   );
 }
 
+// ---------- Regras dos arquivos ----------
+
+const DAY = 24 * HOUR;
+const TTL_CHOICES = [
+  [null, 'Nunca'],
+  [10 * 60 * 1000, '10 minutos'],
+  [30 * 60 * 1000, '30 minutos'],
+  [HOUR, '1 hora'],
+  [6 * HOUR, '6 horas'],
+  [DAY, '1 dia'],
+  [3 * DAY, '3 dias'],
+  [7 * DAY, '7 dias'],
+  [30 * DAY, '30 dias'],
+  [90 * DAY, '90 dias'],
+  [365 * DAY, '1 ano'],
+];
+/** Tamanhos em MB. */
+const NORMAL_SIZES = [5, 10, 25, 50, 100];
+const MAX_SIZES = [10, 25, 50, 100, 250, 500, 1024, 2048, 3072, 5120, 10240];
+const POOL_SIZES = [512, 1024, 2048, 3072, 5120, 10240, 20480, 51200, 102400];
+const STICKER_SIZES = [1, 2, 3, 5, 10];
+const fmtMb = (mb) => (mb >= 1024 ? `${+(mb / 1024).toFixed(1)} GB` : `${mb} MB`);
+
+function TtlPick({ id, value, onChange, disabled }) {
+  const known = TTL_CHOICES.some(([v]) => v === value);
+  return (
+    <select id={id} value={String(value ?? '')} disabled={disabled} onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}>
+      {!known && <option value={String(value)}>{ttlWords(value)}</option>}
+      {TTL_CHOICES.map(([v, l]) => (
+        <option key={l} value={String(v ?? '')}>
+          {l}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function SizePick({ id, value, options, onChange, disabled }) {
+  const list = options.includes(value) ? options : [...options, value].sort((a, b) => a - b);
+  return (
+    <select id={id} value={value} disabled={disabled} onChange={(e) => onChange(Number(e.target.value))}>
+      {list.map((v) => (
+        <option key={v} value={v}>
+          {fmtMb(v)}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/** Tamanhos e validades dos arquivos nas conversas privadas e nos servidores (o dono do app muda). */
+function FilePolicy() {
+  const st = useStore.getState();
+  const [data, setData] = useState(null); // { policy, canEdit, usage }
+  const [draft, setDraft] = useState(null);
+  const [applyAll, setApplyAll] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const load = (d) => {
+    setData(d);
+    setDraft(d.policy);
+    setApplyAll(false);
+  };
+  useEffect(() => {
+    st.adminFilePolicy().then(load, (e) => st.notify(e.message));
+  }, []);
+  if (!data || !draft) return <p className="kv">Carregando…</p>;
+  const ro = !data.canEdit;
+  const setSide = (side, key) => (v) => setDraft((p) => ({ ...p, [side]: { ...p[side], [key]: v } }));
+  const setTop = (key) => (v) => setDraft((p) => ({ ...p, [key]: v }));
+  const changed = applyAll || JSON.stringify(draft) !== JSON.stringify(data.policy);
+  const save = async () => {
+    setBusy(true);
+    try {
+      load(await st.saveFilePolicy(draft, applyAll));
+      st.notify('Regras dos arquivos salvas.', 'info');
+    } catch (e) {
+      st.notify(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const u = data.usage || {};
+  const column = (side, title, Icon) => {
+    const s = draft[side];
+    const id = (k) => `fp-${side}-${k}`;
+    const normal = Math.min(s.normalMaxMb, s.maxMb);
+    const tooBig = s.maxMb > s.normalMaxMb && s.maxMb > draft.bigMaxTotalMb;
+    return (
+      <section className="fp-side">
+        <h4>
+          <Icon size={15} /> {title}
+        </h4>
+        <label className="field" htmlFor={id('max')}>
+          <span>Maior arquivo aceito</span>
+          <SizePick id={id('max')} value={s.maxMb} options={MAX_SIZES} onChange={setSide(side, 'maxMb')} disabled={ro} />
+          {tooBig && <small className="fp-warn">Passa do espaço dos arquivos grandes ({fmtMb(draft.bigMaxTotalMb)}).</small>}
+        </label>
+        <label className="field" htmlFor={id('normal')}>
+          <span>Acima disto, o arquivo é grande</span>
+          <SizePick id={id('normal')} value={s.normalMaxMb} options={NORMAL_SIZES} onChange={setSide(side, 'normalMaxMb')} disabled={ro} />
+        </label>
+        <label className="field" htmlFor={id('file')}>
+          <span>{side === 'guild' ? 'Anexos e vídeos somem depois de (servidores novos)' : 'Anexos e vídeos somem depois de'}</span>
+          <TtlPick id={id('file')} value={s.fileTtlMs} onChange={setSide(side, 'fileTtlMs')} disabled={ro} />
+        </label>
+        <label className="field" htmlFor={id('voice')}>
+          <span>{side === 'guild' ? 'Mensagens de voz somem depois de (servidores novos)' : 'Mensagens de voz somem depois de'}</span>
+          <TtlPick id={id('voice')} value={s.voiceTtlMs} onChange={setSide(side, 'voiceTtlMs')} disabled={ro} />
+        </label>
+        <label className="field" htmlFor={id('big')}>
+          <span>Arquivos grandes somem depois de</span>
+          <TtlPick id={id('big')} value={s.bigTtlMs} onChange={setSide(side, 'bigTtlMs')} disabled={ro} />
+        </label>
+        <p className="kv fp-sum">
+          {s.maxMb <= normal
+            ? `Até ${fmtMb(s.maxMb)} por arquivo.`
+            : `Até ${fmtMb(normal)}: arquivo normal. De ${fmtMb(normal)} a ${fmtMb(s.maxMb)}: arquivo grande, ${
+                s.bigTtlMs ? `some em ${ttlWords(s.bigTtlMs)}` : 'não some sozinho'
+              }.`}
+          {side === 'guild' && ' Cada servidor pode mudar a validade dos anexos e das mensagens de voz nas configurações dele.'}
+        </p>
+      </section>
+    );
+  };
+  return (
+    <div className="fp">
+      <p className="kv">
+        {ro
+          ? 'Só o dono do app muda estas regras.'
+          : 'Valem para os arquivos enviados daqui em diante. Mudar a validade dos arquivos grandes vale também para os que já estão no servidor.'}
+      </p>
+      <div className="fp-cols">
+        {column('dm', 'Conversas privadas', MessageSquare)}
+        {column('guild', 'Servidores', Server)}
+      </div>
+      <div className="fp-cols">
+        <section className="fp-side">
+          <h4>
+            <HardDrive size={15} /> Arquivos grandes (somando os dois)
+          </h4>
+          <label className="field" htmlFor="fp-count">
+            <span>Quantos ficam no servidor ao mesmo tempo</span>
+            <input
+              id="fp-count"
+              type="number"
+              min={1}
+              max={1000}
+              value={draft.bigMaxCount}
+              disabled={ro}
+              onChange={(e) => setTop('bigMaxCount')(Math.max(1, Math.min(1000, Number(e.target.value) || 1)))}
+            />
+          </label>
+          <label className="field" htmlFor="fp-pool">
+            <span>Espaço que eles podem ocupar</span>
+            <SizePick id="fp-pool" value={draft.bigMaxTotalMb} options={POOL_SIZES} onChange={setTop('bigMaxTotalMb')} disabled={ro} />
+          </label>
+          <p className="kv fp-sum">
+            Agora: {u.bigCount ?? 0} {u.bigCount === 1 ? 'arquivo grande' : 'arquivos grandes'} ({fmtSize(u.bigTotal || 0)}) · {u.files ?? 0}{' '}
+            arquivos no total ({fmtSize(u.stored || 0)})
+            {u.diskFree != null && ` · disco: ${fmtSize(u.diskFree)} livres de ${fmtSize(u.diskTotal || 0)}`}.
+          </p>
+        </section>
+        <section className="fp-side">
+          <h4>
+            <Sticker size={15} /> Stickers
+          </h4>
+          <label className="field" htmlFor="fp-sticker">
+            <span>Tamanho máximo de um sticker (GIF animado também)</span>
+            <SizePick id="fp-sticker" value={draft.stickerMaxMb} options={STICKER_SIZES} onChange={setTop('stickerMaxMb')} disabled={ro} />
+          </label>
+          <p className="kv fp-sum">Os stickers ficam na coleção de cada pessoa e não somem sozinhos.</p>
+        </section>
+      </div>
+      {!ro && (
+        <div className="fp-save">
+          <label className="checkbox">
+            <input type="checkbox" checked={applyAll} onChange={(e) => setApplyAll(e.target.checked)} />
+            <span>
+              Passar a validade dos servidores para todos os servidores que já existem
+              <small className="check-hint">Sem marcar, ela vale só para os servidores criados daqui em diante.</small>
+            </span>
+          </label>
+          <div className="fp-buttons">
+            {changed && (
+              <button type="button" className="btn secondary" disabled={busy} onClick={() => load(data)}>
+                Desfazer
+              </button>
+            )}
+            <button type="button" className="btn" disabled={!changed || busy} onClick={save}>
+              {busy ? 'Salvando…' : 'Salvar'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const PERIODS = [
   [7, '7 dias'],
   [30, '30 dias'],
@@ -949,6 +1150,7 @@ export default function AdminPage() {
               ['uso', 'Uso e horários'],
               ['pessoas', `Pessoas (${data.users.length})`],
               ['servidores', `Servidores (${data.guilds.length})`],
+              ['arquivos', 'Arquivos'],
               ['acesso', 'Quem vê o painel'],
             ].map(([id, label]) => (
               <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? 'on' : ''} onClick={() => setTab(id)}>
@@ -967,6 +1169,7 @@ export default function AdminPage() {
             )}
             {tab === 'pessoas' && <UsersTable users={data.users} now={data.now} />}
             {tab === 'servidores' && <GuildsTable guilds={data.guilds} base={base} now={data.now} />}
+            {tab === 'arquivos' && <FilePolicy />}
             {tab === 'acesso' && <Viewers owner={access.owner} />}
           </section>
         </div>

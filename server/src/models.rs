@@ -223,6 +223,9 @@ pub struct Message {
     /// Mensagem com arquivo/áudio que expira: some (com o arquivo) neste horário.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
+    /// Fixada na conversa ou no canal (aparece no menu das fixadas para todos).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -245,7 +248,7 @@ pub fn group_reactions(rows: Vec<(String, String, String)>) -> std::collections:
     out
 }
 
-/// Preenche as reações (e a validade dos arquivos) de uma lista de mensagens.
+/// Preenche as reações (e a validade dos arquivos e quais estão fixadas) de uma lista de mensagens.
 pub async fn attach_reactions(db: &crate::db::Db, list: &mut [Message]) -> crate::db::DbResult<()> {
     if list.is_empty() {
         return Ok(());
@@ -263,6 +266,13 @@ pub async fn attach_reactions(db: &crate::db::Db, list: &mut [Message]) -> crate
     let mut grouped = group_reactions(rows);
     for m in list.iter_mut() {
         m.reactions = grouped.remove(&m.id).unwrap_or_default();
+    }
+    let ids: Vec<String> = list.iter().map(|m| m.id.clone()).collect();
+    let sql = format!("SELECT message_id FROM pins WHERE message_id IN ({marks})");
+    let pinned: std::collections::HashSet<String> =
+        db.query_all(&sql, libsql::params_from_iter(ids), |r| r.get::<String>(0)).await?.into_iter().collect();
+    for m in list.iter_mut() {
+        m.pinned = pinned.contains(&m.id);
     }
     // Arquivos e áudios com validade.
     let ids: Vec<String> = list.iter().filter(|m| is_file_message(&m.content)).map(|m| m.id.clone()).collect();
@@ -328,6 +338,36 @@ pub fn reply_preview(content: &str) -> String {
     short(&plain_text(content), 120)
 }
 
+/// O que a pesquisa procura numa mensagem: o texto sem formatação e, nos arquivos, também o nome.
+pub fn search_text(content: &str) -> String {
+    for prefix in ["[sticker:", "[arquivo:", "[voz:"] {
+        if let Some(rest) = content.strip_prefix(prefix) {
+            let (tag, caption) = rest.split_once("]\n").unwrap_or((rest.trim_end_matches(']'), ""));
+            let name = if prefix == "[arquivo:" { tag.splitn(4, ':').nth(3).unwrap_or_default() } else { "" };
+            return format!("{name}\n{}", plain_text(caption));
+        }
+    }
+    plain_text(content)
+}
+
+/// Minúsculas e sem acento, para comparar na pesquisa ("Ação" acha "acao").
+pub fn fold(text: &str) -> String {
+    text.chars()
+        .flat_map(char::to_lowercase)
+        .map(|c| match c {
+            'á' | 'à' | 'â' | 'ã' | 'ä' | 'å' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'í' | 'ì' | 'î' | 'ï' => 'i',
+            'ó' | 'ò' | 'ô' | 'õ' | 'ö' => 'o',
+            'ú' | 'ù' | 'û' | 'ü' => 'u',
+            'ç' => 'c',
+            'ñ' => 'n',
+            'ý' | 'ÿ' => 'y',
+            c => c,
+        })
+        .collect()
+}
+
 fn short(text: &str, max: usize) -> String {
     let mut out: String = text.chars().take(max).collect();
     if text.chars().count() > max {
@@ -368,6 +408,7 @@ pub fn message_from_row(r: &Row) -> DbResult<Message> {
         },
         reactions: Vec::new(),
         expires_at: None,
+        pinned: false,
     })
 }
 
@@ -412,6 +453,16 @@ oi"), "Sticker — oi");
         assert_eq!(message_file_id(&format!("[arquivo:{id}:1:a:b]
 texto")), Some(id));
         assert_eq!(message_file_id("[arquivo:nada]"), None);
+    }
+
+    #[test]
+    fn texto_da_pesquisa() {
+        let id = "0123456789abcdef0123456789abcdef";
+        assert_eq!(search_text(&format!("[arquivo:{id}:10:image/png:Férias.png]\nolha **isso**")), "Férias.png\nolha isso");
+        assert_eq!(search_text(&format!("[voz:{id}:3000:audio/webm]")), "\n");
+        assert_eq!(search_text("[sticker:emote::)]\noi"), "\noi");
+        assert_eq!(search_text("[cor=#d93f3a]Bom dia[/cor]"), "Bom dia");
+        assert_eq!(fold("AÇÃO Ñandu"), "acao nandu");
     }
 
     #[test]

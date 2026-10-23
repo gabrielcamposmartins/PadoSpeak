@@ -47,6 +47,7 @@ import { useUserMenu, GuildMenu, ChannelMenu } from './ContextMenus.jsx';
 import { SceneArt, BuddiesIcon } from './Aero.jsx';
 import { HomeSidebar, FriendsPage, DmView } from './Home.jsx';
 import ChatView from './ChatView.jsx';
+import ChatMenus from './MessageMenus.jsx';
 import VoiceView from './VoiceView.jsx';
 import { useServerPing } from './hooks.js';
 import MusicPanel from './MusicPanel.jsx';
@@ -898,7 +899,8 @@ function MemberList({ onClose, overlay = true }) {
 export function Main() {
   const view = useStore((s) => s.view);
   const guild = useStore((s) => s.guilds.find((g) => g.id === s.currentGuildId));
-  const canInvite = usePerms(useStore, guild?.id).invite;
+  const guildPerms = usePerms(useStore, guild?.id);
+  const canInvite = guildPerms.invite;
   const channel = useStore((s) => s.guildData[s.currentGuildId]?.channels.find((c) => c.id === s.view?.channelId));
   const onlineCount = useStore(
     (s) => (s.guildData[s.currentGuildId]?.members || []).filter((m) => s.online[m.id]).length,
@@ -976,6 +978,7 @@ export function Main() {
             </span>
           </div>
           <div className="head-tools">
+            {view?.type === 'text' && channel && <ChatMenus channel={channel} guildId={guild.id} canPin={guildPerms.pin} />}
             {canInvite && (
               <button className="gloss tool" onClick={() => openModal({ type: 'invite', guild })}>
                 <Link2 size={20} className="ico-blue" />

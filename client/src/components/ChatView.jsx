@@ -18,6 +18,9 @@ import {
   Eye,
   EyeOff,
   LoaderCircle,
+  Pin,
+  PinOff,
+  Star,
 } from 'lucide-react';
 import { useStore, sendSticker, sendFile, sendVoice, usePerms } from '../store.js';
 import { FileView, UploadList, parseFile, parseVoice, isBlockedFile, VoiceNote, ExpiresTag } from './Files.jsx';
@@ -310,7 +313,7 @@ function messageColor(author, guild) {
   return mine;
 }
 
-function Message({ m, head, canEdit: canEditText, canDelete, onReply, me, receipt, color, guildId }) {
+function Message({ m, head, canEdit: canEditText, canDelete, canPin, onReply, me, receipt, color, guildId }) {
   const sticker = parseSticker(m.content);
   const parsedFile = !sticker && parseFile(m.content);
   const voice = !sticker && !parsedFile && parseVoice(m.content);
@@ -325,6 +328,8 @@ function Message({ m, head, canEdit: canEditText, canDelete, onReply, me, receip
   const { editMessage, deleteMessage, setMark } = useC.getState();
   // Foto/vídeo que eu marquei como NSFW (só para mim) aparece borrado como os marcados por quem enviou.
   const nsfwMine = useC((s) => Boolean(s.marks.nsfw[m.id]));
+  // Favorita: só eu vejo (no menu da estrela, no alto da conversa).
+  const starred = useC((s) => Boolean(s.marks.star?.[m.id]));
   const file = parsedFile && (nsfwMine && !parsedFile.nsfw ? { ...parsedFile, nsfw: true } : parsedFile);
   const canMarkNsfw = parsedFile && !parsedFile.nsfw && /^(image|video)\//.test(parsedFile.mime);
   const mine = m.author.id === me.id;
@@ -504,6 +509,16 @@ function Message({ m, head, canEdit: canEditText, canDelete, onReply, me, receip
               </div>
             )}
             {m.editedAt && <span className="edited">(editado)</span>}
+            {m.pinned && (
+              <span className="msg-flag pinned" title="Fixada: está no menu do alfinete para todos">
+                <Pin size={11} /> fixada
+              </span>
+            )}
+            {starred && (
+              <span className="msg-flag starred" title="Favorita (só você vê)">
+                <Star size={11} fill="currentColor" />
+              </span>
+            )}
             {m.expiresAt && <ExpiresTag at={m.expiresAt} />}
             {receipt && <Receipt {...receipt} />}
           </div>
@@ -561,6 +576,32 @@ function Message({ m, head, canEdit: canEditText, canDelete, onReply, me, receip
           >
             <CornerUpLeft size={14} />
           </button>
+          <button
+            className={`icon-btn star-btn${starred ? ' on' : ''}`}
+            title={starred ? 'Tirar das favoritas' : 'Favoritar (só você vê, no menu da estrela)'}
+            aria-label={starred ? 'Tirar das favoritas' : 'Favoritar'}
+            aria-pressed={starred}
+            onClick={() => {
+              setToolsOpen(false);
+              setMark('star', m.id, !starred);
+            }}
+          >
+            <Star size={14} fill={starred ? 'currentColor' : 'none'} />
+          </button>
+          {canPin && (
+            <button
+              className={`icon-btn${m.pinned ? ' on' : ''}`}
+              title={m.pinned ? 'Desafixar' : 'Fixar para todos (fica no menu do alfinete)'}
+              aria-label={m.pinned ? 'Desafixar' : 'Fixar'}
+              aria-pressed={Boolean(m.pinned)}
+              onClick={() => {
+                setToolsOpen(false);
+                useC.getState().setPin(m.id, !m.pinned);
+              }}
+            >
+              {m.pinned ? <PinOff size={14} /> : <Pin size={14} />}
+            </button>
+          )}
           {canEdit && (
             <button
               className="icon-btn"
@@ -676,7 +717,10 @@ export default function ChatView({ channel, variant = 'channel' }) {
   const hasMore = useC((s) => s.hasMore[channel.id]);
   const typing = useC((s) => s.typing[channel.id]);
   const me = useC((s) => s.me) || NOBODY;
-  const isAdmin = usePerms(useC, channel.guildId).admin;
+  const perms = usePerms(useC, channel.guildId);
+  const isAdmin = perms.admin;
+  // Nas conversas privadas os dois fixam; nos servidores, quem tem a permissão.
+  const canPin = !channel.guildId || perms.pin;
   const users = useC((s) => s.users);
   const reads = useC((s) => s.reads[channel.id]);
   const guild = useC((s) => (channel.guildId ? s.guilds.find((g) => g.id === channel.guildId) : null));
@@ -877,6 +921,40 @@ export default function ChatView({ channel, variant = 'channel' }) {
     prevHeight.current = el.scrollHeight;
   }, [messages]);
 
+  // Pesquisa, fixadas e favoritas: leva até a mensagem (carregando as anteriores, se precisar) e pisca.
+  const jump = useC((s) => (s.jumpTarget?.channelId === channel.id ? s.jumpTarget : null));
+  const jumpTried = useRef(null);
+  const [jumpTick, setJumpTick] = useState(0);
+  useEffect(() => {
+    if (!jump || !loaded) return;
+    const clear = () => useC.setState((s) => (s.jumpTarget === jump ? { jumpTarget: null } : {}));
+    const el = document.getElementById(`msg-${jump.id}`);
+    if (el) {
+      stickToBottom.current = false;
+      el.scrollIntoView({ block: 'center' });
+      el.classList.remove('flash');
+      requestAnimationFrame(() => el.classList.add('flash'));
+      setTimeout(() => el.classList.remove('flash'), 1800);
+      return clear();
+    }
+    if (jumpTried.current === jump) {
+      clear();
+      return useStore.getState().notify('Essa mensagem não está mais na conversa.', 'info');
+    }
+    jumpTried.current = jump;
+    stickToBottom.current = false;
+    useC
+      .getState()
+      .loadUntil(channel.id, jump.createdAt)
+      .then(
+        () => setJumpTick((t) => t + 1),
+        (e) => {
+          clear();
+          useStore.getState().notify(e.message);
+        },
+      );
+  }, [jump, loaded, messages, jumpTick]);
+
   // Stickers e imagens terminam de carregar depois e aumentam a conversa: continua no fim.
   const onMediaLoad = () => {
     const el = listRef.current;
@@ -893,7 +971,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
   async function send() {
     const content = text.trim();
     if (attach.length) {
-      const big = oversized(attach, useC.getState().config);
+      const big = oversized(attach, useC.getState().config, dm);
       if (big.length) return useStore.getState().notify(`${big.map((f) => f.name).join(', ')} é grande demais para enviar.`);
       if (content.length > CAPTION_MAX)
         return useStore.getState().notify(`O texto junto com um anexo pode ter até ${CAPTION_MAX} caracteres.`);
@@ -1086,6 +1164,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
               head={head || Boolean(m.replyTo)}
               canEdit={m.author.id === me.id}
               canDelete={m.author.id === me.id || isAdmin}
+              canPin={canPin}
               onReply={startReply}
               me={me}
               receipt={receiptOf(m)}
@@ -1295,6 +1374,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
             onRemove={(i) => setAttach((a) => a.filter((_, j) => j !== i))}
             onClear={() => setAttach([])}
             onNsfw={toggleNsfw}
+            dm
           />
           {showTools && (
             <div className="panel-head tools-head">

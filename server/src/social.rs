@@ -53,13 +53,13 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/me/marks/{kind}/{id}", put(add_mark).delete(remove_mark))
 }
 
-// ---------- Marcas só para mim: "excluir para mim" e "marcar como NSFW" ----------
+// ---------- Marcas só para mim: "excluir para mim", "marcar como NSFW" e favoritar ----------
 
-const MARK_KINDS: [&str; 2] = ["hidden", "nsfw"];
+const MARK_KINDS: [&str; 3] = ["hidden", "nsfw", "star"];
 /// Quantas marcas cada pessoa guarda (as mais antigas saem).
 const MAX_MARKS: i64 = 20_000;
 
-/// `{ hidden: [ids], nsfw: [ids] }` das minhas marcas.
+/// `{ hidden: [ids], nsfw: [ids], star: [ids] }` das minhas marcas.
 async fn list_marks(State(app): AppState, AuthUser(me, _): AuthUser) -> ApiResult<Json<Value>> {
     let rows = app
         .db
@@ -67,7 +67,7 @@ async fn list_marks(State(app): AppState, AuthUser(me, _): AuthUser) -> ApiResul
             Ok((r.get::<String>(0)?, r.get::<String>(1)?))
         })
         .await?;
-    let mut out = json!({ "hidden": [], "nsfw": [] });
+    let mut out = json!({ "hidden": [], "nsfw": [], "star": [] });
     for (kind, id) in rows {
         if let Some(list) = out.get_mut(&kind).and_then(Value::as_array_mut) {
             list.push(Value::String(id));
@@ -687,17 +687,6 @@ async fn hide_dm(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): Path
 }
 
 /// Histórico de uma DM (chamado pela rota de mensagens quando o id não é de um canal de servidor).
-pub async fn dm_messages(app: &App, dm_id: &str, before: i64, limit: i64) -> ApiResult<Vec<Message>> {
-    let sql = format!("{DM_MESSAGE_SELECT} WHERE m.dm_id = ?1 AND m.created_at < ?2 ORDER BY m.created_at DESC LIMIT ?3");
-    let mut list = app.db.query_all(&sql, libsql::params![dm_id, before, limit], message_from_row).await?;
-    for m in &mut list {
-        open_message(&app.db, m);
-    }
-    attach_reactions(&app.db, &mut list).await?;
-    list.reverse();
-    Ok(list)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -26,6 +26,7 @@ import {
   LogOut,
   Mic,
   Timer,
+  Pin,
   Check,
   Settings2,
   Users,
@@ -87,7 +88,7 @@ import LatencyChart from './LatencyChart.jsx';
 import { TitleBar } from './Aero.jsx';
 import { FormattedText, Floating, TEXT_COLORS } from './Emotes.jsx';
 import FormatTools, { formatKey, usePalette, DEFAULT_PALETTE, SHORTCUTS, MOD } from './FormatTools.jsx';
-import { fmtSize, fmtLeft, useNow, DownloadLink } from './Files.jsx';
+import { fmtSize, fmtLeft, useNow, DownloadLink, ttlWords } from './Files.jsx';
 import { plain, visibleLength } from '../lib/text.js';
 import changelogMd from '../changelog.md?raw';
 import { useLoginLock, LoginLock } from './LoginLock.jsx';
@@ -2674,7 +2675,16 @@ function FileTtl({ f, onChanged }) {
   const btn = useRef(null);
   const st = useStore.getState();
   if (f.big)
-    return <IconBtn icon={Timer} label="Arquivo grande: some 10 minutos depois do envio" tip="left" disabled className="mini-ico" size={14} />;
+    return (
+      <IconBtn
+        icon={Timer}
+        label={`Arquivo grande: ${f.expiresAt ? `some em ${fmtLeft(f.expiresAt)}` : 'não some sozinho'} (a validade dos grandes é a do painel do administrador do app)`}
+        tip="left"
+        disabled
+        className="mini-ico"
+        size={14}
+      />
+    );
   return (
     <span className="tool-wrap">
       <span ref={btn}>
@@ -2753,9 +2763,9 @@ function GuildFiles({ guildId }) {
           </p>
           {files.big && (
             <p className="kv gs-big">
-              <Timer size={13} /> Acima de {fmtSize(files.maxFile)}: o arquivo fica só {Math.round(files.big.ttlMs / 60000)} minutos,
-              até {files.big.maxCount} de cada vez somando {fmtSize(files.big.maxTotal)} (agora: {files.big.count},{' '}
-              {fmtSize(files.big.total)}).
+              <Timer size={13} /> Acima de {fmtSize(files.maxFile)}, o arquivo é grande:{' '}
+              {files.big.ttlMs ? `fica só ${ttlWords(files.big.ttlMs)}` : 'não some sozinho'}, até {files.big.maxCount} de cada vez somando{' '}
+              {fmtSize(files.big.maxTotal)} (agora: {files.big.count}, {fmtSize(files.big.total)}).
             </p>
           )}
           {files.files.length === 0 ? (
@@ -2833,6 +2843,7 @@ const PERM_OPTIONS = [
   { bit: PERM.ADMIN, flag: 'admin', label: 'Administrador', hint: 'Tudo, menos excluir o servidor', icon: Shield },
   { bit: PERM.INVITE, flag: 'invite', label: 'Convidar pessoas', hint: 'Vê e compartilha o convite', icon: UserPlus },
   { bit: PERM.CHANNELS, flag: 'channels', label: 'Criar e editar canais', hint: 'Cria, renomeia e exclui canais', icon: Hash },
+  { bit: PERM.PIN, flag: 'pin', label: 'Fixar mensagens', hint: 'Fixa e desafixa mensagens nos canais de texto', icon: Pin },
   { bit: PERM.MUTE, flag: 'mute', label: 'Silenciar na voz', hint: 'Silencia alguém para todos no canal de voz', icon: MicOff },
   { bit: PERM.DISCONNECT, flag: 'disconnect', label: 'Desconectar da voz', hint: 'Tira alguém do canal de voz', icon: PhoneOff },
   { bit: PERM.MOVE, flag: 'move', label: 'Mover entre canais', hint: 'Move alguém para outro canal de voz', icon: ArrowRightLeft },
@@ -2848,7 +2859,7 @@ const PERM_OPTIONS = [
 const opt = (bit) => PERM_OPTIONS.find((o) => o.bit === bit);
 /** As permissões em categorias, para a tela de permissões. */
 const PERM_GROUPS = [
-  { id: 'geral', title: 'Geral', icon: Settings2, perms: [PERM.ADMIN, PERM.INVITE, PERM.CHANNELS].map(opt) },
+  { id: 'geral', title: 'Geral', icon: Settings2, perms: [PERM.ADMIN, PERM.INVITE, PERM.CHANNELS, PERM.PIN].map(opt) },
   { id: 'voz', title: 'Voz', icon: Mic, perms: [PERM.MUTE, PERM.DISCONNECT, PERM.MOVE, PERM.SOUNDS].map(opt) },
   {
     id: 'musica',
@@ -3333,6 +3344,18 @@ function describe(e, channelName) {
       return (
         <>
           {a} editou em #{ch}: <span className="log-text old">{d.before}</span> → <span className="log-text">{d.text}</span>
+        </>
+      );
+    case 'message.pin':
+      return (
+        <>
+          {a} fixou em #{ch}: <span className="log-text">{d.text}</span>
+        </>
+      );
+    case 'message.unpin':
+      return (
+        <>
+          {a} desafixou em #{ch}: <span className="log-text">{d.text}</span>
         </>
       );
     case 'message.delete':

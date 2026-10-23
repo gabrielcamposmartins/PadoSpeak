@@ -7,7 +7,9 @@ import { EMOTES, Emote, Floating } from './Emotes.jsx';
 import { useConn } from './conn.jsx';
 import { magicEmoteKind, playMagic } from '../lib/magic.js';
 
+/** Tamanho máximo de um sticker se o servidor não disser (o administrador do app escolhe no painel). */
 const MAX_BYTES = 2 * 1024 * 1024;
+const mbText = (bytes) => `${Math.round(bytes / 1024 / 1024)} MB`;
 
 /** `{ emote }` ou `{ id }` (e o texto que foi junto) se a mensagem for um sticker. */
 export function parseSticker(content) {
@@ -125,6 +127,7 @@ export function MessageSticker({ sticker }) {
 /** Janela de stickers: abas (embaixo) "Padrão" (emoticons Aero grandes) e "Meus" (coleção, com GIFs). */
 export function StickerPicker({ anchorRef, onPick, onClose }) {
   const home = useStickerHome();
+  const maxBytes = home((s) => s.config?.files?.stickerMax) || MAX_BYTES;
   const mine = home((s) => s.stickers);
   const base = home((s) => s.baseUrl);
   const [tab, setTab] = useState('padrao');
@@ -142,8 +145,8 @@ export function StickerPicker({ anchorRef, onPick, onClose }) {
     setBusy(true);
     try {
       for (const f of files) {
-        if (f.size > MAX_BYTES) {
-          useStore.getState().notify(`${f.name}: o sticker deve ter até 2 MB`);
+        if (f.size > maxBytes) {
+          useStore.getState().notify(`${f.name}: o sticker deve ter até ${mbText(maxBytes)}`);
           continue;
         }
         await home.getState().uploadSticker(f, f.name.replace(/\.[^.]+$/, ''));
@@ -170,7 +173,7 @@ export function StickerPicker({ anchorRef, onPick, onClose }) {
           <button
             type="button"
             className="sticker-tile add"
-            title="Adicionar sticker (PNG, JPEG, WebP ou GIF animado, até 2 MB)"
+            title={`Adicionar sticker (PNG, JPEG, WebP ou GIF animado, até ${mbText(maxBytes)})`}
             aria-label="Adicionar sticker"
             onClick={() => fileRef.current?.click()}
             disabled={busy}
@@ -205,7 +208,7 @@ export function StickerPicker({ anchorRef, onPick, onClose }) {
         </div>
       )}
       <div className="popover-hint">
-        {tab === 'padrao' ? 'Clique para escolher (dá para escrever algo junto antes de mandar).' : 'Seus stickers valem em todas as conversas · GIF animado também · até 2 MB.'}
+        {tab === 'padrao' ? 'Clique para escolher (dá para escrever algo junto antes de mandar).' : `Seus stickers valem em todas as conversas · GIF animado também · até ${mbText(maxBytes)}.`}
       </div>
       {/* Abas embaixo: no celular ficam ao alcance do polegar. */}
       <div className="aero-tabs bottom" role="tablist" aria-label="Stickers">

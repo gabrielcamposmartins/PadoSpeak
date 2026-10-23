@@ -1049,6 +1049,7 @@ impl Hub {
                 return err("Erro ao excluir");
             }
             let _ = app.db.execute("DELETE FROM message_reactions WHERE message_id = ?1", [message_id]).await;
+            let _ = app.db.execute("DELETE FROM pins WHERE message_id = ?1", [message_id]).await;
             crate::files::delete_message_file(app, &sealed, &dm_id).await;
             self.to_users(&users, "message:deleted", json!({ "id": message_id, "channelId": dm_id }));
         }
@@ -1087,6 +1088,7 @@ impl Hub {
                     reply: None,
                     reactions: Vec::new(),
                     expires_at: None,
+                    pinned: false,
                 };
                 let reply_to = str_field("replyTo");
                 let ch = channel_with_access(app, &channel_id, &user.id).await;
@@ -1228,6 +1230,7 @@ impl Hub {
                         return err("Erro ao excluir");
                     }
                     let _ = app.db.execute("DELETE FROM message_reactions WHERE message_id = ?1", [message_id.as_str()]).await;
+                    let _ = app.db.execute("DELETE FROM pins WHERE message_id = ?1", [message_id.as_str()]).await;
                     crate::files::delete_message_file(app, &sealed, &channel_id).await;
                     self.to_channel(&guild_id, &channel_id, "message:deleted", json!({ "id": message_id, "channelId": channel_id }));
                     let mut entry = crate::audit::Entry::new(&guild_id, "message.delete", &user.id)

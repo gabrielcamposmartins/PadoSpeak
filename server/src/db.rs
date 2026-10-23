@@ -505,6 +505,24 @@ UPDATE guilds SET default_perms = default_perms | 8192;
 UPDATE guild_members SET perms = perms | 8192 WHERE custom = 1;
 "#,
     ),
+    (
+        24,
+        r#"
+-- Mensagens fixadas numa conversa privada ou num canal de texto (`channel_id` = o canal ou a conversa).
+CREATE TABLE IF NOT EXISTS pins (
+  message_id TEXT PRIMARY KEY,
+  channel_id TEXT NOT NULL,
+  pinned_by TEXT NOT NULL,
+  pinned_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pins_channel ON pins(channel_id, pinned_at);
+-- Permissão de fixar mensagens (16384), liberada para todos como as outras do dia a dia.
+UPDATE guilds SET default_perms = default_perms | 16384;
+UPDATE guild_members SET perms = perms | 16384 WHERE custom = 1;
+-- Favoritas: marca só de quem favoritou (`message_marks.kind = 'star'`), listada pela data.
+CREATE INDEX IF NOT EXISTS idx_marks_kind ON message_marks(user_id, kind, created_at);
+"#,
+    ),
 ];
 
 impl Db {

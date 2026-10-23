@@ -22,6 +22,7 @@ import { isDesktop } from '../lib/env.js';
 import Avatar, { Orb, useUser, usePresence, useActivity, UserName, STATUS_INFO, colorClass, colorStyle } from './Avatar.jsx';
 import { useUserMenu } from './ContextMenus.jsx';
 import ChatView from './ChatView.jsx';
+import ChatMenus from './MessageMenus.jsx';
 import VoiceView from './VoiceView.jsx';
 import { FormattedText } from './Emotes.jsx';
 import { useLayout } from '../lib/layout.js';
@@ -874,6 +875,7 @@ function DmWindow({ dmId }) {
           <UserRound size={20} className="ico-purple" />
           Perfil
         </button>
+        <ChatMenus channel={channel} canPin align="left" />
         {ringing && (
           <span className="dm-ringing">
             <Phone size={14} /> <UserName user={recipient} /> está numa chamada com você.

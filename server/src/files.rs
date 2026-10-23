@@ -15,8 +15,9 @@
 //!
 //! Validade: cada servidor escolhe quanto tempo os arquivos e as mensagens de voz novas ficam
 //! (`guilds.file_ttl_ms` / `voice_ttl_ms`), e os administradores mudam a de cada arquivo. Arquivos
-//! maiores que o limite normal entram como "grandes": ficam só 10 minutos, no máximo 3 de cada vez e
-//! somando até 3 GB. Ao expirar, o arquivo e a mensagem que o mostrava somem.
+//! maiores que o limite normal entram como "grandes": vão direto para o disco e seguem a validade dos
+//! grandes. Os tamanhos, a validade nas conversas privadas e a dos grandes são as regras que o
+//! administrador do app escolhe no painel (`Policy`). Ao expirar, o arquivo e a mensagem somem.
 use crate::api::{channel_with_access, ApiError, AuthUser};
 use crate::auth::user_from_token;
 use crate::host::App;
@@ -41,15 +42,135 @@ const CHUNK: usize = 64 * 1024;
 /// Pedaço cifrado: nonce (12) + conteúdo + tag (16).
 const SEALED_CHUNK: usize = CHUNK + 28;
 
-/// Tamanho máximo de um arquivo (MB), ajustável por `MAX_UPLOAD_MB`.
-pub fn max_bytes() -> usize {
-    std::env::var("MAX_UPLOAD_MB").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(25).clamp(1, 500) * 1024 * 1024
+const MB: u64 = 1024 * 1024;
+
+/// Limite padrão de um arquivo normal (MB), ajustável por `MAX_UPLOAD_MB`.
+fn env_normal_mb() -> u64 {
+    std::env::var("MAX_UPLOAD_MB").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(25).clamp(1, NORMAL_MAX_MB)
 }
 
-/// Arquivos grandes (acima de `max_bytes`): validade fixa, quantos de cada vez e quanto somam.
-pub const BIG_TTL_MS: i64 = 10 * 60 * 1000;
-pub const BIG_MAX_COUNT: usize = 3;
-pub const BIG_MAX_TOTAL: u64 = 3 * 1024 * 1024 * 1024;
+/// O arquivo normal chega inteiro na memória: não passa disto.
+const NORMAL_MAX_MB: u64 = 100;
+/// Maior arquivo que dá para escolher no painel (o nginx da VM aceita um pouco mais).
+const FILE_MAX_MB: u64 = 10 * 1024;
+const STICKER_MAX_MB: u64 = 10;
+/// Corpo máximo do envio de sticker (o tamanho escolhido no painel é conferido depois).
+pub const STICKER_BODY_MAX: usize = (STICKER_MAX_MB * MB) as usize + 64 * 1024;
+
+/// Regras de um lado: conversas privadas ou servidores.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Scope {
+    /// Até aqui (MB) o arquivo é normal; acima, é "grande": vai direto para o disco, conta no limite
+    /// dos grandes e segue `big_ttl_ms`.
+    pub normal_max_mb: u64,
+    /// Maior arquivo aceito (MB).
+    pub max_mb: u64,
+    /// Validade dos arquivos e das mensagens de voz (`None` = não somem). Nos servidores é o padrão
+    /// dos servidores novos: cada servidor escolhe a sua nas configurações dele.
+    pub file_ttl_ms: Option<i64>,
+    pub voice_ttl_ms: Option<i64>,
+    /// Validade dos arquivos grandes (`None` = não somem).
+    pub big_ttl_ms: Option<i64>,
+}
+
+impl Default for Scope {
+    fn default() -> Self {
+        Scope { normal_max_mb: env_normal_mb(), max_mb: 3 * 1024, file_ttl_ms: None, voice_ttl_ms: None, big_ttl_ms: Some(10 * 60 * 1000) }
+    }
+}
+
+/// Regras dos arquivos escolhidas pelo administrador do app no painel (`settings.file_policy`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Policy {
+    pub dm: Scope,
+    pub guild: Scope,
+    /// Arquivos grandes guardados ao mesmo tempo (somando os dois lados) e quanto podem ocupar (MB).
+    pub big_max_count: u64,
+    pub big_max_total_mb: u64,
+    /// Maior sticker (MB).
+    pub sticker_max_mb: u64,
+}
+
+impl Default for Policy {
+    fn default() -> Self {
+        Policy {
+            dm: Scope::default(),
+            guild: Scope { file_ttl_ms: Some(crate::api::DEFAULT_FILE_TTL_MS), ..Scope::default() },
+            big_max_count: 3,
+            big_max_total_mb: 3 * 1024,
+            sticker_max_mb: 2,
+        }
+    }
+}
+
+impl Policy {
+    pub async fn load(app: &App) -> Policy {
+        app.db
+            .get_setting("file_policy")
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_str::<Policy>(&v).ok())
+            .filter(|p| p.check().is_ok())
+            .unwrap_or_default()
+    }
+
+    pub fn scope(&self, guild: bool) -> &Scope {
+        if guild { &self.guild } else { &self.dm }
+    }
+
+    /// Confere os valores vindos do painel.
+    pub fn check(&self) -> Result<(), String> {
+        let ttl_ok = |t: Option<i64>| t.is_none_or(|ms| (60_000..=crate::api::MAX_TTL_MS).contains(&ms));
+        if !(1..=1000).contains(&self.big_max_count) {
+            return Err("Arquivos grandes ao mesmo tempo: de 1 a 1000".into());
+        }
+        if !(100..=100 * 1024).contains(&self.big_max_total_mb) {
+            return Err("O espaço dos arquivos grandes vai de 100 MB a 100 GB".into());
+        }
+        if !(1..=STICKER_MAX_MB).contains(&self.sticker_max_mb) {
+            return Err(format!("O sticker pode ter de 1 a {STICKER_MAX_MB} MB"));
+        }
+        for (s, label) in [(&self.dm, "Nas conversas privadas"), (&self.guild, "Nos servidores")] {
+            if !(1..=NORMAL_MAX_MB).contains(&s.normal_max_mb) {
+                return Err(format!("{label}, o limite dos arquivos normais vai de 1 a {NORMAL_MAX_MB} MB"));
+            }
+            if !(1..=FILE_MAX_MB).contains(&s.max_mb) {
+                return Err(format!("{label}, o maior arquivo vai de 1 MB a {} GB", FILE_MAX_MB / 1024));
+            }
+            if s.max_mb > s.normal_max_mb && s.max_mb > self.big_max_total_mb {
+                return Err(format!("{label}, o maior arquivo passa do espaço reservado aos arquivos grandes"));
+            }
+            if ![s.file_ttl_ms, s.voice_ttl_ms, s.big_ttl_ms].into_iter().all(ttl_ok) {
+                return Err(format!("{label}, uma das validades é inválida"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// "10 minutos", "1 hora", "7 dias".
+pub fn ttl_words(ms: i64) -> String {
+    let (n, one, many) = if ms % 86_400_000 == 0 {
+        (ms / 86_400_000, "dia", "dias")
+    } else if ms % 3_600_000 == 0 {
+        (ms / 3_600_000, "hora", "horas")
+    } else {
+        ((ms / 60_000).max(1), "minuto", "minutos")
+    };
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// Tamanho para as mensagens: "500 MB", "1.5 GB".
+fn size_words(b: u64) -> String {
+    if b >= 1024 * MB {
+        format!("{:.1} GB", b as f64 / (1024 * MB) as f64)
+    } else {
+        format!("{} MB", b / MB)
+    }
+}
 /// Espaço que sempre fica livre no disco (o banco e o sistema precisam).
 const DISK_RESERVE: u64 = 512 * 1024 * 1024;
 /// Mensagem de voz: até 20 MB (uns 10 minutos de Opus).
@@ -59,8 +180,21 @@ const VOICE_MAX: usize = 20 * 1024 * 1024;
 static BIG_UPLOADS: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
 
 /// Limites que o app mostra antes de enviar.
-pub fn limits() -> Value {
-    json!({ "maxFile": max_bytes(), "bigTtlMs": BIG_TTL_MS, "bigMaxCount": BIG_MAX_COUNT, "bigMaxTotal": BIG_MAX_TOTAL })
+pub async fn limits(app: &App) -> Value {
+    let p = Policy::load(app).await;
+    let side = |s: &Scope| {
+        json!({
+            "maxFile": s.normal_max_mb.min(s.max_mb) * MB, "maxSize": s.max_mb * MB,
+            "fileTtlMs": s.file_ttl_ms, "voiceTtlMs": s.voice_ttl_ms, "bigTtlMs": s.big_ttl_ms,
+        })
+    };
+    json!({
+        // Os de fora são dos apps antigos (valem os dos servidores).
+        "maxFile": p.guild.normal_max_mb.min(p.guild.max_mb) * MB, "bigTtlMs": p.guild.big_ttl_ms,
+        "bigMaxCount": p.big_max_count, "bigMaxTotal": p.guild.max_mb * MB,
+        "bigPool": p.big_max_total_mb * MB, "stickerMax": p.sticker_max_mb * MB,
+        "dm": side(&p.dm), "guild": side(&p.guild),
+    })
 }
 
 /// Extensões de programas e scripts: só entram dentro de um .zip.
@@ -258,6 +392,53 @@ async fn guild_ttl(app: &App, guild_id: &str, voice: bool) -> Option<i64> {
         .flatten()
 }
 
+/// Situação do disco para o painel: arquivos grandes guardados, total guardado e espaço livre.
+pub async fn usage(app: &App) -> Value {
+    let (big_count, big_total) = big_usage(app).await;
+    let stored = app
+        .db
+        .query_one("SELECT COUNT(*), COALESCE(SUM(COALESCE(stored, size)), 0) FROM files", (), |r| Ok((r.get::<i64>(0)?, r.get::<i64>(1)?)))
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or((0, 0));
+    let folder = dir(app);
+    let _ = tokio::fs::create_dir_all(&folder).await;
+    json!({
+        "bigCount": big_count, "bigTotal": big_total, "files": stored.0, "stored": stored.1,
+        "diskFree": fs4::available_space(&folder).ok(), "diskTotal": fs4::total_space(&folder).ok(),
+    })
+}
+
+/// A validade dos arquivos grandes mudou no painel: vale também para os que já estão no servidor
+/// (contada a partir do envio). Avisa quem está com a conversa aberta.
+pub async fn retime_big(app: &App, guild: bool, ttl: Option<i64>) {
+    let side = if guild { "guild_id IS NOT NULL" } else { "guild_id IS NULL" };
+    let rows = app
+        .db
+        .query_all(
+            &format!("SELECT id, created_at, guild_id, channel_id, message_id FROM files WHERE big = 1 AND {side}"),
+            (),
+            |r| Ok((r.get::<String>(0)?, r.get::<i64>(1)?, r.get::<Option<String>>(2)?, r.get::<String>(3)?, r.get::<Option<String>>(4)?)),
+        )
+        .await
+        .unwrap_or_default();
+    for (id, created_at, guild_id, channel_id, message_id) in rows {
+        let expires_at = ttl.map(|t| created_at + t);
+        let _ = app.db.execute("UPDATE files SET expires_at = ?1 WHERE id = ?2", libsql::params![expires_at, id.as_str()]).await;
+        let Some(message_id) = message_id else { continue };
+        let d = json!({ "id": message_id, "channelId": channel_id, "expiresAt": expires_at });
+        match &guild_id {
+            Some(g) => app.hub.to_channel(g, &channel_id, "message:expires", d),
+            None => {
+                if let Some(dm) = crate::social::dm_by_id(app, &channel_id).await {
+                    app.hub.to_users(&dm.users(), "message:expires", d);
+                }
+            }
+        }
+    }
+}
+
 /// Arquivos grandes guardados agora (quantos e quanto somam) — sem contar os que estão chegando.
 async fn big_usage(app: &App) -> (usize, u64) {
     app.db
@@ -279,11 +460,12 @@ impl Drop for BigSlot {
 }
 
 /// Reserva uma vaga para um arquivo grande de `size` bytes, ou diz por que não dá.
-async fn reserve_big(app: &App, id: &str, size: u64) -> Result<BigSlot, ApiError> {
-    let gb = |b: u64| format!("{:.1} GB", b as f64 / 1024.0 / 1024.0 / 1024.0);
+async fn reserve_big(app: &App, id: &str, size: u64, policy: &Policy, scope: &Scope) -> Result<BigSlot, ApiError> {
+    let gb = size_words;
     let refuse = |m: String| ApiError(StatusCode::PAYLOAD_TOO_LARGE, m);
-    if size > BIG_MAX_TOTAL {
-        return Err(refuse(format!("O arquivo passa de {}", gb(BIG_MAX_TOTAL))));
+    let (max_count, max_total) = (policy.big_max_count as usize, policy.big_max_total_mb * MB);
+    if size > scope.max_mb * MB {
+        return Err(refuse(format!("O arquivo passa de {}, o máximo aqui", gb(scope.max_mb * MB))));
     }
     let (count, total) = big_usage(app).await;
     let folder = dir(app);
@@ -293,15 +475,17 @@ async fn reserve_big(app: &App, id: &str, size: u64) -> Result<BigSlot, ApiError
     let count = count + list.len();
     let total = total + list.iter().map(|(_, s)| s).sum::<u64>();
     let pending: u64 = list.iter().map(|(_, s)| s).sum();
-    if count >= BIG_MAX_COUNT {
-        return Err(refuse(format!(
-            "Já há {BIG_MAX_COUNT} arquivos grandes no servidor. Eles somem 10 minutos depois de enviados; tente daqui a pouco."
-        )));
+    let wait = match scope.big_ttl_ms {
+        Some(ms) => format!("Eles somem {} depois de enviados; tente daqui a pouco.", ttl_words(ms)),
+        None => "Apague algum deles para enviar outro.".into(),
+    };
+    if count >= max_count {
+        return Err(refuse(format!("Já há {max_count} arquivos grandes no servidor. {wait}")));
     }
-    if total + size > BIG_MAX_TOTAL {
+    if total + size > max_total {
         return Err(refuse(format!(
-            "Os arquivos grandes no servidor somariam mais de {} (já há {} ocupados). Tente daqui a pouco.",
-            gb(BIG_MAX_TOTAL),
+            "Os arquivos grandes no servidor somariam mais de {} (já há {} ocupados). {wait}",
+            gb(max_total),
             gb(total)
         )));
     }
@@ -358,15 +542,22 @@ async fn upload(
     let declared: Option<u64> =
         headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok());
     let sent_gzip = q.encoding.as_deref() == Some("gzip");
-    let limit = if voice { VOICE_MAX } else { max_bytes() };
+    let policy = Policy::load(&app).await;
+    let scope = policy.scope(guild_id.is_some());
+    let normal = (scope.normal_max_mb.min(scope.max_mb) * MB) as usize;
+    let limit = if voice { VOICE_MAX } else { normal };
     if declared.is_some_and(|n| n as usize > limit) && !voice && !sent_gzip {
-        return upload_big(&app, &me, name, channel_id, guild_id, declared.unwrap_or_default(), nsfw, body).await;
+        if scope.max_mb <= scope.normal_max_mb {
+            return Err(ApiError(StatusCode::PAYLOAD_TOO_LARGE, format!("O arquivo passa de {}, o máximo aqui", size_words(normal as u64))));
+        }
+        let size = declared.unwrap_or_default();
+        return upload_big(&app, &me, name, channel_id, guild_id, size, nsfw, body, &policy).await;
     }
     let too_big = || {
         if voice {
             bad("A mensagem de voz ficou grande demais")
         } else {
-            bad(&format!("O arquivo passa de {} MB", max_bytes() / 1024 / 1024))
+            bad(&format!("O arquivo passa de {}", size_words(normal as u64)))
         }
     };
     let packed_body = collect_limited(body, limit).await?.ok_or_else(too_big)?;
@@ -418,7 +609,8 @@ async fn upload(
     let now = crate::now_ms();
     let ttl = match &guild_id {
         Some(g) => guild_ttl(&app, g, voice).await,
-        None => None,
+        None if voice => scope.voice_ttl_ms,
+        None => scope.file_ttl_ms,
     };
     let expires_at = ttl.map(|t| now + t);
     app.db
@@ -445,7 +637,8 @@ async fn upload(
     Ok(Json(FileInfo { id, name, mime: mime.into(), size: body.len() as i64, expires_at, big: false, nsfw }))
 }
 
-/// Arquivo maior que o limite normal: vai direto para o disco aos poucos e some em 10 minutos.
+/// Arquivo maior que o limite normal: vai direto para o disco aos poucos e segue a validade dos grandes.
+#[allow(clippy::too_many_arguments)]
 async fn upload_big(
     app: &Arc<App>,
     me: &User,
@@ -455,10 +648,12 @@ async fn upload_big(
     size: u64,
     nsfw: bool,
     body: Body,
+    policy: &Policy,
 ) -> ApiResult<Json<FileInfo>> {
     let bad = |m: &str| ApiError(StatusCode::BAD_REQUEST, m.into());
     let id = uuid::Uuid::new_v4().simple().to_string();
-    let _slot = reserve_big(app, &id, size).await?;
+    let scope = policy.scope(guild_id.is_some());
+    let _slot = reserve_big(app, &id, size, policy, scope).await?;
     let folder = dir(app);
     let part = folder.join(format!("{id}.part"));
     let file = tokio::fs::File::create(&part).await.map_err(internal)?;
@@ -508,7 +703,7 @@ async fn upload_big(
     }
     tokio::fs::rename(&part, folder.join(&id)).await.map_err(internal)?;
     let now = crate::now_ms();
-    let expires_at = now + BIG_TTL_MS;
+    let expires_at = scope.big_ttl_ms.map(|t| now + t);
     app.db
         .execute(
             "INSERT INTO files (id, owner_id, guild_id, channel_id, name, mime, size, created_at, encoding, stored, expires_at, big, nsfw) \
@@ -527,8 +722,9 @@ async fn upload_big(
             ],
         )
         .await?;
-    app.logs.info(format!("Arquivo grande recebido: {name} ({} MB, some em 10 min)", size / 1024 / 1024));
-    Ok(Json(FileInfo { id, name, mime: mime.into(), size: size as i64, expires_at: Some(expires_at), big: true, nsfw }))
+    let ttl = scope.big_ttl_ms.map(|ms| format!(", some em {}", ttl_words(ms))).unwrap_or_default();
+    app.logs.info(format!("Arquivo grande recebido: {name} ({} MB{ttl})", size / MB));
+    Ok(Json(FileInfo { id, name, mime: mime.into(), size: size as i64, expires_at, big: true, nsfw }))
 }
 
 /// A mensagem `[arquivo:…]`/`[voz:…]` acabou de ser enviada: o arquivo passa a ser dela (some junto
@@ -802,7 +998,7 @@ async fn set_ttl(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): Path
         return Err(ApiError(StatusCode::FORBIDDEN, "Só administradores mudam a validade dos arquivos".into()));
     }
     if f.big {
-        return Err(ApiError(StatusCode::BAD_REQUEST, "Arquivos grandes sempre somem 10 minutos depois de enviados".into()));
+        return Err(ApiError(StatusCode::BAD_REQUEST, "Arquivos grandes seguem a validade escolhida pelo administrador do app".into()));
     }
     let expires_at = crate::api::parse_ttl(&body.ttl_ms)?.map(|t| crate::now_ms() + t);
     app.db.execute("UPDATE files SET expires_at = ?1 WHERE id = ?2", libsql::params![expires_at, id.as_str()]).await?;
@@ -879,6 +1075,7 @@ async fn sweep(app: &App) {
         let _ = app.db.execute("DELETE FROM files WHERE id = ?1", [id.as_str()]).await;
         let Some(message_id) = message_id else { continue };
         let _ = app.db.execute("DELETE FROM message_reactions WHERE message_id = ?1", [message_id.as_str()]).await;
+        let _ = app.db.execute("DELETE FROM pins WHERE message_id = ?1", [message_id.as_str()]).await;
         let gone = json!({ "id": message_id, "channelId": channel_id });
         match &guild_id {
             Some(g) => {
@@ -927,9 +1124,13 @@ pub async fn guild_file_list(app: &App, id: &str) -> ApiResult<Value> {
     let total: i64 = list.iter().filter_map(|f| f["size"].as_i64()).sum();
     let stored: i64 = list.iter().filter_map(|f| f["stored"].as_i64()).sum();
     let (big_count, big_total) = big_usage(app).await;
+    let p = Policy::load(app).await;
     Ok(json!({
-        "files": list, "total": total, "stored": stored, "maxFile": max_bytes(),
-        "big": { "count": big_count, "total": big_total, "maxCount": BIG_MAX_COUNT, "maxTotal": BIG_MAX_TOTAL, "ttlMs": BIG_TTL_MS },
+        "files": list, "total": total, "stored": stored, "maxFile": p.guild.normal_max_mb.min(p.guild.max_mb) * MB,
+        "big": {
+            "count": big_count, "total": big_total, "maxCount": p.big_max_count, "maxTotal": p.big_max_total_mb * MB,
+            "ttlMs": p.guild.big_ttl_ms, "maxSize": p.guild.max_mb * MB,
+        },
     }))
 }
 

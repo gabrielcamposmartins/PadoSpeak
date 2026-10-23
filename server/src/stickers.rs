@@ -15,8 +15,6 @@ use std::sync::Arc;
 type AppState = State<Arc<App>>;
 type ApiResult<T> = Result<T, ApiError>;
 
-/// Tamanho máximo de um sticker (GIF animado incluso).
-const MAX_STICKER: usize = 2 * 1024 * 1024;
 /// Stickers por pessoa (num servidor).
 const MAX_PER_USER: i64 = 200;
 
@@ -24,7 +22,7 @@ pub fn router() -> Router<Arc<App>> {
     Router::new()
         .route(
             "/api/stickers",
-            get(list).post(upload).layer(DefaultBodyLimit::max(MAX_STICKER + 64 * 1024)),
+            get(list).post(upload).layer(DefaultBodyLimit::max(crate::files::STICKER_BODY_MAX)),
         )
         .route("/api/stickers/{id}", delete(remove))
         .route("/api/stickers/{id}/image", get(image))
@@ -82,8 +80,10 @@ async fn upload(
     Query(q): Query<UploadQuery>,
     body: Bytes,
 ) -> ApiResult<(StatusCode, Json<Sticker>)> {
-    if body.is_empty() || body.len() > MAX_STICKER {
-        return Err(bad("O sticker deve ter até 2 MB"));
+    // Tamanho máximo (GIF animado incluso): o escolhido no painel do administrador do app.
+    let max_mb = crate::files::Policy::load(&app).await.sticker_max_mb;
+    if body.is_empty() || body.len() as u64 > max_mb * 1024 * 1024 {
+        return Err(bad(&format!("O sticker deve ter até {max_mb} MB")));
     }
     let mime = crate::social::sniff_image(&body).ok_or_else(|| bad("Use uma imagem PNG, JPEG, WebP ou GIF"))?;
     let hash = fingerprint(&body);

@@ -189,6 +189,16 @@ pub async fn channel_with_access(app: &App, channel_id: &str, user_id: &str) -> 
     app.db.query_one(&sql, [user_id, channel_id], channel_from_row).await.ok().flatten()
 }
 
+/// Canais de texto de um servidor que a pessoa vê (vazio se ela não for membro).
+pub async fn visible_text_channels(app: &App, guild_id: &str, user_id: &str) -> ApiResult<Vec<Channel>> {
+    let sql = format!(
+        "SELECT {CHANNEL_COLS} FROM channels c JOIN guilds g ON g.id = c.guild_id \
+         JOIN guild_members m ON m.guild_id = c.guild_id AND m.user_id = ?2 \
+         WHERE c.guild_id = ?1 AND c.type = 'text' AND {CAN_SEE}"
+    );
+    Ok(app.db.query_all(&sql, [guild_id, user_id], channel_from_row).await?)
+}
+
 pub async fn guild_ids_of(app: &App, user_id: &str) -> Vec<String> {
     app.db
         .query_all("SELECT guild_id FROM guild_members WHERE user_id = ?1", [user_id], |r| r.get::<String>(0))
@@ -196,10 +206,11 @@ pub async fn guild_ids_of(app: &App, user_id: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Permissões dentro de um servidor (bits na coluna `guild_members.perms`).
-/// Validade dos arquivos de um servidor novo (o dono muda nas configurações do servidor).
+/// Validade dos arquivos de um servidor novo, se o painel do administrador do app não disser outra
+/// (o dono muda nas configurações do servidor).
 pub const DEFAULT_FILE_TTL_MS: i64 = 7 * 24 * 3600 * 1000;
 
+/// Permissões dentro de um servidor (bits na coluna `guild_members.perms`).
 pub mod perm {
     pub const ADMIN: i64 = 1;
     pub const INVITE: i64 = 2;
@@ -221,9 +232,11 @@ pub mod perm {
         MUSIC_ADD | MUSIC_PAUSE_OTHERS | MUSIC_SKIP_OTHERS | MUSIC_REMOVE_OTHERS | MUSIC_PREVIOUS | MUSIC_RESTART_OTHERS | MUSIC_CLEAR;
     /// Tocar efeitos sonoros (sons rápidos) nos canais de voz do servidor.
     pub const SOUNDS: i64 = 8192;
-    pub const ALL: i64 = ADMIN | INVITE | CHANNELS | MUTE | DISCONNECT | MOVE | MUSIC | SOUNDS;
-    /// Padrão de um servidor novo: convidar, a música e os efeitos sonoros liberados para todos.
-    pub const DEFAULT: i64 = INVITE | MUSIC | SOUNDS;
+    /// Fixar e desafixar mensagens nos canais de texto.
+    pub const PIN: i64 = 16384;
+    pub const ALL: i64 = ADMIN | INVITE | CHANNELS | MUTE | DISCONNECT | MOVE | MUSIC | SOUNDS | PIN;
+    /// Padrão de um servidor novo: convidar, a música, os efeitos sonoros e fixar liberados para todos.
+    pub const DEFAULT: i64 = INVITE | MUSIC | SOUNDS | PIN;
     /// Admin vale por todas.
     pub fn has(perms: i64, flag: i64) -> bool {
         perms & ADMIN != 0 || perms & flag != 0
@@ -231,7 +244,7 @@ pub mod perm {
     /// Permissões de um membro (`m`, de `guild_members`) no servidor `g`: o dono tem todas; quem está
     /// na lista personalizada tem as dela; o resto, o padrão do servidor.
     pub const EFFECTIVE_SQL: &str =
-        "CASE WHEN g.owner_id = m.user_id THEN 16383 WHEN m.custom = 1 THEN m.perms ELSE g.default_perms END";
+        "CASE WHEN g.owner_id = m.user_id THEN 32767 WHEN m.custom = 1 THEN m.perms ELSE g.default_perms END";
 }
 
 /// Permissões de um membro (o dono tem todas); `None` se não for membro.
@@ -405,7 +418,7 @@ async fn get_config(State(app): AppState) -> Json<Value> {
         // Endereços na rede (sem localhost), usados para montar links de convite.
         "addresses": app.urls.iter().filter(|u| !u.contains("://localhost")).collect::<Vec<_>>(),
         // Limites dos arquivos (o app avisa antes de mandar um arquivo grande).
-        "files": crate::files::limits(),
+        "files": crate::files::limits(&app).await,
     }))
 }
 
@@ -701,11 +714,24 @@ async fn create_guild(
     }
     let id = new_id();
     let now = crate::now_ms();
+    // Validade dos arquivos e das mensagens de voz: o padrão escolhido no painel do administrador do app.
+    let policy = crate::files::Policy::load(&app).await;
     let conn = app.db.conn().await?;
     let tx = conn.transaction().await?;
     tx.execute(
-        "INSERT INTO guilds (id, name, icon_color, owner_id, invite_code, created_at, default_perms, file_ttl_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        libsql::params![id.as_str(), name, random_color(), user.id.as_str(), invite_code(), now, perm::DEFAULT, DEFAULT_FILE_TTL_MS],
+        "INSERT INTO guilds (id, name, icon_color, owner_id, invite_code, created_at, default_perms, file_ttl_ms, voice_ttl_ms) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        libsql::params![
+            id.as_str(),
+            name,
+            random_color(),
+            user.id.as_str(),
+            invite_code(),
+            now,
+            perm::DEFAULT,
+            policy.guild.file_ttl_ms,
+            policy.guild.voice_ttl_ms
+        ],
     )
     .await?;
     tx.execute(
@@ -785,6 +811,7 @@ async fn delete_guild(State(app): AppState, AuthUser(user, _): AuthUser, Path(id
     // Exclusão explícita (não depende de ON DELETE CASCADE, que exige PRAGMA por conexão em modo remoto).
     let conn = app.db.conn().await?;
     let tx = conn.transaction().await?;
+    tx.execute("DELETE FROM pins WHERE channel_id IN (SELECT id FROM channels WHERE guild_id = ?1)", [id.as_str()]).await?;
     tx.execute("DELETE FROM messages WHERE channel_id IN (SELECT id FROM channels WHERE guild_id = ?1)", [id.as_str()]).await?;
     tx.execute("DELETE FROM channels WHERE guild_id = ?1", [id.as_str()]).await?;
     tx.execute("DELETE FROM guild_members WHERE guild_id = ?1", [id.as_str()]).await?;
@@ -882,7 +909,7 @@ async fn set_member_perms(
 }
 
 /// Validade mais longa que dá para escolher (1 ano).
-const MAX_TTL_MS: i64 = 365 * 24 * 3600 * 1000;
+pub const MAX_TTL_MS: i64 = 365 * 24 * 3600 * 1000;
 
 /// Validade vinda do app: número de ms (1 min a 1 ano) ou `null` (não expira).
 pub fn parse_ttl(v: &Value) -> ApiResult<Option<i64>> {
@@ -1301,6 +1328,7 @@ async fn delete_channel(State(app): AppState, AuthUser(user, _): AuthUser, Path(
     crate::files::delete_files(&app, "SELECT id FROM files WHERE channel_id = ?1", &id).await?;
     let conn = app.db.conn().await?;
     let tx = conn.transaction().await?;
+    tx.execute("DELETE FROM pins WHERE channel_id = ?1", [id.as_str()]).await?;
     tx.execute("DELETE FROM messages WHERE channel_id = ?1", [id.as_str()]).await?;
     tx.execute("DELETE FROM channels WHERE id = ?1", [id.as_str()]).await?;
     tx.execute("DELETE FROM channel_access WHERE channel_id = ?1", [id.as_str()]).await?;
@@ -1400,7 +1428,15 @@ async fn set_channel_access(
 struct MessagesQuery {
     before: Option<i64>,
     limit: Option<i64>,
+    /// Carrega de `before` para trás até esta data (para pular até uma mensagem antiga), com mais
+    /// algumas anteriores para dar contexto.
+    since: Option<i64>,
 }
+
+/// Mensagens a mais, antes da procurada, quando o app pula até ela.
+pub const JUMP_CONTEXT: i64 = 25;
+/// Até quantas mensagens o app carrega de uma vez para chegar a uma antiga.
+const JUMP_MAX: i64 = 3000;
 
 async fn list_messages(
     State(app): AppState,
@@ -1408,16 +1444,36 @@ async fn list_messages(
     Path(id): Path<String>,
     Query(q): Query<MessagesQuery>,
 ) -> ApiResult<Json<Vec<Message>>> {
-    let limit = q.limit.unwrap_or(50).clamp(1, 100);
+    let mut limit = q.limit.unwrap_or(50).clamp(1, 100);
     let before = q.before.unwrap_or(i64::MAX);
     let ch = channel_with_access(&app, &id, &user.id).await.filter(|c| c.kind == "text");
-    let Some(ch) = ch else {
-        // Conversa direta usa a mesma rota.
-        let dm = crate::social::dm_with_access(&app, &id, &user.id).await.ok_or_else(|| not_found("Canal não encontrado"))?;
-        return Ok(Json(crate::social::dm_messages(&app, &dm.id, before, limit).await?));
+    let (table, place, sql_select) = match &ch {
+        Some(ch) => ("messages m WHERE m.channel_id", ch.id.clone(), MESSAGE_SELECT),
+        None => {
+            // Conversa direta usa a mesma rota.
+            let dm = crate::social::dm_with_access(&app, &id, &user.id).await.ok_or_else(|| not_found("Canal não encontrado"))?;
+            ("dm_messages m WHERE m.dm_id", dm.id, crate::models::DM_MESSAGE_SELECT)
+        }
     };
-    let sql = format!("{MESSAGE_SELECT} WHERE m.channel_id = ?1 AND m.created_at < ?2 ORDER BY m.created_at DESC LIMIT ?3");
-    let mut list = app.db.query_all(&sql, libsql::params![ch.id.as_str(), before, limit], message_from_row).await?;
+    if let Some(since) = q.since {
+        // Quantas há até a procurada (e mais algumas antes dela).
+        let count = app
+            .db
+            .query_one(
+                &format!("SELECT COUNT(*) FROM {table} = ?1 AND m.created_at < ?2 AND m.created_at >= ?3"),
+                libsql::params![place.as_str(), before, since],
+                |r| r.get::<i64>(0),
+            )
+            .await?
+            .unwrap_or(0);
+        if count > JUMP_MAX {
+            return Err(bad("A mensagem é antiga demais para chegar até ela daqui"));
+        }
+        limit = count + JUMP_CONTEXT;
+    }
+    let col = if ch.is_some() { "m.channel_id" } else { "m.dm_id" };
+    let sql = format!("{sql_select} WHERE {col} = ?1 AND m.created_at < ?2 ORDER BY m.created_at DESC LIMIT ?3");
+    let mut list = app.db.query_all(&sql, libsql::params![place.as_str(), before, limit], message_from_row).await?;
     for m in &mut list {
         open_message(&app.db, m);
     }

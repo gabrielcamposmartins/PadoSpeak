@@ -4,6 +4,7 @@
 //! Só o dono do app (usuário `gabs`, ou o definido em `APP_OWNER`) vê, e ele pode liberar para
 //! outras pessoas. No nó local do app desktop não existe. Dos servidores, o painel mostra também os
 //! integrantes, as mensagens dos canais de texto e os arquivos (as conversas diretas ficam de fora).
+//! O dono também escolhe as regras dos arquivos (tamanhos e validades, em `files::Policy`).
 use crate::api::{ApiError, AuthUser};
 use crate::host::App;
 use crate::models::{attach_reactions, message_from_row, open_message, user_from_row, Message, User, MESSAGE_SELECT, USER_COLS};
@@ -34,6 +35,7 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/admin/guilds/{id}/channels", get(guild_channels))
         .route("/api/admin/guilds/{id}/files", get(guild_files))
         .route("/api/admin/channels/{id}/messages", get(channel_messages))
+        .route("/api/admin/files", get(file_policy).put(save_file_policy))
         .route("/api/admin/viewers", get(viewers).put(grant))
         .route("/api/admin/viewers/{id}", delete(revoke))
 }
@@ -319,6 +321,54 @@ async fn channel_messages(
 async fn guild_files(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): Path<String>) -> ApiResult<Json<Value>> {
     require_view(&app, &me).await?;
     Ok(Json(crate::files::guild_file_list(&app, &id).await?))
+}
+
+/// Regras dos arquivos e como está o disco.
+async fn file_policy(State(app): AppState, AuthUser(me, _): AuthUser) -> ApiResult<Json<Value>> {
+    let owner = require_view(&app, &me).await?;
+    Ok(Json(json!({ "policy": crate::files::Policy::load(&app).await, "canEdit": owner, "usage": crate::files::usage(&app).await })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PolicyBody {
+    policy: crate::files::Policy,
+    /// Passa a validade padrão dos servidores para todos os que já existem.
+    #[serde(default)]
+    apply_to_guilds: bool,
+}
+
+/// Muda as regras dos arquivos (só o dono). A validade nova dos arquivos grandes vale também para
+/// os que já estão no servidor.
+async fn save_file_policy(State(app): AppState, AuthUser(me, _): AuthUser, Json(body): Json<PolicyBody>) -> ApiResult<Json<Value>> {
+    if !require_view(&app, &me).await? {
+        return Err(ApiError(StatusCode::FORBIDDEN, "Só o dono do app muda as regras dos arquivos".into()));
+    }
+    let new = body.policy;
+    new.check().map_err(|e| ApiError(StatusCode::BAD_REQUEST, e))?;
+    let old = crate::files::Policy::load(&app).await;
+    app.db.set_setting("file_policy", &serde_json::to_string(&new).unwrap_or_default()).await?;
+    for guild in [false, true] {
+        if old.scope(guild).big_ttl_ms != new.scope(guild).big_ttl_ms {
+            crate::files::retime_big(&app, guild, new.scope(guild).big_ttl_ms).await;
+        }
+    }
+    if body.apply_to_guilds {
+        app.db
+            .execute(
+                "UPDATE guilds SET file_ttl_ms = ?1, voice_ttl_ms = ?2",
+                libsql::params![new.guild.file_ttl_ms, new.guild.voice_ttl_ms],
+            )
+            .await?;
+        let ids = app.db.query_all("SELECT id FROM guilds", (), |r| r.get::<String>(0)).await?;
+        for id in ids {
+            let _ = crate::api::announce_guild(&app, &id).await;
+        }
+    }
+    // Os apps abertos passam a avisar com os limites novos antes de enviar.
+    app.hub.to_all("files:limits", crate::files::limits(&app).await);
+    app.logs.info(format!("Regras dos arquivos mudadas por @{}", me.username));
+    file_policy(State(app), AuthUser(me, String::new())).await
 }
 
 /// Quem pode ver o painel além do dono.

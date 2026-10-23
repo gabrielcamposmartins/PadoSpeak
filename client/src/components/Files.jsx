@@ -27,6 +27,15 @@ export function fmtSize(bytes) {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
+/** Validade por extenso: "10 minutos", "1 hora", "7 dias" (`null`: não somem). */
+export function ttlWords(ms) {
+  if (!ms) return 'sem prazo';
+  const unit = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  if (ms % 86400000 === 0) return unit(ms / 86400000, 'dia', 'dias');
+  if (ms % 3600000 === 0) return unit(ms / 3600000, 'hora', 'horas');
+  return unit(Math.max(1, Math.round(ms / 60000)), 'minuto', 'minutos');
+}
+
 /** "3 min", "2 h", "5 dias" até `at`. */
 export function fmtLeft(at, now = Date.now()) {
   const ms = Math.max(0, at - now);

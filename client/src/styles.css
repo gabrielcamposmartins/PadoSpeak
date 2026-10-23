@@ -1969,6 +1969,9 @@ html:not([data-touch]) .channel:hover .call-timer:has(~ .ch-del) {
 .head-text span {
   font-size: 12px;
   color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .head-tools {
   display: flex;
@@ -12343,4 +12346,230 @@ html[data-kb] .mobile-app .chat.dm .compose-row {
 }
 html[data-kb] .m-tabs {
   padding-bottom: 6px;
+}
+
+/* ---------- Pesquisa, fixadas e favoritas (menus no alto da conversa) ---------- */
+:root {
+  --pin-ink: #d2452f;
+  --star-ink: #d99a0b;
+}
+:root[data-theme='dark'] {
+  --pin-ink: #ff8a73;
+  --star-ink: #ffc84a;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --pin-ink: #ff8a73;
+    --star-ink: #ffc84a;
+  }
+}
+.ico-pin {
+  color: var(--pin-ink);
+}
+.mm-pop {
+  width: min(440px, calc(100vw - 16px));
+  max-height: min(72vh, 600px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mm-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+.mm-search input {
+  flex: 1;
+  min-width: 0;
+}
+.mm-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.mm-chips button {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text-2);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.mm-chips button.on {
+  border-color: var(--accent, #1a8fd6);
+  color: var(--ink);
+  font-weight: 700;
+  background: color-mix(in srgb, var(--accent, #1a8fd6) 12%, var(--panel));
+}
+.mm-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 -4px;
+  padding: 0 4px;
+}
+.mm-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+}
+.mm-card:hover {
+  background: var(--row-hover);
+  border-color: var(--row-hover-border);
+}
+.mm-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.mm-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.mm-meta {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 6px;
+  font-size: 12.5px;
+}
+.mm-name {
+  font-weight: 700;
+}
+.mm-meta small,
+.mm-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.mm-text {
+  font-size: 13px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.mm-text i {
+  color: var(--muted);
+}
+.mm-act {
+  flex: none;
+  margin: 6px 6px 0 0;
+}
+.mm-act.star-on {
+  color: var(--star-ink);
+}
+.mm-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 4px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.mm-more {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+/* Marcas na própria mensagem: fixada (para todos) e favorita (só minha). */
+.msg-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 6px;
+  font-size: 11px;
+  white-space: nowrap;
+  vertical-align: baseline;
+}
+.msg-flag.pinned {
+  color: var(--pin-ink);
+}
+.msg-flag.starred {
+  color: var(--star-ink);
+}
+.msg .tools .star-btn.on {
+  color: var(--star-ink);
+}
+@media (max-width: 560px) {
+  .dm-actions .tool {
+    min-width: 0;
+    font-size: 0;
+    gap: 0;
+    padding: 6px 9px;
+  }
+}
+
+/* ---------- Painel do administrador: regras dos arquivos ---------- */
+.fp-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.fp-side {
+  min-width: 0;
+  padding: 10px 12px 2px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.fp-side h4 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 10px;
+}
+.fp-side select,
+.fp-side input {
+  max-width: 100%;
+}
+.fp-sum {
+  margin-top: -2px;
+  font-size: 12px;
+}
+.fp-warn {
+  color: var(--danger-ink) !important;
+}
+.fp-save {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.fp-save .checkbox {
+  margin-bottom: 0;
+  flex: 1 1 280px;
+}
+.fp-buttons {
+  display: flex;
+  gap: 8px;
 }

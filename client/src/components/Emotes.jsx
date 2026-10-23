@@ -79,6 +79,24 @@ export const EMOTES = [
     ),
   },
   {
+    code: ":'D",
+    name: 'Gargalhada',
+    draw: (id) => (
+      <Face id={id}>
+        {/* olhos apertados de tanto rir (> <) e lágrimas saindo pelos lados */}
+        <path d="M8.6 10.4 L13.2 12.8 L8.6 15.2" {...line} />
+        <path d="M23.4 10.4 L18.8 12.8 L23.4 15.2" {...line} />
+        <path d="M8 16.8 Q16 30 24 16.8 Z" fill="#7a2a00" />
+        <path d="M9.4 17.5 Q16 19.4 22.6 17.5 L22 19.2 Q16 21 10 19.2 Z" fill="#fff" />
+        <ellipse cx="16" cy="24.2" rx="3.6" ry="1.6" fill="#ff7a8a" />
+        <path d="M6.6 13.2 Q2.6 15.6 2.9 19.2 Q3.4 21.6 5.6 21 Q7.6 20.1 7.3 17.4 Z" fill="#8fd8ff" stroke="#2b8fd6" strokeWidth=".8" />
+        <path d="M25.4 13.2 Q29.4 15.6 29.1 19.2 Q28.6 21.6 26.4 21 Q24.4 20.1 24.7 17.4 Z" fill="#8fd8ff" stroke="#2b8fd6" strokeWidth=".8" />
+        <ellipse cx="4.4" cy="18.4" rx=".7" ry="1.1" fill="#fff" opacity=".8" />
+        <ellipse cx="27.6" cy="18.4" rx=".7" ry="1.1" fill="#fff" opacity=".8" />
+      </Face>
+    ),
+  },
+  {
     code: ';)',
     name: 'Piscadinha',
     draw: (id) => (
@@ -328,6 +346,26 @@ export const EMOTES = [
           <path key={a} d="M16 1.5 L18.2 7 H13.8 Z" fill="#ff9d1c" transform={`rotate(${a} 16 16)`} />
         ))}
         <Glossy id={id} d="M7.5 16 a8.5 8.5 0 1 0 17 0 a8.5 8.5 0 1 0 -17 0 Z" colors={['#fff3a0', '#ffc928', '#f29000']} stroke="#c97300" gloss={[13.5, 11.5, 4, 2.2]} />
+      </>
+    ),
+  },
+  {
+    code: '(FOGO)',
+    name: 'Fogo',
+    draw: (id) => (
+      <>
+        <Glossy
+          id={id}
+          d="M16 30.5 C 8.6 30.5 4.8 25.4 5.6 19.6 C 6.3 14.8 9.6 12.4 10.4 7.6 C 13 9.6 13.8 12.2 13.5 14.6 C 15.8 11.4 16.8 6.6 15.2 1.8 C 21.6 5 27 11.6 26.6 19.8 C 26.3 25.8 22.4 30.5 16 30.5 Z"
+          colors={['#ffb02e', '#ff6a14', '#d8261a']}
+          stroke="#9c1a0c"
+          gloss={[11.2, 17.5, 1.6, 3.2]}
+        />
+        <path
+          d="M16 29.2 C 12.3 29.2 10.4 26.6 11 23.6 C 11.5 21 13.4 19.8 13.8 17.2 C 15.4 18.6 16 20.2 15.8 21.8 C 17.4 20.6 18.2 18.6 17.8 16.4 C 20.9 18.4 22 21.4 21.7 24.2 C 21.4 27.2 19.2 29.2 16 29.2 Z"
+          fill="#ffe14d"
+        />
+        <ellipse cx="15.6" cy="26.2" rx="2.2" ry="2" fill="#fff6c2" opacity=".85" />
       </>
     ),
   },

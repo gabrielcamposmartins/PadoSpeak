@@ -1,5 +1,13 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.10.0 — 23/10/2026
+
+### Novidades
+- **Pesquisar mensagens**: a lupa no topo de um canal de texto ou de uma conversa privada (ou Ctrl+F) procura nas mensagens daquele canal ou do servidor todo. Não importa acento nem maiúscula, e nomes de arquivos e legendas também entram. Clique num resultado para ir até a mensagem, mesmo que ela seja antiga.
+- **Mensagens fixadas**: o alfinete na mensagem (passe o mouse; no celular, segure a mensagem) a fixa para todos da conversa. As fixadas ficam no menu do alfinete, no topo do canal ou da conversa privada. Nos servidores, quem pode fixar é definido pela nova permissão “Fixar mensagens”, ligada para todos por padrão.
+- **Favoritas**: a estrela na mensagem a guarda no menu da estrela, que só você vê. Ali aparecem as favoritas de todas as conversas, ou só as da conversa aberta, e um clique leva até cada uma.
+- **Dois emoticons novos**: Gargalhada e Fogo.
+
 ## 1.9.9 — 20/10/2026
 
 ### Novidades

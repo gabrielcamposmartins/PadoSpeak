@@ -328,7 +328,9 @@ export function createConnStore({ key, kind, base, primary = false }) {
     iceServers: null, // STUN/TURN do `ready` (com a senha temporária do TURN)
     myStatus: 'online', // online | away | busy | invisible
     nudgeSettings: null, // { allowNudges, nudgeBlocks: User[], blocks: User[], onlineNotifyDesktop, onlineNotifyPhone }
-    marks: { hidden: {}, nsfw: {} }, // só para mim: mensagens excluídas e fotos marcadas como NSFW (id -> true)
+    marks: { hidden: {}, nsfw: {}, star: {} }, // só para mim: excluídas, fotos NSFW e favoritas (id -> true)
+    pinsSeq: {}, // channelId -> muda a cada mensagem fixada/desafixada (o menu das fixadas recarrega)
+    jumpTarget: null, // { id, channelId, createdAt }: a conversa leva até esta mensagem ao abrir
     voiceStates: {}, // channelId -> participantes (visão do servidor)
     voiceSince: {}, // channelId -> quando a chamada começou (relógio do servidor)
     typing: {}, // channelId -> { userId: { user, until } }
@@ -410,6 +412,9 @@ export function createConnStore({ key, kind, base, primary = false }) {
     adminGuildFiles: (guildId) => api.get(`/api/admin/guilds/${guildId}/files`),
     adminChannelMessages: (channelId, before) => api.get(`/api/admin/channels/${channelId}/messages${before ? `?before=${before}` : ''}`),
     adminViewers: () => api.get('/api/admin/viewers'),
+    /** Regras dos arquivos (tamanhos e validades) e como está o disco. */
+    adminFilePolicy: () => api.get('/api/admin/files'),
+    saveFilePolicy: (policy, applyToGuilds = false) => api.put('/api/admin/files', { policy, applyToGuilds }),
     grantAdmin: (username) => api.put('/api/admin/viewers', { username }),
     revokeAdmin: (userId) => api.del(`/api/admin/viewers/${userId}`),
 
@@ -514,7 +519,9 @@ export function createConnStore({ key, kind, base, primary = false }) {
         incomingCall: null,
         lanPeers: [],
         nudgeSettings: null,
-        marks: { hidden: {}, nsfw: {} },
+        marks: { hidden: {}, nsfw: {}, star: {} },
+        pinsSeq: {},
+        jumpTarget: null,
       });
       if (primary) set({ currentGuildId: null, sidebarView: 'channels' });
       if (primary && (!get().view || get().view.conn == null) && get().view?.type !== 'dm') {
@@ -838,6 +845,16 @@ export function createConnStore({ key, kind, base, primary = false }) {
           };
         }),
       );
+      rt.on('pin:update', ({ channelId, messageId, on }) =>
+        set((s) => {
+          const pinsSeq = { ...s.pinsSeq, [channelId]: (s.pinsSeq[channelId] || 0) + 1 };
+          const list = s.messages[channelId];
+          if (!list) return { pinsSeq };
+          return { pinsSeq, messages: { ...s.messages, [channelId]: list.map((m) => (m.id === messageId ? { ...m, pinned: on } : m)) } };
+        }),
+      );
+      // O administrador do app mudou os limites dos arquivos: os avisos antes de enviar acompanham.
+      rt.on('files:limits', (files) => set((s) => (s.config ? { config: { ...s.config, files } } : {})));
       rt.on('mark:update', ({ kind: mark, id, on }) =>
         set((s) => (s.marks[mark] ? { marks: { ...s.marks, [mark]: { ...s.marks[mark], [id]: on || undefined } } } : {})),
       );
@@ -1024,18 +1041,18 @@ export function createConnStore({ key, kind, base, primary = false }) {
         }));
     },
 
-    /** Minhas marcas (excluir para mim, NSFW para mim). Servidor antigo, sem elas: fica tudo vazio. */
+    /** Minhas marcas (excluir para mim, NSFW para mim, favoritas). Servidor antigo, sem elas: fica tudo vazio. */
     async loadMarks() {
       try {
-        const { hidden = [], nsfw = [] } = await api.get('/api/me/marks');
+        const { hidden = [], nsfw = [], star = [] } = await api.get('/api/me/marks');
         const map = (ids) => Object.fromEntries(ids.map((id) => [id, true]));
-        set({ marks: { hidden: map(hidden), nsfw: map(nsfw) } });
+        set({ marks: { hidden: map(hidden), nsfw: map(nsfw), star: map(star) } });
       } catch {
         /* servidor sem marcas */
       }
     },
 
-    /** Marca (ou desmarca) uma mensagem só para mim: `hidden` (excluir para mim) ou `nsfw`. */
+    /** Marca (ou desmarca) uma mensagem só para mim: `hidden` (excluir para mim), `nsfw` ou `star` (favorita). */
     async setMark(mark, id, on) {
       const apply = (v) => set((s) => ({ marks: { ...s.marks, [mark]: { ...s.marks[mark], [id]: v || undefined } } }));
       apply(on);
@@ -1045,6 +1062,63 @@ export function createConnStore({ key, kind, base, primary = false }) {
         apply(!on);
         notify(e instanceof ApiError && [404, 405].includes(e.status) ? 'Este servidor ainda não tem essa opção: atualize o servidor.' : e.message);
       }
+    },
+
+    /** Fixadas de uma conversa ou canal (com quem fixou e quando), da mais recente para a mais antiga. */
+    loadPins: (channelId) => api.get(`/api/channels/${channelId}/pins`),
+
+    /** Fixa (ou desafixa) uma mensagem para todos da conversa ou do canal. */
+    async setPin(messageId, on) {
+      try {
+        await (on ? api.put(`/api/messages/${messageId}/pin`) : api.del(`/api/messages/${messageId}/pin`));
+        notify(on ? 'Mensagem fixada: está no menu do alfinete para todos.' : 'Mensagem desafixada.', 'info');
+      } catch (e) {
+        notify(e instanceof ApiError && e.status === 405 ? 'Este servidor ainda não tem essa opção: atualize o servidor.' : e.message);
+      }
+    },
+
+    /** Minhas favoritas (só eu vejo), com o lugar de cada uma. */
+    loadStars: () => api.get('/api/me/stars'),
+
+    /** Pesquisa nas mensagens de uma conversa ou canal (`channel`) ou de um servidor inteiro (`guild`). */
+    searchMessages({ q, channel, guild, before }) {
+      const params = new URLSearchParams({ q });
+      if (channel) params.set('channel', channel);
+      if (guild) params.set('guild', guild);
+      if (before) params.set('before', before);
+      return api.get(`/api/search?${params}`);
+    },
+
+    /** Carrega as mensagens anteriores até `createdAt` (para chegar a uma mensagem antiga). */
+    async loadUntil(channelId, createdAt) {
+      const current = get().messages[channelId] || [];
+      if (current.length && current[0].createdAt <= createdAt) return;
+      const before = current.length ? `&before=${current[0].createdAt}` : '';
+      const list = await api.get(`/api/channels/${channelId}/messages?since=${createdAt}${before}`);
+      // Junto vêm até 25 anteriores à procurada: menos que isso, é o começo da conversa.
+      const older = list.filter((m) => m.createdAt < createdAt).length;
+      set((s) => ({
+        messages: { ...s.messages, [channelId]: [...list, ...(s.messages[channelId] || [])] },
+        hasMore: { ...s.hasMore, [channelId]: older >= 25 },
+      }));
+    },
+
+    /**
+     * Abre a conversa ou o canal de uma mensagem e leva até ela (pesquisa, fixadas e favoritas).
+     * `m`: a mensagem; `place`: `{ dm: true }` ou `{ guildId }`.
+     */
+    async jumpTo(m, place = {}) {
+      set({ jumpTarget: { id: m.id, channelId: m.channelId, createdAt: m.createdAt } });
+      if (isViewing(m.channelId)) return;
+      if (place.dm) return get().selectDm(m.channelId);
+      const guildId = place.guildId || guildOfChannel(m.channelId);
+      if (!guildId) return;
+      if (get().currentGuildId !== guildId || !get().guildData[guildId]) {
+        set((s) => ({ lastChannel: { ...s.lastChannel, [guildId]: m.channelId } }));
+        await get().selectGuild(guildId);
+        if (get().currentGuildId !== guildId) return;
+      }
+      if (!isViewing(m.channelId)) get().selectTextChannel(m.channelId);
     },
 
     async loadDms() {
@@ -1960,7 +2034,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
       // Texto, documentos e afins vão comprimidos (gzip); o servidor guarda assim e o download volta
       // com Content-Encoding: gzip, que o navegador descomprime sozinho. Arquivo acima do limite
       // normal (grande, some em 10 min) vai como está.
-      const maxFile = get().config?.files?.maxFile;
+      const { maxFile } = fileLimits(get().config, get().dms.some((d) => d.id === channelId));
       const packed = fileKind || (maxFile && file.size > maxFile) ? null : await gzipIfWorth(file);
       return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
@@ -2375,8 +2449,10 @@ export const PERM = {
   MUSIC_CLEAR: 4096,
   // Tocar efeitos sonoros (sons rápidos) nos canais de voz.
   SOUNDS: 8192,
+  // Fixar e desafixar mensagens nos canais de texto.
+  PIN: 16384,
 };
-const ALL_PERMS = 16383;
+const ALL_PERMS = 32767;
 
 /** Bits de um membro: os da lista personalizada, ou o padrão do servidor. */
 export function memberBits(s, guildId, userId) {
@@ -2424,8 +2500,26 @@ const permFlags = (owner, bits) => {
     musicRestartOthers: has(PERM.MUSIC_RESTART_OTHERS),
     musicClear: has(PERM.MUSIC_CLEAR),
     sounds: has(PERM.SOUNDS),
+    pin: has(PERM.PIN),
   };
 };
+
+/**
+ * Limites dos arquivos numa conversa privada (`dm`) ou num servidor, como o administrador do app
+ * escolheu: `maxFile` (acima disso o arquivo é "grande"), `maxSize` (o maior aceito), `bigTtlMs`
+ * (validade dos grandes; `null` = não somem), `maxCount` e `pool` (quantos grandes e quanto somam).
+ */
+export function fileLimits(config, dm) {
+  const f = config?.files || {};
+  const side = (dm ? f.dm : f.guild) || {};
+  return {
+    maxFile: side.maxFile ?? f.maxFile ?? 25 * 1024 ** 2,
+    maxSize: side.maxSize ?? f.bigMaxTotal ?? 3 * 1024 ** 3,
+    bigTtlMs: 'bigTtlMs' in side ? side.bigTtlMs : (f.bigTtlMs ?? 10 * 60 * 1000),
+    maxCount: f.bigMaxCount ?? 3,
+    pool: f.bigPool ?? f.bigMaxTotal ?? 3 * 1024 ** 3,
+  };
+}
 
 /** Hook: minhas permissões no servidor, a partir de um store de conexão (`useStore` ou `useConn()`). */
 export function usePerms(useC, guildId) {

@@ -20,16 +20,15 @@ import {
   Maximize2,
   Minimize2,
 } from 'lucide-react';
-import { useStore, stickerHome } from '../store.js';
+import { useStore, stickerHome, fileLimits } from '../store.js';
 import { TitleBar } from './Aero.jsx';
 import { StickerView } from './Stickers.jsx';
-import { fmtSize, VoiceNote } from './Files.jsx';
+import { fmtSize, ttlWords, VoiceNote } from './Files.jsx';
+import { useConn } from './conn.jsx';
 import { isTouch } from '../lib/layout.js';
 
 /** Texto que vai junto com um anexo (o servidor aceita até isso na legenda). */
 export const CAPTION_MAX = 3500;
-/** Limites dos arquivos grandes (iguais aos do servidor, se ele não informar). */
-const BIG = { ttlMs: 10 * 60 * 1000, maxCount: 3, maxTotal: 3 * 1024 ** 3 };
 
 /** Primeiro formato que o navegador sabe gravar. */
 const pickMime = (list) => list.find((t) => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported?.(t)) || '';
@@ -122,33 +121,25 @@ function AttachTile({ item, big, onRemove, onNsfw }) {
   );
 }
 
-/** Limites dos arquivos grandes deste servidor. */
-const useFileLimits = () => {
-  const limits = useStore((s) => s.config?.files);
-  return {
-    maxFile: limits?.maxFile || 25 * 1024 * 1024,
-    maxTotal: limits?.bigMaxTotal || BIG.maxTotal,
-    ttlMs: limits?.bigTtlMs || BIG.ttlMs,
-    maxCount: limits?.bigMaxCount || BIG.maxCount,
-  };
-};
-
-/** Arquivos que passam do máximo (não dá para enviar). */
-export function oversized(items, config) {
-  const maxTotal = config?.files?.bigMaxTotal || BIG.maxTotal;
-  return items.filter((i) => i.kind === 'file' && i.file.size > maxTotal).map((i) => i.file);
+/** Arquivos que passam do máximo (não dá para enviar), numa conversa privada (`dm`) ou num servidor. */
+export function oversized(items, config, dm) {
+  const { maxSize } = fileLimits(config, dm);
+  return items.filter((i) => i.kind === 'file' && i.file.size > maxSize).map((i) => i.file);
 }
 
 /**
  * Anexos esperando o envio, acima da caixa de mensagem: o texto escrito na caixa vai junto ao enviar.
- * `items`: `{ kind: 'file', file }` ou `{ kind: 'sticker', sticker }`.
+ * `items`: `{ kind: 'file', file }` ou `{ kind: 'sticker', sticker }`. `dm`: conversa privada (os
+ * limites dos arquivos são outros).
  */
-export function AttachTray({ items, onRemove, onClear, onNsfw }) {
-  const { maxFile, maxTotal, ttlMs, maxCount } = useFileLimits();
+export function AttachTray({ items, onRemove, onClear, onNsfw, dm }) {
+  const config = useConn()((s) => s.config);
+  const { maxFile, maxSize, bigTtlMs, maxCount, pool } = fileLimits(config, dm);
   if (!items.length) return null;
   const files = items.filter((i) => i.kind === 'file').map((i) => i.file);
   const bigs = files.filter((f) => f.size > maxFile);
-  const tooBig = files.filter((f) => f.size > maxTotal);
+  const tooBig = files.filter((f) => f.size > maxSize);
+  const one = bigs.length === 1;
   return (
     <div className="attach-tray" role="group" aria-label="Anexos para enviar">
       <div className="attach-row">
@@ -171,10 +162,12 @@ export function AttachTray({ items, onRemove, onClear, onNsfw }) {
         <p className={`sp-warn${tooBig.length ? ' bad' : ''}`} role="status">
           <TriangleAlert size={15} />
           {tooBig.length
-            ? `${tooBig.map((f) => f.name).join(', ')} passa de ${fmtSize(maxTotal)}, o máximo para arquivos grandes.`
-            : `${bigs.length === 1 ? 'Este arquivo passa' : 'Estes arquivos passam'} de ${fmtSize(maxFile)}: ${
-                bigs.length === 1 ? 'fica disponível' : 'ficam disponíveis'
-              } só por ${Math.round(ttlMs / 60000)} minutos e depois some${bigs.length === 1 ? '' : 'm'} da conversa (o servidor guarda até ${maxCount} arquivos grandes de cada vez, somando ${fmtSize(maxTotal)}).`}
+            ? `${tooBig.map((f) => f.name).join(', ')} passa de ${fmtSize(maxSize)}, o máximo aqui.`
+            : `${one ? 'Este arquivo passa' : 'Estes arquivos passam'} de ${fmtSize(maxFile)}: ${
+                bigTtlMs
+                  ? `${one ? 'fica disponível' : 'ficam disponíveis'} só por ${ttlWords(bigTtlMs)} e depois some${one ? '' : 'm'} da conversa`
+                  : `${one ? 'conta' : 'contam'} como arquivo grande`
+              } (o servidor guarda até ${maxCount} arquivos grandes de cada vez, somando ${fmtSize(pool)}).`}
         </p>
       )}
     </div>
