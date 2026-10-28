@@ -28,6 +28,7 @@ import { SCREEN_PRESETS } from '../lib/voice.js';
 import Avatar from './Avatar.jsx';
 import { FormattedText } from './Emotes.jsx';
 import { useServerPing } from './hooks.js';
+import { enterFullscreen } from '../lib/fullscreen.js';
 import { useLayout, isTouch } from '../lib/layout.js';
 import { MobileBack } from './Mobile.jsx';
 import VolumeSlider from './Volume.jsx';
@@ -71,10 +72,16 @@ function useDraggable(enabled) {
 /** <video> que acompanha o MediaStream e mede o que é de fato desenhado (resolução/fps). */
 function StreamVideo({ stream, mirror, onStats }) {
   const ref = useRef(null);
+  // Trocar de câmera troca a trilha dentro do mesmo stream: o Safari só mostra a nova com o stream
+  // reatribuído (senão a sua imagem fica preta).
+  const trackId = stream?.getVideoTracks()[0]?.id;
   useEffect(() => {
     const el = ref.current;
-    if (el && el.srcObject !== stream) el.srcObject = stream;
-  }, [stream]);
+    if (!el) return;
+    if (el.srcObject === stream) el.srcObject = null;
+    el.srcObject = stream;
+    el.play?.().catch(() => {});
+  }, [stream, trackId]);
   useEffect(() => {
     if (!onStats) return;
     let lastFrames = 0;
@@ -304,10 +311,13 @@ function Tile({ tile, focused, grid, onFocus }) {
         )}
         {tile.stream && (
           <button
-            className="tool-btn"
+            className="tool-btn tile-full"
             title="Tela cheia"
             aria-label="Tela cheia"
-            onClick={() => ref.current?.querySelector('video')?.requestFullscreen()}
+            onClick={() => {
+              const video = ref.current?.querySelector('video');
+              if (video) enterFullscreen(video);
+            }}
           >
             <Maximize size={14} />
           </button>

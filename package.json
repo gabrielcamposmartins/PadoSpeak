@@ -1,7 +1,7 @@
 {
   "name": "padospeak",
   "private": true,
-  "version": "1.10.0",
+  "version": "1.11.0",
   "description": "PadoSpeak: chat, voz, vídeo e tela em 1080p self-hosted em Rust, com Turso (libSQL) como banco.",
   "workspaces": [
     "client"

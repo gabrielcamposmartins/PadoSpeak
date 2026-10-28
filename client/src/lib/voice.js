@@ -1131,31 +1131,72 @@ export class VoiceClient {
     this.changed();
   }
 
-  /** Celular/tablet: troca entre a câmera frontal e a traseira sem sair da chamada. */
+  /**
+   * Celular/tablet: troca entre a câmera frontal e a traseira sem sair da chamada. A câmera atual fecha
+   * antes de a outra abrir: o iPhone (e vários Android) não abre duas ao mesmo tempo, encerra a primeira
+   * por conta própria (e isso desligava a câmera) ou derruba a página inteira.
+   */
   async flipCamera() {
-    if (!this.camera) return;
+    if (!this.camera || this.flipping) return;
+    this.flipping = true;
     const facing = this.state.cameraFacing === 'environment' ? 'user' : 'environment';
-    const next = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: { ideal: facing },
-        width: { ideal: CAMERA.width },
-        height: { ideal: CAMERA.height },
-        frameRate: { ideal: CAMERA.fps },
-      },
-    });
-    const track = next.getVideoTracks()[0];
     const old = this.camera.getVideoTracks()[0];
-    track.onended = old?.onended || null;
-    // Mesmo stream (quem recebe continua reconhecendo a câmera), só a trilha muda.
-    for (const peer of this.peers.values()) if (peer.senders.camera) await peer.senders.camera.replaceTrack(track);
+    const onended = old?.onended || null;
+    const open = (mode) =>
+      navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: mode },
+          width: { ideal: CAMERA.width },
+          height: { ideal: CAMERA.height },
+          frameRate: { ideal: CAMERA.fps },
+        },
+      });
     if (old) {
       old.onended = null;
       old.stop();
       this.camera.removeTrack(old);
     }
-    this.camera.addTrack(track);
-    this.state.cameraFacing = facing;
-    this.changed();
+    try {
+      let next;
+      let now = facing;
+      try {
+        next = await open(facing);
+      } catch (e) {
+        // A outra câmera não abriu: volta para a que estava, e só desliga se nem ela abrir.
+        now = this.state.cameraFacing;
+        try {
+          next = await open(now);
+        } catch {
+          throw e;
+        }
+      }
+      if (!this.camera) {
+        next.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      const track = next.getVideoTracks()[0];
+      track.onended = onended;
+      // Mesmo stream (quem recebe continua reconhecendo a câmera), só a trilha muda.
+      this.camera.addTrack(track);
+      for (const peer of this.peers.values()) if (peer.senders.camera) await peer.senders.camera.replaceTrack(track);
+      this.state.cameraFacing = now;
+      if (now !== facing) this.onNotice?.('Não deu para abrir a outra câmera deste aparelho.');
+    } catch (e) {
+      if (this.camera) await this.setCamera(false);
+      throw e;
+    } finally {
+      this.flipping = false;
+      this.reviveMic();
+      this.changed();
+    }
+  }
+
+  /** No iPhone, abrir a câmera às vezes cala ou encerra o microfone: pega ele de volta. */
+  reviveMic() {
+    const t = this.rawMic?.getAudioTracks()[0];
+    if (!t || !this.state.channelId) return;
+    if (t.readyState === 'ended') this.recoverMic();
+    else if (t.muted) this.replaceMic().catch(() => {});
   }
 
   addScreenTracks(peer) {

@@ -19,6 +19,10 @@ import {
   TriangleAlert,
   Maximize2,
   Minimize2,
+  Flashlight,
+  FlashlightOff,
+  Sun,
+  Aperture,
 } from 'lucide-react';
 import { useStore, stickerHome, fileLimits } from '../store.js';
 import { TitleBar } from './Aero.jsx';
@@ -26,6 +30,7 @@ import { StickerView } from './Stickers.jsx';
 import { fmtSize, ttlWords, VoiceNote } from './Files.jsx';
 import { useConn } from './conn.jsx';
 import { isTouch } from '../lib/layout.js';
+import { enterFullscreen, exitFullscreen, fullscreenElement, onFullscreenChange } from '../lib/fullscreen.js';
 
 /** Texto que vai junto com um anexo (o servidor aceita até isso na legenda). */
 export const CAPTION_MAX = 3500;
@@ -193,6 +198,89 @@ export function fromPhoneCamera(file) {
   return new File([file], `${kind}-${stamp()}.${ext}`, { type: file.type, lastModified: file.lastModified });
 }
 
+const clamp = (v, r) => Math.min(r.max, Math.max(r.min, v));
+const fmtZoom = (z) => `${(Math.round(z * 10) / 10).toString().replace('.', ',')}×`;
+const BACK_LENS = /back|rear|traseir|environment/i;
+const FRONT_LENS = /front|frontal|user/i;
+
+/**
+ * Ajustes da câmera que o aparelho oferecer (no Android, o Chrome mostra quase todos): zoom (abaixo de
+ * 1× é a grande-angular), lanterna, brilho e foco no toque. O que a câmera não tiver não aparece.
+ */
+function useCameraControls(stream) {
+  const [caps, setCaps] = useState(null);
+  const [zoom, setZoomState] = useState(1);
+  const [torch, setTorch] = useState(false);
+  const [exposure, setExposureState] = useState(0);
+  const track = stream?.getVideoTracks()[0] || null;
+
+  useEffect(() => {
+    setCaps(null);
+    setTorch(false);
+    if (!track?.getCapabilities) return;
+    let alive = true;
+    let tries = 0;
+    // O Chrome do Android às vezes só conta o que a câmera faz um instante depois de abrir.
+    const read = () => {
+      if (!alive) return;
+      const c = track.getCapabilities() || {};
+      const st = track.getSettings?.() || {};
+      const range = (r) => (r && r.max > r.min ? { min: r.min, max: r.max, step: r.step || 0.1 } : null);
+      const next = {
+        zoom: range(c.zoom),
+        torch: Boolean(c.torch),
+        exposure: range(c.exposureCompensation),
+        focus: Array.isArray(c.focusMode) && c.focusMode.includes('single-shot'),
+      };
+      if (!next.zoom && !next.torch && !next.exposure && tries++ < 3) return void setTimeout(read, 400);
+      setCaps(next);
+      setZoomState(st.zoom ?? 1);
+      setExposureState(st.exposureCompensation ?? 0);
+    };
+    read();
+    return () => {
+      alive = false;
+    };
+  }, [track]);
+
+  const apply = (c) => track?.applyConstraints({ advanced: [c] }).catch(() => {});
+  // A pinça muda o zoom muitas vezes por quadro: aplica só o último valor.
+  const pending = useRef(null);
+  const setZoom = (z) => {
+    if (!caps?.zoom) return;
+    const v = clamp(z, caps.zoom);
+    setZoomState(v);
+    if (pending.current == null)
+      requestAnimationFrame(() => {
+        apply({ zoom: pending.current });
+        pending.current = null;
+      });
+    pending.current = v;
+  };
+  return {
+    caps,
+    zoom,
+    setZoom,
+    torch,
+    toggleTorch: () => {
+      apply({ torch: !torch });
+      setTorch(!torch);
+    },
+    exposure,
+    setExposure: (v) => {
+      setExposureState(v);
+      apply({ exposureCompensation: v });
+    },
+    focusAt: (x, y) => caps?.focus && apply({ focusMode: 'single-shot', pointsOfInterest: [{ x, y }] }),
+  };
+}
+
+/** Atalhos de zoom como os da câmera do celular: a grande-angular (se houver), 1×, 2×, 5× e 10×. */
+function zoomStops(r) {
+  const stops = [r.min < 1 ? r.min : null, 1, 2, 5, 10].filter((z) => z != null && z >= r.min && z <= r.max);
+  return [...new Set(stops.map((z) => Math.round(z * 10) / 10))];
+}
+
 /**
  * Câmera para tirar uma foto ou gravar um vídeo e mandar na conversa. `onDone(file)` com o
  * resultado (vai para a prévia antes de enviar). `rear`: começa pela câmera de trás (celular);
@@ -207,6 +295,9 @@ export function CameraCapture({ onDone, onClose, rear = false, fullScreen = fals
   const [devices, setDevices] = useState([]);
   const [deviceIdx, setDeviceIdx] = useState(0);
   const [facing, setFacing] = useState(rear ? 'environment' : 'user');
+  const [lens, setLens] = useState(null); // outra lente do mesmo lado (deviceId), quando há mais de uma
+  const [exposureOpen, setExposureOpen] = useState(false);
+  const [focusDot, setFocusDot] = useState(null);
   const [rec, setRec] = useState(null); // { recorder, started, chunks, mic }
   const [now, setNow] = useState(Date.now());
   const [flash, setFlash] = useState(false);
@@ -218,7 +309,9 @@ export function CameraCapture({ onDone, onClose, rear = false, fullScreen = fals
     let opened = null;
     setError('');
     const constraints = isTouch
-      ? { facingMode: { ideal: facing } }
+      ? lens
+        ? { deviceId: { exact: lens } }
+        : { facingMode: { ideal: facing } }
       : devices[deviceIdx]
         ? { deviceId: { exact: devices[deviceIdx].deviceId } }
         : saved
@@ -226,7 +319,15 @@ export function CameraCapture({ onDone, onClose, rear = false, fullScreen = fals
           : {};
     navigator.mediaDevices
       // No celular, a foto sai na resolução boa da câmera (o vídeo continua leve pelo bitrate da gravação).
-      ?.getUserMedia({ video: { ...constraints, width: { ideal: isTouch ? 1920 : 1280 }, height: { ideal: isTouch ? 1080 : 720 } } })
+      // `zoom: true` pede o zoom da câmera (sem ele o Chrome pode esconder o controle).
+      ?.getUserMedia({
+        video: {
+          ...constraints,
+          width: { ideal: isTouch ? 1920 : 1280 },
+          height: { ideal: isTouch ? 1080 : 720 },
+          ...(isTouch ? { zoom: true } : {}),
+        },
+      })
       .then(async (s) => {
         if (!alive) return s.getTracks().forEach((t) => t.stop());
         opened = s;
@@ -240,7 +341,8 @@ export function CameraCapture({ onDone, onClose, rear = false, fullScreen = fals
       alive = false;
       opened?.getTracks().forEach((t) => t.stop());
     };
-  }, [deviceIdx, facing]);
+  }, [deviceIdx, facing, lens]);
+  const ctl = useCameraControls(stream);
 
   useEffect(() => {
     if (video.current && stream) video.current.srcObject = stream;
@@ -319,26 +421,85 @@ export function CameraCapture({ onDone, onClose, rear = false, fullScreen = fals
 
   const canFlip = isTouch || devices.length > 1;
   const flip = () => {
-    if (isTouch) setFacing((f) => (f === 'user' ? 'environment' : 'user'));
-    else setDeviceIdx((i) => (i + 1) % devices.length);
+    if (isTouch) {
+      setLens(null);
+      setFacing((f) => (f === 'user' ? 'environment' : 'user'));
+    } else setDeviceIdx((i) => (i + 1) % devices.length);
   };
+  // Lentes do lado em uso (o Android lista a grande-angular e a teleobjetiva como câmeras à parte).
+  const lenses = isTouch ? devices.filter((d) => (facing === 'environment' ? BACK_LENS : FRONT_LENS).test(d.label)) : [];
+  const nextLens = () => {
+    const cur = lenses.findIndex((d) => d.deviceId === (lens || stream?.getVideoTracks()[0]?.getSettings?.().deviceId));
+    setLens(lenses[(cur + 1) % lenses.length].deviceId);
+  };
+
+  // Pinça para o zoom e toque para focar, direto na imagem.
+  const touches = useRef(new Map());
+  const pinch = useRef(null);
+  const stageEvents = {
+    onPointerDown: (e) => {
+      touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY });
+      if (touches.current.size === 2 && ctl.caps?.zoom) {
+        const [a, b] = [...touches.current.values()];
+        pinch.current = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, z: ctl.zoom };
+      }
+    },
+    onPointerMove: (e) => {
+      const t = touches.current.get(e.pointerId);
+      if (!t) return;
+      t.x = e.clientX;
+      t.y = e.clientY;
+      if (pinch.current && touches.current.size === 2) {
+        const [a, b] = [...touches.current.values()];
+        ctl.setZoom(pinch.current.z * (Math.hypot(a.x - b.x, a.y - b.y) / pinch.current.d));
+      }
+    },
+    onPointerUp: (e) => {
+      const t = touches.current.get(e.pointerId);
+      touches.current.delete(e.pointerId);
+      if (pinch.current) {
+        if (!touches.current.size) pinch.current = null;
+        return;
+      }
+      if (!t || Math.hypot(t.x - t.sx, t.y - t.sy) > 10 || !ctl.caps?.focus || !video.current) return;
+      const r = video.current.getBoundingClientRect();
+      let x = (e.clientX - r.left) / r.width;
+      const y = (e.clientY - r.top) / r.height;
+      if (x < 0 || x > 1 || y < 0 || y > 1) return;
+      const box = e.currentTarget.getBoundingClientRect();
+      setFocusDot({ x: e.clientX - box.left, y: e.clientY - box.top, k: Date.now() });
+      if (mirrored) x = 1 - x;
+      ctl.focusAt(x, y);
+    },
+    onPointerCancel: (e) => {
+      touches.current.delete(e.pointerId);
+      if (!touches.current.size) pinch.current = null;
+    },
+  };
+  useEffect(() => {
+    if (!focusDot) return;
+    const t = setTimeout(() => setFocusDot(null), 900);
+    return () => clearTimeout(t);
+  }, [focusDot]);
+  // Os controles por cima da imagem não contam como toque para focar.
+  const own = { onPointerDown: (e) => e.stopPropagation(), onPointerUp: (e) => e.stopPropagation() };
 
   // Tela cheia: a janela ocupa a tela toda (e, onde o navegador deixa, some a barra dele também).
   useEffect(() => {
-    const sync = () => !document.fullscreenElement && setFull(false);
-    document.addEventListener('fullscreenchange', sync);
+    const stop = onFullscreenChange(() => !fullscreenElement() && setFull(false));
     return () => {
-      document.removeEventListener('fullscreenchange', sync);
-      if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+      stop();
+      exitFullscreen();
     };
   }, []);
   const toggleFull = () => {
     if (full) {
       setFull(false);
-      if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+      exitFullscreen();
     } else {
       setFull(true);
-      document.documentElement.requestFullscreen?.().catch(() => {});
+      // Sem o player nativo: a câmera precisa dos botões de gravar por cima.
+      enterFullscreen(document.documentElement, null);
     }
   };
 
@@ -354,13 +515,100 @@ export function CameraCapture({ onDone, onClose, rear = false, fullScreen = fals
       }}
       className={`camera-sheet${full ? ' full' : ''}`}
     >
-      <div className="cam-stage">
+      <div className="cam-stage" {...stageEvents}>
         {error ? (
           <p className="cam-error">{error}</p>
         ) : (
           <video ref={video} className={`cam-video${mirrored ? ' mirror' : ''}`} autoPlay playsInline muted />
         )}
         {flash && <div className="cam-flash" />}
+        {focusDot && <span key={focusDot.k} className="cam-focus" style={{ left: focusDot.x, top: focusDot.y }} />}
+        {stream && !error && (ctl.caps?.torch || ctl.caps?.exposure || lenses.length > 1) && (
+          <div className="cam-tools" {...own}>
+            {ctl.caps?.torch && (
+              <button
+                type="button"
+                className={`cam-tool${ctl.torch ? ' on' : ''}`}
+                title={ctl.torch ? 'Apagar a lanterna' : 'Acender a lanterna'}
+                aria-label="Lanterna"
+                aria-pressed={ctl.torch}
+                onClick={ctl.toggleTorch}
+              >
+                {ctl.torch ? <Flashlight size={18} /> : <FlashlightOff size={18} />}
+              </button>
+            )}
+            {ctl.caps?.exposure && (
+              <button
+                type="button"
+                className={`cam-tool${exposureOpen ? ' on' : ''}`}
+                title="Brilho"
+                aria-label="Brilho"
+                aria-pressed={exposureOpen}
+                onClick={() => setExposureOpen((v) => !v)}
+              >
+                <Sun size={18} />
+              </button>
+            )}
+            {lenses.length > 1 && !rec && (
+              <button
+                type="button"
+                className="cam-tool"
+                title="Trocar a lente (grande-angular, normal, teleobjetiva)"
+                aria-label="Trocar a lente"
+                onClick={nextLens}
+              >
+                <Aperture size={18} />
+              </button>
+            )}
+          </div>
+        )}
+        {exposureOpen && ctl.caps?.exposure && (
+          <label className="cam-exposure" {...own}>
+            <Sun size={14} />
+            <input
+              type="range"
+              min={ctl.caps.exposure.min}
+              max={ctl.caps.exposure.max}
+              step={ctl.caps.exposure.step}
+              value={ctl.exposure}
+              aria-label="Brilho"
+              onChange={(e) => ctl.setExposure(Number(e.target.value))}
+            />
+            <span>
+              {ctl.exposure > 0 ? '+' : ''}
+              {(Math.round(ctl.exposure * 10) / 10).toString().replace('.', ',')}
+            </span>
+          </label>
+        )}
+        {stream && !error && ctl.caps?.zoom && (
+          <div className="cam-zoom" {...own}>
+            <div className="cam-zoom-stops" role="group" aria-label="Zoom">
+              {zoomStops(ctl.caps.zoom).map((z) => (
+                <button
+                  key={z}
+                  type="button"
+                  className={Math.abs(ctl.zoom - z) < 0.05 ? 'on' : undefined}
+                  aria-label={`Zoom ${fmtZoom(z)}`}
+                  onClick={() => ctl.setZoom(z)}
+                >
+                  {fmtZoom(z)}
+                </button>
+              ))}
+            </div>
+            <input
+              type="range"
+              min={ctl.caps.zoom.min}
+              max={ctl.caps.zoom.max}
+              step={ctl.caps.zoom.step}
+              value={ctl.zoom}
+              aria-label="Zoom"
+              onChange={(e) => ctl.setZoom(Number(e.target.value))}
+            />
+            {!zoomStops(ctl.caps.zoom).some((z) => Math.abs(ctl.zoom - z) < 0.05) && (
+              <span className="cam-zoom-now">{fmtZoom(ctl.zoom)}</span>
+            )}
+          </div>
+        )}
         {rec && (
           <span className="cam-rec" role="timer">
             <i /> {mmss(now - rec.started)} / {mmss(VIDEO_MAX_MS)}

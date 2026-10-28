@@ -1,5 +1,15 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.11.0 — 27/10/2026
+
+### Novidades
+- **Chamada privada do tamanho que você quiser**: arraste a barrinha embaixo da chamada para aumentar ou diminuir o espaço dela (duplo clique volta ao tamanho padrão). Grande o bastante, as mensagens e a caixa de escrever saem e a chamada ocupa a janela toda; “Mostrar conversa” ou arrastar a barrinha para cima trazem a conversa de volta. O tamanho fica guardado.
+- **Câmera do app no Android**: zoom (com os atalhos 0,6×, 1×, 2× e 5×, a barra ou a pinça na imagem), a grande-angular, troca de lente, lanterna, brilho e foco no toque. Só aparece o que a câmera do seu celular oferece.
+
+### Correções
+- **Tela cheia no celular e no iPad**: o botão de tela cheia do vídeo agora aparece na chamada do celular e funciona no iPhone e no iPad.
+- **Virar a câmera no iPhone e no iPad**: trocar entre a câmera da frente e a de trás não desliga mais a câmera nem derruba a chamada, e a sua imagem não fica mais preta.
+
 ## 1.10.0 — 23/10/2026
 
 ### Novidades

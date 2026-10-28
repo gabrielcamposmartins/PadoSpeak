@@ -2413,6 +2413,58 @@ html:not([data-touch]) .channel:hover .call-timer:has(~ .ch-del) {
   border: 1px solid var(--stage-border);
   box-shadow: var(--stage-shadow);
 }
+/* Divisa entre a chamada e a conversa: arrastar muda a altura do palco. Ocupa os vãos em volta dela. */
+.dm-split {
+  flex: none;
+  position: relative;
+  height: 12px;
+  margin: -10px 0;
+  display: grid;
+  place-items: center;
+  cursor: row-resize;
+  touch-action: none;
+  border-radius: 6px;
+  outline: none;
+}
+.dm-split .grip {
+  width: 46px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--faint);
+  opacity: 0.55;
+  transition: background 0.15s, width 0.15s, opacity 0.15s;
+}
+.dm-split:hover .grip,
+.dm-split:focus-visible .grip,
+.dm-split:active .grip {
+  width: 70px;
+  opacity: 1;
+  background: var(--tab-accent);
+}
+/* Palco grande: as mensagens e a caixa de escrever saem (continuam montadas, com o rascunho). */
+.dm-window.call-full .dm-call {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+.dm-window.call-full .dm-grid {
+  display: none;
+}
+.dm-window.call-full .dm-split {
+  margin-bottom: -6px;
+}
+.dm-split-show {
+  position: absolute;
+  right: 8px;
+  bottom: 14px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
 .dm-calling {
   position: absolute;
   top: 14px;
@@ -9014,6 +9066,129 @@ kbd {
   background: #e2331f;
   animation: rec-blink 1s infinite;
 }
+/* Ajustes da câmera (Android): lanterna, brilho e lente no canto; zoom embaixo. */
+.cam-stage {
+  touch-action: none;
+}
+.cam-tools {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 2;
+}
+.cam-tool {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+}
+.cam-tool.on {
+  color: #1a1200;
+  background: #ffd84a;
+  border-color: #ffd84a;
+}
+.cam-exposure {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  translate: -50% 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 18px;
+  color: #fff;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  background: rgba(0, 0, 0, 0.5);
+}
+.cam-exposure input {
+  width: min(180px, 40vw);
+  accent-color: #ffd84a;
+}
+.cam-exposure span {
+  min-width: 30px;
+}
+.cam-zoom {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  translate: -50% 0;
+  z-index: 2;
+  width: min(320px, calc(100% - 24px));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.cam-zoom-stops {
+  display: flex;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 20px;
+  background: rgba(0, 0, 0, 0.45);
+}
+.cam-zoom-stops button {
+  min-width: 38px;
+  height: 32px;
+  padding: 0 6px;
+  border-radius: 16px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.cam-zoom-stops button.on {
+  color: #1a1200;
+  background: #ffd84a;
+}
+.cam-zoom input {
+  width: 100%;
+  accent-color: #ffd84a;
+}
+.cam-zoom-now {
+  position: absolute;
+  right: 0;
+  top: 8px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  color: #fff;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  background: rgba(0, 0, 0, 0.45);
+}
+.cam-focus {
+  position: absolute;
+  width: 64px;
+  height: 64px;
+  margin: -32px 0 0 -32px;
+  border: 2px solid #ffd84a;
+  border-radius: 8px;
+  pointer-events: none;
+  animation: cam-focus 0.9s ease-out forwards;
+}
+@keyframes cam-focus {
+  from {
+    transform: scale(1.4);
+    opacity: 1;
+  }
+  60% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  to {
+    transform: scale(1);
+    opacity: 0;
+  }
+}
 .cam-error {
   color: #fff;
   padding: 24px;
@@ -11350,11 +11525,21 @@ a.downloading {
 .call-screen .voice-stage {
   background: transparent;
 }
-/* No celular o volume de cada pessoa fica no menu (toque longo), não por cima do vídeo. */
-html .call-screen .tile .tile-tools,
-html[data-touch] .call-screen .tile-tools,
+/* No celular o volume de cada pessoa fica no menu (toque longo), não por cima do vídeo: sobre ele fica
+   só o botão de tela cheia. */
+html .call-screen .tile .tile-tools > :not(.tile-full),
 .call-screen .tile:not(.screen) .tile-badges {
   display: none;
+}
+/* À esquerda: o canto direito é da miniatura da sua câmera. */
+html .call-screen .tile .tile-tools {
+  display: flex;
+  left: 10px;
+  right: auto;
+}
+.call-screen .tile-full {
+  width: 34px;
+  height: 34px;
 }
 .cs-calling {
   flex: 1;

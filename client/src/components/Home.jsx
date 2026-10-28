@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Plus,
   MessageSquare,
@@ -16,6 +16,7 @@ import {
   Smartphone,
   Monitor,
   Globe,
+  MessageSquareText,
 } from 'lucide-react';
 import { useStore, connRegistry, openLanDm, changeServer, messageSummary } from '../store.js';
 import { isDesktop } from '../lib/env.js';
@@ -28,6 +29,7 @@ import { FormattedText } from './Emotes.jsx';
 import { useLayout } from '../lib/layout.js';
 import { MobileBack } from './Mobile.jsx';
 import { plain } from '../lib/text.js';
+import { storage } from '../lib/api.js';
 import { ConnProvider, useConn, useConnKey } from './conn.jsx';
 import { GroupHeader, useCollapsed } from './Group.jsx';
 import { LATEST_NOTES } from './Modals.jsx';
@@ -823,6 +825,91 @@ export function DmView({ dmId, conn }) {
   );
 }
 
+// Chamada na conversa privada: a divisa embaixo do palco muda a altura dele. Puxada até sobrar pouco
+// espaço para a conversa, as mensagens e a caixa de escrever somem e o palco ocupa a janela toda.
+const SPLIT_KEY = 'padospeak.dmCallSplit';
+const CALL_MIN = 200; // altura mínima do palco
+const CHAT_MIN = 200; // abaixo disso, a conversa sai
+const HANDLE = 12; // altura da divisa
+
+function useCallSplit(active) {
+  const mainRef = useRef(null);
+  const callRef = useRef(null);
+  // Fração da altura disponível (do topo do palco ao fim da janela); null = o tamanho padrão.
+  const [frac, setFrac] = useState(() => {
+    const v = Number(storage.get(SPLIT_KEY));
+    return v > 0 && v <= 1 ? v : null;
+  });
+  const [avail, setAvail] = useState(0);
+  const drag = useRef(null);
+
+  const measure = () => {
+    const main = mainRef.current;
+    const call = callRef.current;
+    if (!main || !call) return 0;
+    const pad = parseFloat(getComputedStyle(main).paddingBottom) || 0;
+    const h = Math.max(0, main.getBoundingClientRect().bottom - pad - call.getBoundingClientRect().top - HANDLE);
+    setAvail(h);
+    return h;
+  };
+  useEffect(() => {
+    if (!active || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => measure());
+    ro.observe(mainRef.current);
+    measure();
+    return () => ro.disconnect();
+  }, [active]);
+
+  const save = (v) => {
+    setFrac(v);
+    storage.set(SPLIT_KEY, v == null ? null : String(Math.round(v * 1000) / 1000));
+  };
+  const full = frac != null && avail > 0 && avail * (1 - frac) < CHAT_MIN;
+  const height = frac != null && avail > 0 && !full ? Math.max(CALL_MIN, Math.round(avail * frac)) : null;
+
+  const handleProps = {
+    role: 'separator',
+    'aria-orientation': 'horizontal',
+    'aria-label': 'Altura da chamada',
+    tabIndex: 0,
+    title: full ? 'Arraste para cima para ver a conversa' : 'Arraste para mudar a altura da chamada (duplo clique volta ao padrão)',
+    onPointerDown: (e) => {
+      if (e.button !== 0) return;
+      const total = measure();
+      if (!total) return;
+      e.preventDefault();
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+      drag.current = { y: e.clientY, h: callRef.current.offsetHeight, total };
+    },
+    onPointerMove: (e) => {
+      const d = drag.current;
+      if (!d) return;
+      const h = Math.min(d.total, Math.max(CALL_MIN, d.h + e.clientY - d.y));
+      setFrac(h / d.total);
+    },
+    onPointerUp: () => {
+      if (!drag.current) return;
+      drag.current = null;
+      setFrac((v) => {
+        storage.set(SPLIT_KEY, v == null ? null : String(Math.round(v * 1000) / 1000));
+        return v;
+      });
+    },
+    onPointerCancel: () => (drag.current = null),
+    onDoubleClick: () => save(null),
+    onKeyDown: (e) => {
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+      e.preventDefault();
+      const total = measure();
+      if (!total) return;
+      const cur = full ? 1 : (callRef.current?.offsetHeight || CALL_MIN) / total;
+      const step = e.key === 'ArrowUp' ? -0.05 : 0.05;
+      save(Math.min(1, Math.max(CALL_MIN / total, cur + step)));
+    },
+  };
+  return { mainRef, callRef, full, height, handleProps, reset: () => save(null) };
+}
+
 function DmWindow({ dmId }) {
   const useC = useConn();
   const conn = useConnKey();
@@ -832,6 +919,8 @@ function DmWindow({ dmId }) {
   const recipient = useUser(dm?.recipient);
   const othersInCall = useC((s) => s.voiceStates[dmId]) || NOBODY;
   const phone = useLayout() === 'phone';
+  const inCall = voice?.channelId === dmId;
+  const split = useCallSplit(inCall && !phone && Boolean(dm && me));
   if (!dm || !me)
     return (
       <main className="main glass">
@@ -839,13 +928,12 @@ function DmWindow({ dmId }) {
       </main>
     );
 
-  const inCall = voice?.channelId === dmId;
   const channel = { id: dm.id, name: plain(recipient.displayName), guildId: null, dm: true, recipient };
   const { joinVoice, toggleCamera } = useC.getState();
   const ringing = !inCall && othersInCall.length > 0;
 
   return (
-    <main className="main glass dm-window">
+    <main ref={split.mainRef} className={`main glass dm-window${inCall && split.full ? ' call-full' : ''}`}>
       <div className="dm-actions">
         {phone && <MobileBack />}
         {!inCall && (
@@ -883,11 +971,26 @@ function DmWindow({ dmId }) {
         )}
       </div>
       {inCall && (
-        <div className="dm-call">
+        <div ref={split.callRef} className="dm-call" style={split.height ? { height: split.height } : undefined}>
           <VoiceView channel={channel} />
           {voice.peers.length === 0 && <div className="dm-calling">
               Chamando <UserName user={recipient} />…
             </div>}
+        </div>
+      )}
+      {inCall && !phone && (
+        <div className="dm-split" {...split.handleProps}>
+          <span className="grip" />
+          {split.full && (
+            <button
+              className="gloss dm-split-show"
+              onPointerDown={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => e.stopPropagation()}
+              onClick={split.reset}
+            >
+              <MessageSquareText size={14} /> Mostrar conversa
+            </button>
+          )}
         </div>
       )}
       <div className="dm-grid">
