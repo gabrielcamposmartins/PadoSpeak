@@ -3042,7 +3042,8 @@ html:not([data-touch]) .channel:hover .call-timer:has(~ .ch-del) {
     color-mix(in srgb, var(--banner) calc(var(--tile-mix) - 12%), var(--tile-glass))
   );
   backdrop-filter: blur(18px) saturate(1.2);
-  transition: box-shadow 0.15s;
+  /* O brilho de quem fala liga e desliga sem transição: animar o box-shadow repinta o bloco (e o
+     desfoque atrás dele) a cada quadro, e isso acontece toda vez que alguém começa ou para de falar. */
 }
 /* O banner borrado atrás da foto, como um brilho. */
 .tile::before {

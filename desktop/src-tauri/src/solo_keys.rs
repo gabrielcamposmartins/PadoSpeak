@@ -45,19 +45,33 @@ impl SoloKeys {
 }
 
 #[cfg(windows)]
-fn snapshot() -> [bool; 256] {
+fn key_down(vk: i32) -> bool {
     use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    // SAFETY: só lê o estado da tecla.
+    unsafe { GetAsyncKeyState(vk) as u16 & 0x8000 != 0 }
+}
+
+#[cfg(not(windows))]
+fn key_down(_vk: i32) -> bool {
+    false
+}
+
+fn snapshot() -> [bool; 256] {
     let mut down = [false; 256];
     for (vk, d) in down.iter_mut().enumerate().skip(1) {
-        // SAFETY: só lê o estado da tecla.
-        *d = unsafe { GetAsyncKeyState(vk as i32) } as u16 & 0x8000 != 0;
+        *d = key_down(vk as i32);
     }
     down
 }
 
-#[cfg(not(windows))]
-fn snapshot() -> [bool; 256] {
-    [false; 256]
+/// Em repouso, o teclado inteiro é lido só a cada tantas voltas (~100 ms) e, nas outras, só as teclas
+/// vigiadas: ler as 255 teclas a cada 8 ms eram uns 32 mil GetAsyncKeyState por segundo, o tempo todo.
+const FULL_EVERY: u32 = 12;
+
+/// Teclas que já estavam apertadas quando um toque começou: descidas na última leitura completa e agora.
+/// (Apertadas depois daquela leitura e ainda descidas contam como parte de uma combinação.)
+fn held_before(last_full: &[bool; 256], now: &[bool; 256]) -> [bool; 256] {
+    std::array::from_fn(|k| last_full[k] && now[k])
 }
 
 /// Liga a thread que avisa a janela (`solo-key` com o código da tecla) a cada toque.
@@ -67,7 +81,10 @@ pub fn spawn(app: AppHandle) -> Shared {
     std::thread::Builder::new()
         .name("teclas-sozinhas".into())
         .spawn(move || {
+            // Última leitura do teclado inteiro e o estado de cada tecla vigiada na volta anterior.
+            let mut last_full = [false; 256];
             let mut prev = [false; 256];
+            let mut idle: u32 = 0;
             // Tecla em toque: (código, vk, teclas já apertadas quando ela desceu, ainda limpo?).
             let mut tap: Option<(String, i32, [bool; 256], bool)> = None;
             loop {
@@ -78,27 +95,49 @@ pub fn spawn(app: AppHandle) -> Shared {
                     continue;
                 }
                 std::thread::sleep(Duration::from_millis(8));
-                let now = snapshot();
                 match &mut tap {
                     None => {
-                        if let Some((code, vk)) = watched.iter().find(|(_, vk)| now[*vk as usize] && !prev[*vk as usize]) {
-                            tap = Some((code.clone(), *vk, prev, true));
+                        idle = idle.wrapping_add(1);
+                        if idle % FULL_EVERY == 0 {
+                            last_full = snapshot();
+                        }
+                        let mut started = None;
+                        for (code, vk) in &watched {
+                            let down = key_down(*vk);
+                            if down && !prev[*vk as usize] && started.is_none() {
+                                started = Some((code.clone(), *vk));
+                            }
+                            prev[*vk as usize] = down;
+                        }
+                        if let Some((code, vk)) = started {
+                            tap = Some((code, vk, held_before(&last_full, &snapshot()), true));
                         }
                     }
                     Some((code, vk, before, clean)) => {
-                        // Outra tecla (ou botão do mouse) que desceu durante o toque: era uma combinação.
-                        if (1..256).any(|k| now[k] && !before[k] && !ignored(k as i32, *vk)) {
-                            *clean = false;
+                        let now = snapshot();
+                        for k in 1..256 {
+                            // Outra tecla (ou botão do mouse) que desceu durante o toque: era uma combinação.
+                            if now[k] && !before[k] && !ignored(k as i32, *vk) {
+                                *clean = false;
+                            }
+                            // Soltou uma que já estava apertada: se descer de novo, também é combinação.
+                            if !now[k] {
+                                before[k] = false;
+                            }
                         }
                         if !now[*vk as usize] {
                             if *clean {
                                 let _ = app.emit("solo-key", code.clone());
                             }
                             tap = None;
+                            idle = 0;
+                            last_full = now;
+                            for (_, w) in &watched {
+                                prev[*w as usize] = now[*w as usize];
+                            }
                         }
                     }
                 }
-                prev = now;
             }
         })
         .expect("thread das teclas");
@@ -116,5 +155,22 @@ mod tests {
         assert!(ignored(0x11, 0xA2));
         assert!(ignored(0xA2, 0xA5));
         assert!(!ignored(0x43, 0xA2));
+    }
+
+    #[test]
+    fn apertadas_antes_do_toque() {
+        let mut last_full = [false; 256];
+        let mut now = [false; 256];
+        // W segurado desde antes (andando num jogo): já estava apertado.
+        last_full[0x57] = true;
+        now[0x57] = true;
+        // C soltado depois da última leitura: não conta como apertado.
+        last_full[0x43] = true;
+        // Shift apertado depois da última leitura e ainda descido: parte de uma combinação.
+        now[0xA0] = true;
+        let before = held_before(&last_full, &now);
+        assert!(before[0x57]);
+        assert!(!before[0x43]);
+        assert!(!before[0xA0]);
     }
 }

@@ -914,12 +914,14 @@ function DmWindow({ dmId }) {
   const useC = useConn();
   const conn = useConnKey();
   const dm = useC((s) => s.dms.find((d) => d.id === dmId));
-  const voice = useC((s) => s.voice);
+  // Só o que esta janela usa da chamada: o snapshot inteiro muda a cada fala e a cada 2 s (estatísticas),
+  // e re-renderizar a conversa toda por isso gasta processador à toa.
+  const inCall = useC((s) => s.voice?.channelId === dmId);
+  const alone = useC((s) => s.voice?.channelId === dmId && s.voice.peers.length === 0);
   const me = useC((s) => s.me);
   const recipient = useUser(dm?.recipient);
   const othersInCall = useC((s) => s.voiceStates[dmId]) || NOBODY;
   const phone = useLayout() === 'phone';
-  const inCall = voice?.channelId === dmId;
   const split = useCallSplit(inCall && !phone && Boolean(dm && me));
   if (!dm || !me)
     return (
@@ -973,7 +975,7 @@ function DmWindow({ dmId }) {
       {inCall && (
         <div ref={split.callRef} className="dm-call" style={split.height ? { height: split.height } : undefined}>
           <VoiceView channel={channel} />
-          {voice.peers.length === 0 && <div className="dm-calling">
+          {alone && <div className="dm-calling">
               Chamando <UserName user={recipient} />…
             </div>}
         </div>

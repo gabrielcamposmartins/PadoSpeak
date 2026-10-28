@@ -45,7 +45,7 @@ function useCooldownClock(cooldowns) {
 export default function SoundPanel({ variant = 'side' }) {
   const vc = useVoiceConn();
   const lib = vc((s) => s.sounds);
-  const voice = vc((s) => s.voice);
+  const inCall = vc((s) => Boolean(s.voice));
   const me = vc((s) => s.me);
   const guildOff = vc((s) => (s.voice && !s.voice.dm ? s.guilds.find((g) => g.id === s.voice.guildId)?.sounds === false : false));
   // Sem a permissão do servidor, os botões só tocam para mim (como fora da chamada).
@@ -67,7 +67,7 @@ export default function SoundPanel({ variant = 'side' }) {
     .slice(0, rows * 3)
     .map((id) => id && byId.get(id))
     .filter(Boolean);
-  const live = Boolean(voice) && !guildOff && !noPerm;
+  const live = inCall && !guildOff && !noPerm;
 
   const waitOf = (snd) => {
     const c = cooldowns[snd.id];

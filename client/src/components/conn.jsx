@@ -1,6 +1,6 @@
 // Qual conexão (servidor, perfil local ou PC da rede) alimenta um pedaço da tela.
 // Conversas e chamadas da rede local usam os mesmos componentes do servidor, só que com outro store.
-import { createContext, useContext, useEffect, useReducer } from 'react';
+import { createContext, useCallback, useContext, useSyncExternalStore } from 'react';
 import { getConn, useStore } from '../store.js';
 
 const ConnContext = createContext('server');
@@ -28,13 +28,17 @@ export const unreadTotal = (states) => states.reduce((n, st) => n + Object.value
 
 export function useAcross(select) {
   const keys = useStore((s) => s.connKeys);
-  const [, force] = useReducer((x) => x + 1, 0);
   const joined = keys.join('|');
-  useEffect(() => {
-    const unsubs = joined.split('|').map((k) => getConn(k).subscribe(force));
-    return () => unsubs.forEach((u) => u());
-  }, [joined]);
-  return select(keys.map((k) => getConn(k).getState()));
+  const subscribe = useCallback(
+    (onChange) => {
+      const unsubs = joined.split('|').map((k) => getConn(k).subscribe(onChange));
+      return () => unsubs.forEach((u) => u());
+    },
+    [joined],
+  );
+  // Só re-renderiza quando o valor calculado muda: qualquer mudança nas conexões (cada fala numa chamada,
+  // alguém digitando) re-renderizava quem usa isto, e o App usa, ou seja, a tela inteira.
+  return useSyncExternalStore(subscribe, () => select(keys.map((k) => getConn(k).getState())));
 }
 
 /** Store da conexão com chamada em andamento (ou o servidor). */

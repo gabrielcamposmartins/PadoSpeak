@@ -270,8 +270,10 @@ function NowPlaying({ state, perms, mine }) {
 }
 
 export default function MusicPanel() {
-  const voice = useStore((s) => s.voice);
   const guildId = useStore((s) => s.currentGuildId);
+  // O canal de voz em que estou, se for deste servidor (não o snapshot inteiro da chamada, que muda a cada fala).
+  const voiceId = useStore((s) => s.voice?.channelId || null);
+  const voiceGuild = useStore((s) => s.voice?.guildId || null);
   const channels = useStore((s) => s.guildData[s.currentGuildId]?.channels) || [];
   const music = useStore((s) => s.music);
   const adding = useStore((s) => s.musicAdding);
@@ -281,7 +283,7 @@ export default function MusicPanel() {
   const perms = usePerms(useStore, guildId);
   const meId = useStore((s) => s.me?.id);
   const canAdd = perms.musicAdd;
-  const currentId = useStore((s) => (voice?.channelId ? s.music[voice.channelId]?.current?.track.id : null));
+  const currentId = useStore((s) => (voiceId ? s.music[voiceId]?.current?.track.id : null));
   // Favoritas e mais tocadas: ao abrir o painel e a cada música nova.
   useEffect(() => {
     if (guildId) useStore.getState().loadMusicLibrary(guildId);
@@ -289,7 +291,7 @@ export default function MusicPanel() {
   const [dragging, setDragging] = useState(false);
   const [link, setLink] = useState('');
 
-  const channelId = voice && voice.guildId === guildId ? voice.channelId : null;
+  const channelId = voiceId && voiceGuild === guildId ? voiceId : null;
   const channel = channels.find((c) => c.id === channelId);
   const state = channelId ? music[channelId] : null;
   const elsewhere = Object.values(music).filter((m) => m.guildId === guildId && m.channelId !== channelId && m.current);
