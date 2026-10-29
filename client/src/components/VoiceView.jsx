@@ -82,6 +82,15 @@ function StreamVideo({ stream, mirror, onStats }) {
     el.srcObject = stream;
     el.play?.().catch(() => {});
   }, [stream, trackId]);
+  // O celular pausa os vídeos quando a pessoa troca de app, e nem sempre volta a tocá-los.
+  useEffect(() => {
+    const replay = () => {
+      const el = ref.current;
+      if (document.visibilityState === 'visible' && el?.paused && el.srcObject) el.play?.().catch(() => {});
+    };
+    document.addEventListener('visibilitychange', replay);
+    return () => document.removeEventListener('visibilitychange', replay);
+  }, []);
   useEffect(() => {
     if (!onStats) return;
     let lastFrames = 0;

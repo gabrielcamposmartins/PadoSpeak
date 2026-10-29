@@ -44,6 +44,22 @@ const ICE_REFRESH_BEFORE_MS = 60 * 60 * 1000;
 const NET_CHANGE_WINDOW_MS = 15000;
 /** Microfone emudecido pelo sistema (parou de entregar som) por mais que isto: avisa. */
 const MIC_STALL_MS = 2500;
+/**
+ * Celular: trocar de app pausa (ou encerra) a câmera e o microfone, e o iPhone só entrega esses avisos
+ * quando a página volta. Até este tempo depois de voltar, uma trilha que caiu é religada, e não tratada
+ * como aparelho desconectado.
+ */
+const AWAY_GRACE_MS = 3000;
+/** Na volta, espera o sistema devolver as trilhas pausadas antes de abrir de novo as que não voltaram. */
+const REVIVE_DELAY_MS = 1200;
+
+/** Restrições da câmera no tamanho da chamada; `pick` escolhe qual (deviceId ou facingMode). */
+const cameraVideo = (pick) => ({
+  ...pick,
+  width: { ideal: CAMERA.width },
+  height: { ideal: CAMERA.height },
+  frameRate: { ideal: CAMERA.fps },
+});
 
 /**
  * Codec do vídeo que eu envio (câmera e tela). Sem escolha, o navegador usa VP8, que no Windows é
@@ -192,6 +208,13 @@ export class VoiceClient {
     // Microfone que voltou a ser conectado, depois de a chamada ter ficado sem nenhum.
     this.onDevices = () => this.findMic();
     navigator.mediaDevices?.addEventListener?.('devicechange', this.onDevices);
+    // Voltou para o app (celular): religa o que o sistema pausou ou encerrou em segundo plano.
+    this.onVisibility = () => {
+      if (document.visibilityState !== 'visible') return;
+      this.shownAt = Date.now();
+      this.scheduleRevive();
+    };
+    document.addEventListener('visibilitychange', this.onVisibility);
 
     const res = await this.rt.request('voice:join', { channelId, muted, deafened });
     if (res.error) {
@@ -355,6 +378,8 @@ export class VoiceClient {
     window.removeEventListener('online', this.onNetwork);
     navigator.connection?.removeEventListener?.('change', this.onConnection);
     navigator.mediaDevices?.removeEventListener?.('devicechange', this.onDevices);
+    document.removeEventListener('visibilitychange', this.onVisibility);
+    clearTimeout(this.reviveTimer);
     if (this.unblock) {
       window.removeEventListener('click', this.unblock, true);
       window.removeEventListener('keydown', this.unblock, true);
@@ -988,12 +1013,18 @@ export class VoiceClient {
   watchMicTrack(track) {
     if (!track) return;
     const current = () => track === this.rawMic?.getAudioTracks()[0];
-    track.onended = () => current() && this.recoverMic();
+    track.onended = () => {
+      if (!current()) return;
+      // Em segundo plano o sistema encerra o microfone: na volta ele é aberto de novo, o mesmo de antes.
+      if (this.away()) this.scheduleRevive();
+      else this.recoverMic();
+    };
     track.onmute = () => {
       clearTimeout(this.micMuteTimer);
       // Trocas de aparelho emudecem por um instante: só avisa se continuar.
       this.micMuteTimer = setTimeout(() => {
         if (!current() || !this.state.channelId) return;
+        if (this.away()) return this.scheduleRevive();
         this.state.micStalled = true;
         this.onNotice?.('Seu microfone parou de mandar som. Confira se outro programa ou o sistema bloqueou o acesso a ele.');
         this.changed();
@@ -1099,17 +1130,14 @@ export class VoiceClient {
 
   async setCamera(on) {
     if (on && !this.camera) {
-      this.camera = await navigator.mediaDevices.getUserMedia({
-        video: {
-          deviceId: this.devices.camera ? { exact: this.devices.camera } : undefined,
-          width: { ideal: CAMERA.width },
-          height: { ideal: CAMERA.height },
-          frameRate: { ideal: CAMERA.fps },
-        },
-      });
+      const pick = { deviceId: this.devices.camera ? { exact: this.devices.camera } : undefined };
+      this.camera = await navigator.mediaDevices.getUserMedia({ video: cameraVideo(pick) });
+      this.cameraPick = pick;
       const track = this.camera.getVideoTracks()[0];
       // Termina sozinha quando o Windows entrega a webcam a outro programa (ou ela é desconectada).
       track.onended = () => {
+        // Celular em segundo plano: o sistema tirou a câmera do app, e ela volta junto com ele.
+        if (this.away()) return this.scheduleRevive();
         this.onNotice?.(
           'Sua câmera foi desligada: outro programa (ou outra janela do PadoSpeak) passou a usá-la, ou ela foi desconectada.',
         );
@@ -1142,15 +1170,7 @@ export class VoiceClient {
     const facing = this.state.cameraFacing === 'environment' ? 'user' : 'environment';
     const old = this.camera.getVideoTracks()[0];
     const onended = old?.onended || null;
-    const open = (mode) =>
-      navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: mode },
-          width: { ideal: CAMERA.width },
-          height: { ideal: CAMERA.height },
-          frameRate: { ideal: CAMERA.fps },
-        },
-      });
+    const open = (mode) => navigator.mediaDevices.getUserMedia({ video: cameraVideo({ facingMode: { ideal: mode } }) });
     if (old) {
       old.onended = null;
       old.stop();
@@ -1180,6 +1200,7 @@ export class VoiceClient {
       this.camera.addTrack(track);
       for (const peer of this.peers.values()) if (peer.senders.camera) await peer.senders.camera.replaceTrack(track);
       this.state.cameraFacing = now;
+      this.cameraPick = { facingMode: { ideal: now } };
       if (now !== facing) this.onNotice?.('Não deu para abrir a outra câmera deste aparelho.');
     } catch (e) {
       if (this.camera) await this.setCamera(false);
@@ -1191,12 +1212,79 @@ export class VoiceClient {
     }
   }
 
-  /** No iPhone, abrir a câmera às vezes cala ou encerra o microfone: pega ele de volta. */
+  /**
+   * No iPhone, abrir a câmera (ou trocar de app) às vezes cala ou encerra o microfone: abre ele de novo,
+   * o mesmo de antes; se não abrir, segue como microfone desconectado.
+   */
   reviveMic() {
+    if (!this.state.channelId || this.recoveringMic) return;
     const t = this.rawMic?.getAudioTracks()[0];
-    if (!t || !this.state.channelId) return;
-    if (t.readyState === 'ended') this.recoverMic();
-    else if (t.muted) this.replaceMic().catch(() => {});
+    if (!t) return this.findMic();
+    if (t.readyState !== 'ended' && !t.muted) return;
+    clearTimeout(this.micMuteTimer);
+    this.recoveringMic = true;
+    this.replaceMic()
+      .then(() => {
+        this.state.micStalled = false;
+        this.recoveringMic = false;
+      })
+      .catch(() => {
+        this.recoveringMic = false;
+        this.recoverMic();
+      });
+  }
+
+  /** A página está em segundo plano, ou acabou de voltar dele (veja AWAY_GRACE_MS). */
+  away() {
+    return document.visibilityState !== 'visible' || Date.now() - (this.shownAt || 0) < AWAY_GRACE_MS;
+  }
+
+  /** Religa câmera, microfone e o som da chamada um pouco depois de a página voltar a aparecer. */
+  scheduleRevive() {
+    if (document.visibilityState !== 'visible' || !this.state.channelId) return;
+    clearTimeout(this.reviveTimer);
+    this.reviveTimer = setTimeout(() => {
+      if (!this.state.channelId) return;
+      this.reviveMic();
+      this.reviveCamera();
+      // O iPhone pausa os <audio> da chamada em segundo plano.
+      for (const peer of this.peers.values()) for (const el of peer.audioEls.values()) if (el.paused) this.play(el);
+    }, REVIVE_DELAY_MS);
+  }
+
+  /**
+   * A câmera parou enquanto o app estava em segundo plano (o celular não deixa filmar fora da tela):
+   * abre de novo a mesma, no mesmo stream, como na troca de câmera.
+   */
+  async reviveCamera() {
+    const old = this.camera?.getVideoTracks()[0];
+    if (!this.camera || this.flipping || (old?.readyState === 'live' && !old.muted)) return;
+    this.flipping = true;
+    const onended = old?.onended || null;
+    if (old) {
+      old.onended = null;
+      old.stop();
+      this.camera.removeTrack(old);
+    }
+    try {
+      const next = await navigator.mediaDevices.getUserMedia({ video: cameraVideo(this.cameraPick || {}) });
+      if (!this.camera) {
+        next.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      const track = next.getVideoTracks()[0];
+      track.onended = onended;
+      this.camera.addTrack(track);
+      for (const peer of this.peers.values()) if (peer.senders.camera) await peer.senders.camera.replaceTrack(track);
+    } catch (e) {
+      console.warn('[voz] a câmera não voltou', e);
+      if (this.camera) await this.setCamera(false);
+      this.onNotice?.('Não deu para religar a sua câmera na volta para o app: ligue de novo pelo botão.');
+    } finally {
+      this.flipping = false;
+      this.reviveMic();
+      this.changed();
+    }
   }
 
   addScreenTracks(peer) {

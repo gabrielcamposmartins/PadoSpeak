@@ -1,5 +1,11 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.11.1 — 28/10/2026
+
+### Correções
+- **Chamada ao trocar de app no celular**: ao voltar para o PadoSpeak, a câmera e o microfone religam sozinhos. Antes, a câmera desligava e o microfone ficava mudo. Com o app fora da tela, o celular não deixa filmar (e, no iPhone, nem usar o microfone), mas tudo volta assim que você abre o app de novo.
+- **Chamadas mais leves**: o app usa bem menos processador e placa de vídeo durante as chamadas, principalmente com a conversa aberta ao lado.
+
 ## 1.11.0 — 27/10/2026
 
 ### Novidades
