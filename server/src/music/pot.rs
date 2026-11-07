@@ -140,6 +140,62 @@ pub async fn start_shim(app: Arc<App>) -> Result<(), String> {
     Ok(())
 }
 
+/// No nó de mídia: o provedor bgutil dele, para onde o intermediário local repassa (veja `use_local_provider`).
+static LOCAL_TARGET: RwLock<Option<String>> = RwLock::new(None);
+/// O endereço do intermediário local do nó (sobe uma vez só).
+static LOCAL_SHIM: tokio::sync::Mutex<Option<String>> = tokio::sync::Mutex::const_new(None);
+
+/// No nó de mídia: o yt-dlp daqui pede o token ao provedor bgutil daqui (`target`) por um intermediário no laço
+/// local, como o principal faz. É ele que pede um token novo (sem o guardado) depois de uma falha
+/// (`mark_blocked`); falando direto com o bgutil, o yt-dlp reaproveitaria sempre o mesmo token.
+pub async fn use_local_provider(target: String) {
+    *LOCAL_TARGET.write().unwrap() = Some(target.clone());
+    let mut shim = LOCAL_SHIM.lock().await;
+    if shim.is_none() {
+        let started = async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.ok()?;
+            let port = listener.local_addr().ok()?.port();
+            let router = Router::new().route("/get_pot", post(local_get_pot)).route("/ping", get(local_ping));
+            tokio::spawn(async move {
+                let _ = axum::serve(listener, router).await;
+            });
+            Some(format!("http://127.0.0.1:{port}"))
+        }
+        .await;
+        *shim = started;
+    }
+    // Sem o intermediário (não deu para abrir a porta), fala direto com o provedor.
+    set_direct(Some(shim.clone().unwrap_or(target)));
+}
+
+fn local_http() -> &'static reqwest::Client {
+    static HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    HTTP.get_or_init(|| reqwest::Client::builder().timeout(POT_TIMEOUT).build().expect("cliente HTTP"))
+}
+
+async fn local_get_pot(Json(body): Json<Value>) -> Response {
+    let Some(target) = LOCAL_TARGET.read().unwrap().clone() else {
+        return reply(StatusCode::SERVICE_UNAVAILABLE, json!({ "error": "provedor de token parado" }));
+    };
+    match local_http().post(format!("{target}/get_pot")).json(&for_node(body)).send().await {
+        Ok(r) => {
+            let status = StatusCode::from_u16(r.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            reply(status, r.json().await.unwrap_or_else(|e| json!({ "error": e.to_string() })))
+        }
+        Err(e) => reply(StatusCode::BAD_GATEWAY, json!({ "error": e.to_string() })),
+    }
+}
+
+async fn local_ping() -> Response {
+    let Some(target) = LOCAL_TARGET.read().unwrap().clone() else {
+        return reply(StatusCode::SERVICE_UNAVAILABLE, json!({ "error": "provedor de token parado" }));
+    };
+    match local_http().get(format!("{target}/ping")).timeout(Duration::from_secs(5)).send().await {
+        Ok(r) => reply(StatusCode::OK, r.json().await.unwrap_or(Value::Null)),
+        Err(e) => reply(StatusCode::BAD_GATEWAY, json!({ "error": e.to_string() })),
+    }
+}
+
 /// O pedido do plugin, ajustado para o nó: o proxy e o endereço de saída daqui não valem na rede dele, e
 /// depois de um bloqueio o token sai novo.
 fn for_node(mut body: Value) -> Value {
@@ -198,6 +254,17 @@ async fn ping(State(app): State<Arc<App>>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn depois_de_uma_falha_o_token_sai_novo() {
+        *FRESH_UNTIL.lock().unwrap() = None;
+        let pedido = json!({ "content_binding": "x", "proxy": "http://p", "source_address": "1.2.3.4" });
+        let normal = for_node(pedido.clone());
+        assert!(normal.get("bypass_cache").is_none() && normal.get("proxy").is_none() && normal.get("source_address").is_none());
+        mark_blocked();
+        assert_eq!(for_node(pedido)["bypass_cache"], json!(true));
+        *FRESH_UNTIL.lock().unwrap() = None;
+    }
 
     #[test]
     fn pedido_vai_ao_no_sem_proxy_e_novo_depois_de_bloqueio() {

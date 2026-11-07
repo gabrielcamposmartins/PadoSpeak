@@ -55,20 +55,40 @@ pub fn is_block_error(e: &str) -> bool {
 /// Resolve o áudio testando a URL antes: se o YouTube recusar o meio do arquivo (a música "tocaria" sem
 /// som) ou entregar devagar demais, tenta o próximo cliente. Sem nenhum perfeito, fica com o primeiro que
 /// resolveu. Serve ao servidor principal e ao nó de mídia (que busca do IP dele).
-pub async fn resolve_playable(tools: &Tools, clients: &Clients, logs: &Logs, source: &Source) -> Result<Audio, String> {
+///
+/// `stop_on_block`: no primeiro bloqueio do YouTube, desiste (quem chama tem outro caminho, o nó de mídia, e
+/// tentar os outros clientes daqui só atrasaria a música: o bloqueio é do IP, não do cliente).
+pub async fn resolve_playable(tools: &Tools, clients: &Clients, logs: &Logs, source: &Source, stop_on_block: bool) -> Result<Audio, String> {
     let mut fallback = None;
     let mut error = None;
-    for client in CLIENTS {
+    let mut retried = false;
+    let mut order = client_order().into_iter().collect::<std::collections::VecDeque<_>>();
+    while let Some(client) = order.pop_front() {
         match resolve_audio(tools, source, client).await {
             Ok(audio) => {
                 if probe_audio(clients.for_url(&audio.url), &audio.url).await {
+                    *LAST_GOOD.lock().unwrap() = Some(client);
                     return Ok(audio);
                 }
-                logs.warn(format!("Música: o YouTube recusou ou atrasou o áudio (cliente {}); tentando outro", client.unwrap_or("padrão")));
+                // A URL não serve: os próximos pedidos saem com um token novo (sem o guardado). Com token, a
+                // primeira falha tenta de novo o mesmo cliente, já com o token novo, antes de passar ao próximo.
+                super::pot::mark_blocked();
+                let again = !retried && super::pot::available();
+                retried |= again;
+                logs.warn(format!(
+                    "Música: o YouTube recusou ou atrasou o áudio (cliente {}); {}",
+                    client.unwrap_or("padrão"),
+                    if again { "pedindo um token novo e tentando de novo" } else { "tentando outro" }
+                ));
+                if again {
+                    order.push_front(client);
+                }
                 fallback.get_or_insert(audio);
             }
             // Ao vivo ou sem resultado: os outros clientes dariam o mesmo.
             Err(e) if fallback.is_none() && error.is_none() && (e.contains("ao vivo") || e.contains("nenhum resultado")) => return Err(e),
+            // Bloqueado aqui, com outro caminho para a música: desiste já.
+            Err(e) if stop_on_block && fallback.is_none() && is_block_error(&e) => return Err(e),
             // O primeiro erro de bloqueio fica (é ele que diz que vale buscar pelo nó).
             Err(e) => {
                 if error.as_deref().is_none_or(|old| !is_block_error(old)) {
@@ -78,6 +98,28 @@ pub async fn resolve_playable(tools: &Tools, clients: &Clients, logs: &Logs, sou
         }
     }
     fallback.ok_or_else(|| error.unwrap_or_else(|| "nenhum resultado no YouTube".into()))
+}
+
+/// O último cliente cuja URL passou no teste: a próxima música começa por ele.
+static LAST_GOOD: std::sync::Mutex<Option<Option<&'static str>>> = std::sync::Mutex::new(None);
+
+/// A ordem dos clientes desta vez: o que funcionou por último, depois a ordem de sempre. Com o token do
+/// YouTube (`super::pot`), o cliente `web` vem primeiro: com o token, a URL dele serve o arquivo inteiro, e
+/// o padrão do yt-dlp (o de TV, hoje) é recusado já no primeiro byte.
+fn client_order() -> Vec<Option<&'static str>> {
+    let mut list: Vec<Option<&'static str>> = Vec::new();
+    if let Some(last) = *LAST_GOOD.lock().unwrap() {
+        list.push(last);
+    }
+    if super::pot::available() {
+        list.push(Some("web"));
+    }
+    for c in CLIENTS {
+        if !list.contains(&c) {
+            list.push(c);
+        }
+    }
+    list
 }
 
 /// As URLs do googlevideo expiram em ~6 h; renovamos antes.
@@ -191,8 +233,9 @@ pub async fn handler(
             Ok(r) => r,
             Err(e) => return (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
         };
-        // URL expirada ou recusada: resolve de novo uma vez.
+        // URL expirada ou recusada: resolve de novo uma vez, já com um token novo do YouTube.
         if matches!(res.status().as_u16(), 403 | 410) && attempt == 0 {
+            crate::music::pot::mark_blocked();
             continue;
         }
         let status = StatusCode::from_u16(res.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);

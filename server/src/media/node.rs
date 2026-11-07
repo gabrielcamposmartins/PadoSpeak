@@ -391,7 +391,7 @@ impl Shared {
                     *slot = None;
                     match super::pot::launch(&self.http, &self.cfg.data_dir, &self.logs).await {
                         Ok(p) => {
-                            crate::music::pot::set_direct(Some(p.base.clone()));
+                            crate::music::pot::use_local_provider(p.base.clone()).await;
                             self.set_status(|s| s.pot = "pronto".into());
                             *slot = Some(p);
                         }
@@ -410,6 +410,7 @@ impl Shared {
                 }
             }
             "music.resolve" if self.cfg.music => self.music.resolve(&d).await,
+            "music.info" if self.cfg.music => self.music.info(&d).await,
             _ => json!({ "error": "Este nó não faz isso" }),
         }
     }
@@ -423,7 +424,7 @@ impl Shared {
         }
         match super::pot::launch(&self.http, &self.cfg.data_dir, &self.logs).await {
             Ok(p) => {
-                crate::music::pot::set_direct(Some(p.base.clone()));
+                crate::music::pot::use_local_provider(p.base.clone()).await;
                 self.set_status(|s| s.pot = "pronto".into());
                 *slot = Some(p);
             }
@@ -469,7 +470,7 @@ impl NodeMusic {
             }
         }
         let tools = self.tools().await?;
-        let audio = crate::music::stream::resolve_playable(&tools, &self.clients, &self.logs, source).await?;
+        let audio = crate::music::stream::resolve_playable(&tools, &self.clients, &self.logs, source, false).await?;
         let mut cache = self.audio.lock().unwrap();
         cache.retain(|_, a| a.fetched.elapsed() < AUDIO_TTL);
         cache.insert(key.to_string(), audio.clone());
@@ -486,6 +487,26 @@ impl NodeMusic {
         }
         match self.resolve_key(key, &source, false).await {
             Ok(a) => json!({ "ok": true, "durationMs": a.duration_ms }),
+            Err(e) => json!({ "error": e }),
+        }
+    }
+
+    /// Os dados de um link do YouTube (título, canal, duração; numa lista, as faixas), lidos do IP daqui. Só
+    /// aceita links do YouTube.
+    async fn info(&self, d: &Value) -> Value {
+        use crate::music::resolve::Link;
+        let url = d.get("url").and_then(Value::as_str).unwrap_or_default();
+        let (url, playlist) = match crate::music::resolve::classify(url) {
+            Some(Link::YoutubeVideo(u)) => (u, false),
+            Some(Link::YoutubePlaylist(u)) => (u, d.get("playlist").and_then(Value::as_bool).unwrap_or(true)),
+            _ => return json!({ "error": "link inválido" }),
+        };
+        let tools = match self.tools().await {
+            Ok(t) => t,
+            Err(e) => return json!({ "error": e }),
+        };
+        match crate::music::resolve::youtube_json(&tools, &url, playlist).await {
+            Ok(v) => json!({ "json": v }),
             Err(e) => json!({ "error": e }),
         }
     }
@@ -508,8 +529,9 @@ impl NodeMusic {
                     req = req.header(reqwest::header::RANGE, r);
                 }
                 let res = req.send().await.map_err(|e| e.to_string())?;
-                // URL expirada ou recusada: resolve de novo uma vez.
+                // URL expirada ou recusada: resolve de novo uma vez, já com um token novo do YouTube.
                 if matches!(res.status().as_u16(), 403 | 410) && attempt == 0 {
+                    crate::music::pot::mark_blocked();
                     continue;
                 }
                 return Ok(res);

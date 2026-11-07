@@ -1,5 +1,10 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.12.1 — 07/11/2026
+
+### Correções
+- **Músicas do YouTube**: links do YouTube voltam a entrar na fila, e as músicas começam a tocar mais rápido e param menos no meio.
+
 ## 1.12.0 — 07/11/2026
 
 ### Novidades

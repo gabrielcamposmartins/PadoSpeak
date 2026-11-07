@@ -110,7 +110,9 @@ pub async fn launch(http: &reqwest::Client, data_dir: &Path, logs: &Logs) -> Res
             let mut lines = tokio::io::BufReader::new(pipe).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let line = line.trim();
-                if !line.is_empty() {
+                // Os tokens em si (e os dados de quem pede) não vão para o log: valem como credencial.
+                let secret = ["poToken", "IntegrityToken", "Generating POT for", "visitor", "challenge"].iter().any(|k| line.contains(k));
+                if !line.is_empty() && !secret {
                     logs.info(format!("Token (bgutil): {}", line.chars().take(300).collect::<String>()));
                 }
             }

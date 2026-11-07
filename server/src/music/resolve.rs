@@ -100,7 +100,9 @@ pub fn parse_youtube_json(json: &Value) -> Vec<Track> {
     }
 }
 
-async fn youtube(tools: &Tools, url: &str, playlist: bool) -> Result<Vec<Track>, String> {
+/// Os dados (título, canal, duração) de um vídeo ou de uma lista do YouTube, pelo yt-dlp, em JSON. O nó de
+/// mídia também usa (`music.info`): o principal bloqueado pelo YouTube pede a ele.
+pub async fn youtube_json(tools: &Tools, url: &str, playlist: bool) -> Result<Value, String> {
     let end = MAX_IMPORT.to_string();
     let mut args = vec!["-J", "--flat-playlist", "--playlist-end", &end];
     if !playlist {
@@ -108,8 +110,11 @@ async fn youtube(tools: &Tools, url: &str, playlist: bool) -> Result<Vec<Track>,
     }
     args.push(url);
     let stdout = tools.run(&args, Duration::from_secs(90)).await.map_err(|e| format!("YouTube: {e}"))?;
-    let json: Value = serde_json::from_slice(&stdout).map_err(|e| format!("yt-dlp devolveu JSON inválido: {e}"))?;
-    Ok(parse_youtube_json(&json))
+    serde_json::from_slice(&stdout).map_err(|e| format!("yt-dlp devolveu JSON inválido: {e}"))
+}
+
+pub async fn youtube(tools: &Tools, url: &str, playlist: bool) -> Result<Vec<Track>, String> {
+    Ok(parse_youtube_json(&youtube_json(tools, url, playlist).await?))
 }
 
 // ---------- Spotify (página pública de embed, sem credenciais) ----------

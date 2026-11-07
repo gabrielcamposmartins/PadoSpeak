@@ -16,7 +16,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 /// Depois de o YouTube bloquear este servidor (mesmo com token novo), as músicas vêm pelo nó de mídia
 /// por este tempo (no modo automático).
-const RELAY_AFTER_BLOCK: Duration = Duration::from_secs(30 * 60);
+const RELAY_AFTER_BLOCK: Duration = Duration::from_secs(6 * 3600);
 /// O nó resolve com o yt-dlp dele, que pode levar o mesmo que aqui (várias tentativas).
 const NODE_RESOLVE_TIMEOUT: Duration = Duration::from_secs(150);
 
@@ -340,7 +340,7 @@ impl MusicManager {
     /// Adiciona as músicas de um link à fila do canal de voz de quem enviou.
     pub async fn add(self: &Arc<Self>, channel_id: &str, guild_id: &str, user: &User, url: &str) -> Result<Value, String> {
         let tools = self.tools().await?;
-        let mut tracks = super::resolve::resolve(&tools, &self.http, url).await?;
+        let mut tracks = self.resolve_link(&tools, url).await?;
         for t in &mut tracks {
             t.added_by = Some(user.clone());
         }
@@ -493,7 +493,9 @@ impl MusicManager {
                 return self.resolve_on_node(media, node, track_id, source).await;
             }
         }
-        match super::stream::resolve_playable(tools, &self.clients, &self.logs, source).await {
+        // Com o nó à mão, o primeiro bloqueio já basta para mandar a música para ele (o bloqueio é do IP daqui).
+        let has_route = relay.as_ref().is_some_and(|(media, _)| media.settings().music_relay != "off");
+        match super::stream::resolve_playable(tools, &self.clients, &self.logs, source, has_route).await {
             Err(e) if is_block_error(&e) => {
                 *self.blocked_at.lock().unwrap() = Some(Instant::now());
                 match &relay {
@@ -506,6 +508,50 @@ impl MusicManager {
             }
             other => other,
         }
+    }
+
+    /// As faixas de um link. Os dados de um link do YouTube vêm do yt-dlp; com este servidor bloqueado pelo
+    /// YouTube (há pouco, ou agora) e um nó de mídia à mão, quem lê é o nó, do IP dele (como o áudio).
+    async fn resolve_link(&self, tools: &Tools, url: &str) -> Result<Vec<Track>, String> {
+        use super::resolve::Link;
+        let (yt, playlist) = match super::resolve::classify(url) {
+            Some(Link::YoutubeVideo(u)) => (u, false),
+            Some(Link::YoutubePlaylist(u)) => (u, true),
+            _ => return super::resolve::resolve(tools, &self.http, url).await,
+        };
+        let relay = self.media.get().and_then(|m| m.music_node().map(|n| (m.clone(), n))).filter(|(m, _)| m.settings().music_relay != "off");
+        let blocked = self.blocked_at.lock().unwrap().is_some_and(|t| t.elapsed() < RELAY_AFTER_BLOCK);
+        if let Some((media, node)) = &relay {
+            if blocked || media.settings().music_relay == "always" {
+                return self.info_on_node(media, node, &yt, playlist).await;
+            }
+        }
+        match super::resolve::youtube(tools, &yt, playlist).await {
+            Err(e) if is_block_error(&e) => {
+                *self.blocked_at.lock().unwrap() = Some(Instant::now());
+                match &relay {
+                    Some((media, node)) => {
+                        self.logs.warn("Música: o YouTube bloqueou este servidor; lendo o link pelo nó de mídia");
+                        self.info_on_node(media, node, &yt, playlist).await
+                    }
+                    None => Err(e),
+                }
+            }
+            Ok(t) if t.is_empty() => Err("Nenhuma música disponível nesse link".into()),
+            other => other,
+        }
+    }
+
+    async fn info_on_node(&self, media: &Arc<Registry>, node: &str, url: &str, playlist: bool) -> Result<Vec<Track>, String> {
+        let res = media.request_for(node, "music.info", json!({ "url": url, "playlist": playlist }), NODE_RESOLVE_TIMEOUT).await?;
+        if let Some(e) = res.get("error").and_then(Value::as_str) {
+            return Err(e.to_string());
+        }
+        let tracks = super::resolve::parse_youtube_json(&res["json"]);
+        if tracks.is_empty() {
+            return Err("Nenhuma música disponível nesse link".into());
+        }
+        Ok(tracks)
     }
 
     /// O nó resolve com o yt-dlp dele e guarda a URL; aqui fica só `node:<nó>:<faixa>` (o proxy pede o

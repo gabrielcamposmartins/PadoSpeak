@@ -391,6 +391,14 @@ impl Hub {
         if target == current {
             return;
         }
+        // No log do servidor: dá para conferir quando as chamadas passam pelo nó (e quando voltam para a malha).
+        eprintln!(
+            "[mídia] sala {}: {} → {} ({} na chamada, {capable} com SFU)",
+            channel_id.chars().take(8).collect::<String>(),
+            current.as_deref().unwrap_or("malha"),
+            target.as_deref().unwrap_or("malha"),
+            list.len()
+        );
         s.route_epoch += 1;
         let epoch = s.route_epoch;
         let conns: Vec<ConnId> = list.iter().map(|p| p.peer_id.clone()).collect();
