@@ -12,6 +12,7 @@ import Shell from './components/Shell.jsx';
 import Modals from './components/Modals.jsx';
 import IncomingCalls from './components/IncomingCall.jsx';
 import CallScreen from './components/CallScreen.jsx';
+import { FloatingMiniCall } from './components/MiniCall.jsx';
 import { SoundSprite } from './components/SoundIcons.jsx';
 import Avatar from './components/Avatar.jsx';
 import { TitleBar } from './components/Aero.jsx';
@@ -186,6 +187,7 @@ export default function App() {
       )}
       <SoundSprite />
       {loggedIn && !isPanel && <CallScreen />}
+      {loggedIn && !isPanel && <FloatingMiniCall />}
       <Modals />
       {loggedIn && <IncomingCalls />}
       {loggedIn && <UnreadBadge />}

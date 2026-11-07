@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Power, Play, Copy, Check, LogIn, Globe, LogOut, RotateCcw } from 'lucide-react';
-import { host } from '../lib/host.js';
+import { ArrowLeft, Power, Play, Copy, Check, LogIn, Globe, LogOut, RotateCcw, Radio } from 'lucide-react';
+import { host, mediaNode } from '../lib/host.js';
 import { isPanel, isTauri, isDesktop, DEFAULT_SERVER } from '../lib/env.js';
 import { useStore, changeServer, disconnectServer } from '../store.js';
 import { SceneArt } from './Aero.jsx';
@@ -100,6 +100,106 @@ const BIND_OPTIONS = [
   { value: '0.0.0.0', label: 'Toda a rede (0.0.0.0)' },
   { value: '127.0.0.1', label: 'Só esta máquina (127.0.0.1)' },
 ];
+
+/**
+ * Nó de mídia deste PC (só no app do Windows): leva as chamadas (SFU) e o token da música de um servidor do
+ * PadoSpeak. O código vem do Painel → Mídia do servidor; ligado uma vez, volta sozinho quando o app abre.
+ */
+function MediaNodeSection() {
+  const [view, setView] = useState(null);
+  const [code, setCode] = useState('');
+  const [port, setPort] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    let alive = true;
+    const refresh = () => mediaNode.status().then((v) => alive && setView(v), () => {});
+    refresh();
+    const t = setInterval(refresh, 2000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, []);
+  if (!view) return null;
+  const st = view.status;
+  const running = Boolean(st?.running);
+  const run = async (fn) => {
+    setBusy(true);
+    setError('');
+    try {
+      setView(await fn());
+      setCode('');
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const state = !running ? 'desligado' : st.connected ? `ligado a ${st.server}` : st.error ? `tentando ligar: ${st.error}` : 'ligando…';
+  return (
+    <section className="glass host-addr" aria-label="Nó de mídia">
+      <div className="sec">
+        <Radio size={13} /> NÓ DE MÍDIA
+      </div>
+      <p className="kv">
+        Este PC leva as chamadas dos canais de voz e o token da música de um servidor do PadoSpeak. Se ele desligar, as chamadas continuam
+        direto entre os aparelhos.
+      </p>
+      <p className="kv">
+        <b>{state}</b>
+        {running && st.connected && (
+          <>
+            {' '}
+            · “{st.name}” · UDP {st.udpPort} · {st.rooms} {st.rooms === 1 ? 'sala' : 'salas'} · token: {st.pot}
+          </>
+        )}
+      </p>
+      {running ? (
+        <div className="fp-buttons">
+          <button type="button" className="btn" disabled={busy} onClick={() => run(mediaNode.stop)}>
+            <Power size={14} /> Desligar
+          </button>
+        </div>
+      ) : (
+        <form
+          className="host-media-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            run(() => mediaNode.start(code, Number(port) || null));
+          }}
+        >
+          <input
+            value={code}
+            placeholder={view.hasCode ? 'Código guardado (ou cole outro)' : 'Código do nó (Painel → Mídia, no servidor)'}
+            aria-label="Código do nó de mídia"
+            onChange={(e) => setCode(e.target.value)}
+          />
+          <input
+            value={port}
+            inputMode="numeric"
+            placeholder={`Porta UDP (${view.udpPort || 3479})`}
+            aria-label="Porta UDP do nó"
+            onChange={(e) => setPort(e.target.value.replace(/\D/g, '').slice(0, 5))}
+          />
+          <button type="submit" className="btn" disabled={busy || (!code.trim() && !view.hasCode)}>
+            <Play size={14} /> Ligar
+          </button>
+          {view.hasCode && (
+            <button type="button" className="btn ghost" disabled={busy} onClick={() => run(mediaNode.forget)}>
+              Esquecer o código
+            </button>
+          )}
+        </form>
+      )}
+      {error && <p className="kv host-media-error">{error}</p>}
+      <p className="kv">
+        Quem está fora da sua rede só chega a este PC com a porta UDP {st?.udpPort || view.udpPort || 3479} redirecionada no roteador. Sem
+        isso, essas pessoas ficam na conexão direta, como antes.
+      </p>
+    </section>
+  );
+}
 
 function uptime(startedAt, now) {
   const s = Math.max(0, Math.floor((now - startedAt) / 1000));
@@ -403,6 +503,7 @@ export default function HostPage() {
 
         <div className="host-col">
           {isDesktop && <ConnectionSection hostedUrl={hostedUrl} />}
+          {isTauri && <MediaNodeSection />}
           <section className="glass host-addr" aria-label="Endereços">
             <div className="sec">CHAME A GALERA — COMPARTILHE UM DESTES ENDEREÇOS</div>
             {running ? (

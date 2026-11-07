@@ -28,6 +28,7 @@ import VoiceView from './VoiceView.jsx';
 import { FormattedText } from './Emotes.jsx';
 import { useLayout } from '../lib/layout.js';
 import { MobileBack } from './Mobile.jsx';
+import { InviteButton, PendingInvites } from './CallInvite.jsx';
 import { plain } from '../lib/text.js';
 import { storage } from '../lib/api.js';
 import { ConnProvider, useConn, useConnKey } from './conn.jsx';
@@ -961,6 +962,7 @@ function DmWindow({ dmId }) {
             </button>
           </>
         )}
+        {inCall && conn === 'server' && <InviteButton className="gloss tool" label />}
         <button className="gloss tool" title="Ver perfil" onClick={() => openProfile(recipient.id, conn)}>
           <UserRound size={20} className="ico-purple" />
           Perfil
@@ -978,6 +980,7 @@ function DmWindow({ dmId }) {
           {alone && <div className="dm-calling">
               Chamando <UserName user={recipient} />…
             </div>}
+          <PendingInvites />
         </div>
       )}
       {inCall && !phone && (

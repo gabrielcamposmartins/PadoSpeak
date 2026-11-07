@@ -169,6 +169,11 @@ Valores definidos por variável de ambiente prevalecem sobre o painel (lá apare
 | `PUBLIC_URL`                                     | o endereço do acesso | Endereço público do servidor; o Google volta para `PUBLIC_URL/api/auth/google/callback` |
 | `AUTO_HOST`                                      | `false`             | Sobe o servidor ao iniciar (igual a `--host`)              |
 | `PANEL` / `PANEL_HOST` / `PANEL_PORT` / `PANEL_PASSWORD` | ligado / `127.0.0.1` / `3001` / — | Painel; fora de loopback exige senha (HTTP Basic) |
+| `SFU_EMBEDDED`                                   | do painel           | `on`/`off`: SFU no próprio servidor (Painel → Mídia)       |
+| `SFU_UDP_PORT` / `SFU_PUBLIC_IP`                 | `3479` / —          | Porta UDP do SFU (embutido ou nó) e IPs anunciados aos apps, além dos da rede local |
+| `MEDIA_JOIN`                                     | —                   | No nó (`padospeak-server media`): o código do Painel → Mídia |
+| `POT` / `MEDIA_MUSIC`                            | ligados             | No nó: `off` desliga o token do YouTube / a busca da música |
+| `POT_PROVIDER_URL`                               | —                   | Provedor de token (bgutil) já de pé, ex.: `http://127.0.0.1:4416` |
 
 ## Voz, vídeo e tela
 
@@ -179,7 +184,36 @@ Valores definidos por variável de ambiente prevalecem sobre o painel (lá apare
   1080p30 (6 Mbps, prioriza nitidez), 1080p60 (9 Mbps, prioriza fluidez) ou 720p30. A qualidade pode ser trocada
   durante a transmissão; o selo no vídeo mostra a resolução e o fps recebidos de verdade.
 - Na malha, quem transmite envia uma cópia para cada participante: uma tela 1080p30 para 4 pessoas usa ~24 Mbps
-  de upload. Para salas grandes, o caminho natural é trocar a malha por um SFU (ex.: LiveKit).
+  de upload. Com um **nó de mídia** (abaixo), os canais de voz passam para um SFU e cada um envia uma vez só.
+
+### Nó de mídia (SFU e token da música)
+
+Um nó de mídia é outra máquina (ou esta mesma) que leva as chamadas dos canais de voz e o token da música de um
+servidor (`server/src/media`, `client/src/lib/sfu.js`). O dono cadastra o nó em **Painel → Mídia → Adicionar
+nó** e recebe um código (`psm1.…`) que o nó usa para ligar para o servidor.
+
+- **Onde roda:** a mesma imagem do servidor no modo `padospeak-server media` (`deploy/media`: compose com o nó e
+  o provedor de token, e `setup.sh`), o app do Windows (**Hostear → Nó de mídia**) ou o próprio servidor
+  (**SFU neste servidor**, ou `SFU_EMBEDDED=on`). O nó liga para o servidor (nenhuma porta TCP aberta nele) e
+  recebe as chamadas numa porta UDP (`SFU_UDP_PORT`, padrão 3479), que precisa chegar a ele (num roteador de casa,
+  redirecione a porta).
+- **Chamadas:** canal de voz com pelo menos N pessoas (painel, padrão 2) e um nó de pé vai para o SFU do nó (o de
+  maior prioridade; o embutido por último). O SFU usa o [str0m](https://github.com/algesten/str0m): uma porta
+  UDP, câmera em simulcast, vídeo só para quem assiste. Chamadas privadas continuam na malha.
+- **Cifragem:** os apps cifram os quadros antes de mandar ao nó (Encoded Transforms, AES-256-GCM, chaves trocadas
+  por ECDH entre os participantes): o nó só repassa. App ou navegador sem isso fica na malha com todos.
+- **Queda do nó sem ninguém perceber:** em salas de até 8 pessoas a malha fica de pé por baixo, só sem mandar
+  nada. O nó envia um batimento a cada 250 ms; sem ele, a voz passa para a malha na hora (`replaceTrack`, sem
+  renegociar), com um corte de cerca de 1 s. Cada par decide por onde trocar a voz (quem não alcança o nó fica
+  na malha e os outros continuam no SFU). Na volta (nó de pé por 30 s), a ligação nova é feita em segundo plano
+  e a malha só para de mandar quando a voz já chega pelo nó. Em salas maiores, a malha é montada na hora da
+  queda (corte de 1 a 3 s). Se o servidor principal reiniciar, a mídia pelo nó não para.
+- **Música:** o yt-dlp do servidor ganha o plugin do bgutil (versão fixa) e pede um token do YouTube ao nó em cada
+  música (`POT_PROVIDER_URL` aponta um provedor direto); depois de um bloqueio, o token sai novo. Se o YouTube
+  bloquear o servidor mesmo assim (ou ele estiver sobrecarregado), o próprio nó resolve e busca o áudio, que
+  chega aos apps pelo servidor como sempre (**Buscar a música pelo nó**: automático, sempre ou nunca).
+- **Sobrecarga:** o servidor mede a CPU do processo e a memória do contêiner; sobrecarregado, as músicas novas
+  vêm pelo nó e as salas do SFU embutido vão para um nó remoto.
 - **HTTPS**: navegadores só liberam microfone, câmera e captura de tela em `localhost` ou HTTPS. Para acessar
   pelo IP da rede no navegador, use `HTTPS=self-signed` (aceite o aviso do certificado) ou um certificado real.
   O **app desktop não precisa** disso.

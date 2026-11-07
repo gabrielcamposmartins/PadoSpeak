@@ -1,0 +1,312 @@
+/**
+ * Chaveiro do assistente (veja `server/src/agent.rs`, "Chaves e modelo"): as chaves da API guardadas, a que
+ * está em uso e o modelo.
+ *
+ * - `scope="admin"` (painel do administrador): as chaves do app, que valem para todo mundo. Só o dono muda.
+ * - `scope="me"` (Configurações → Assistente): as chaves da própria pessoa. Sem escolher uma, vale a do app;
+ *   o modelo só se escolhe com chave própria (com a do app, é o dono quem paga e escolhe).
+ *
+ * As chaves aparecem escondidas (início e fim); o olho busca a chave inteira no servidor.
+ */
+import { useEffect, useState } from 'react';
+import { Eye, EyeOff, Trash2, Copy, Plus, KeyRound, Building2, Server, Cpu } from 'lucide-react';
+import { useStore } from '../store.js';
+import './agent.css';
+
+const PATHS = {
+  admin: { view: '/api/admin/agent', keys: '/api/admin/agent/keys', models: '/api/admin/agent/models' },
+  me: { view: '/api/agent/settings', keys: '/api/agent/keys', models: '/api/agent/models' },
+};
+
+export default function AgentKeys({ scope = 'me' }) {
+  const paths = PATHS[scope];
+  const admin = scope === 'admin';
+  const [info, setInfo] = useState(null);
+  const [models, setModels] = useState([]);
+  const [shown, setShown] = useState({}); // id -> chave inteira
+  const [label, setLabel] = useState('');
+  const [key, setKey] = useState('');
+  const [model, setModel] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [custom, setCustom] = useState(false); // digitando um modelo fora da lista
+  const st = useStore.getState();
+  const api = () => st.api();
+
+  const apply = (d) => {
+    setInfo(d);
+    setModel(d.model || '');
+    setModels((m) => (m.length ? m : d.models || []));
+  };
+  const loadModels = () =>
+    api()
+      .get(paths.models)
+      .then((d) => d.models?.length && setModels(d.models))
+      .catch(() => {});
+  useEffect(() => {
+    api().get(paths.view).then(apply, () => setInfo(null));
+    loadModels();
+  }, [scope]);
+
+  if (!info) return null;
+  const canEdit = admin ? info.canEdit : true;
+  const keys = info.keys || [];
+  const ownActive = !admin && Boolean(info.active);
+
+  const run = async (fn, done) => {
+    setBusy(true);
+    try {
+      apply(await fn());
+      if (done) st.notify(done, 'info');
+      return true;
+    } catch (e) {
+      st.notify(e.message);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+  const add = async () => {
+    const ok = await run(() => api().post(paths.keys, { label: label.trim(), apiKey: key.trim() }), 'Chave guardada');
+    if (ok) {
+      setKey('');
+      setLabel('');
+      loadModels();
+    }
+  };
+  const choose = async (id) => {
+    if (await run(() => api().put(paths.view, { active: id }))) loadModels();
+  };
+  const remove = (k) => run(() => api().del(`${paths.keys}/${encodeURIComponent(k.id)}`), 'Chave apagada');
+  const toggleShow = async (k) => {
+    if (shown[k.id]) return setShown(({ [k.id]: _, ...rest }) => rest);
+    try {
+      const d = await api().get(`${paths.keys}/${encodeURIComponent(k.id)}/reveal`);
+      setShown((s) => ({ ...s, [k.id]: d.key }));
+    } catch (e) {
+      st.notify(e.message);
+    }
+  };
+  const copy = async (k) => {
+    try {
+      const full = shown[k.id] || (await api().get(`${paths.keys}/${encodeURIComponent(k.id)}/reveal`)).key;
+      await navigator.clipboard.writeText(full);
+      st.notify('Chave copiada', 'info');
+    } catch (e) {
+      st.notify(e.message || 'Não deu para copiar');
+    }
+  };
+  const saveModel = (value) => {
+    const m = value.trim();
+    if (m === (info.model || '')) return;
+    run(() => api().put(paths.view, { model: m }), m ? `Modelo: ${m}` : 'Modelo padrão');
+  };
+
+  const modelEditable = canEdit && (admin || ownActive);
+  const name = `agent-key-${scope}`;
+  // a lista do seletor: os modelos da chave, mais o atual se ele não estiver nela
+  const current = admin ? info.model : model;
+  const options = current && !models.some((m) => m.id === current) ? [...models, { id: current, name: current }] : models;
+
+  return (
+    <div className="agent-keys">
+      <h3>Assistente</h3>
+      {admin && (
+        <label className="checkbox">
+          <input
+            type="checkbox"
+            checked={Boolean(info.enabled)}
+            disabled={!canEdit || busy}
+            onChange={(e) => run(() => api().put(paths.view, { enabled: e.target.checked }), e.target.checked ? 'Assistente ligado' : 'Assistente desligado')}
+          />
+          <span>
+            Ligar o assistente
+            <small className="check-hint">
+              Aparece para todo mundo, abaixo do Início. Ele faz o que a pessoa pede no app, só com o acesso que ela já tem, e pede
+              confirmação antes de mandar mensagens, mudar o que é de todos ou apagar.
+            </small>
+          </span>
+        </label>
+      )}
+      <p className="kv">
+        {admin
+          ? 'O assistente usa a chave marcada, cobrada na conta dela pela Anthropic. Ela vale para todo mundo, menos para quem puser a própria chave nas configurações.'
+          : 'Por padrão, o assistente usa a chave que o administrador configurou. Se quiser, ponha a sua chave da API da Anthropic: aí os pedidos são cobrados na sua conta e você escolhe o modelo.'}
+      </p>
+
+      <div className="settings-sec">{admin ? 'Chave da API em uso' : 'Qual chave usar'}</div>
+      <div className="agent-keys-list" role="radiogroup" aria-label="Chave em uso">
+        {!admin && (
+          <KeyRow
+            name={name}
+            active={!ownActive}
+            disabled={busy}
+            onPick={() => choose('')}
+            icon={<Building2 size={18} />}
+            title="Chave do app"
+            tag="padrão"
+            sub={info.appKey ? `Configurada pelo administrador · ${info.appModel}` : 'O administrador ainda não pôs uma chave'}
+          />
+        )}
+        {keys.map((k) => (
+          <KeyRow
+            key={k.id}
+            name={name}
+            active={k.active}
+            disabled={busy || !canEdit}
+            onPick={() => choose(k.id)}
+            icon={k.env ? <Server size={18} /> : <KeyRound size={18} />}
+            title={k.label}
+            hint={shown[k.id] || k.hint}
+            revealed={Boolean(shown[k.id])}
+          >
+            {canEdit && (
+              <span className="agent-key-tools">
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={() => toggleShow(k)}
+                  title={shown[k.id] ? 'Esconder' : 'Ver a chave inteira'}
+                  aria-label={shown[k.id] ? 'Esconder a chave' : 'Ver a chave inteira'}
+                >
+                  {shown[k.id] ? <EyeOff size={16} /> : <Eye size={16} />}
+                </button>
+                <button type="button" className="icon-btn" onClick={() => copy(k)} title="Copiar" aria-label="Copiar a chave">
+                  <Copy size={16} />
+                </button>
+                {!k.env && (
+                  <button type="button" className="icon-btn danger" disabled={busy} onClick={() => remove(k)} title="Apagar esta chave" aria-label="Apagar esta chave">
+                    <Trash2 size={16} />
+                  </button>
+                )}
+              </span>
+            )}
+          </KeyRow>
+        ))}
+        {!keys.length && (
+          <p className="agent-keys-empty">
+            {admin ? 'Nenhuma chave ainda. Sem chave, o assistente não funciona, mesmo ligado.' : 'Você ainda não pôs nenhuma chave sua.'}
+          </p>
+        )}
+      </div>
+
+      {canEdit ? (
+        <form
+          className="agent-key-add"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (key.trim()) add();
+          }}
+        >
+          <div className="agent-key-add-head">
+            <Plus size={16} aria-hidden="true" />
+            <b>Adicionar uma chave</b>
+            <small>Crie em console.anthropic.com, em API Keys</small>
+          </div>
+          <div className="agent-key-add-fields">
+            <input placeholder="Nome (opcional)" value={label} maxLength={60} onChange={(e) => setLabel(e.target.value)} disabled={busy} aria-label="Nome da chave" />
+            <input
+              type="password"
+              autoComplete="off"
+              placeholder="sk-ant-…"
+              value={key}
+              onChange={(e) => setKey(e.target.value)}
+              disabled={busy}
+              aria-label="Chave da API da Anthropic"
+            />
+            <button className="btn" type="submit" disabled={busy || !key.trim()}>
+              {busy ? 'Conferindo…' : 'Adicionar'}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <p className="kv">Só o dono do app mexe nas chaves.</p>
+      )}
+
+      <div className="settings-sec">Modelo</div>
+      <div className="agent-model">
+        <Cpu size={18} className="ico-purple" aria-hidden="true" />
+        {custom ? (
+          <form
+            className="agent-model-custom"
+            onSubmit={(e) => {
+              e.preventDefault();
+              setCustom(false);
+              saveModel(model);
+            }}
+          >
+            <input autoFocus value={model} placeholder="claude-…" onChange={(e) => setModel(e.target.value)} aria-label="Nome do modelo" disabled={busy} />
+            <button className="btn" type="submit" disabled={busy || !model.trim()}>
+              Usar
+            </button>
+            <button
+              className="btn ghost"
+              type="button"
+              onClick={() => {
+                setCustom(false);
+                setModel(info.model || '');
+              }}
+            >
+              Cancelar
+            </button>
+          </form>
+        ) : (
+          <select
+            value={current || ''}
+            disabled={!modelEditable || busy}
+            aria-label="Modelo do assistente"
+            onChange={(e) => {
+              if (e.target.value === OTHER) {
+                setModel('');
+                setCustom(true);
+                return;
+              }
+              setModel(e.target.value);
+              saveModel(e.target.value);
+            }}
+          >
+            {!admin && <option value="">Igual ao do app ({info.appModel})</option>}
+            {options.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name === m.id ? m.id : `${m.name} (${m.id})`}
+                {admin && m.id === info.defaultModel ? ' · padrão' : ''}
+              </option>
+            ))}
+            <option value={OTHER}>Outro modelo…</option>
+          </select>
+        )}
+      </div>
+      <p className="agent-model-note">
+        {admin
+          ? 'Vale para todos que usam a chave do app.'
+          : ownActive
+            ? 'Vale só para você, com a sua chave.'
+            : 'Com a chave do app, o modelo é o que o administrador escolheu. Para escolher, use uma chave sua.'}
+      </p>
+    </div>
+  );
+}
+
+const OTHER = '__outro__';
+
+/** Uma opção da lista de chaves: o círculo de seleção, o ícone, o nome (com "Em uso") e a chave escondida. */
+function KeyRow({ name, active, disabled, onPick, icon, title, tag, sub, hint, revealed, children }) {
+  return (
+    <label className={`agent-key-row${active ? ' on' : ''}${disabled ? ' locked' : ''}`}>
+      <input className="sr-only" type="radio" name={name} checked={active} disabled={disabled} onChange={onPick} aria-label={`Usar ${title}`} />
+      <span className="agent-key-radio" aria-hidden="true" />
+      <span className="agent-key-ico" aria-hidden="true">
+        {icon}
+      </span>
+      <span className="agent-key-name">
+        <span className="agent-key-title">
+          <b>{title}</b>
+          {tag && <span className="agent-key-tag">{tag}</span>}
+          {active && <span className="agent-key-badge">Em uso</span>}
+        </span>
+        {hint && <span className={`agent-key-hint${revealed ? ' full' : ''}`}>{hint}</span>}
+        {sub && <small>{sub}</small>}
+      </span>
+      {children}
+    </label>
+  );
+}

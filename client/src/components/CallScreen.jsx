@@ -26,6 +26,7 @@ import { useServerPing } from './hooks.js';
 import VoiceView from './VoiceView.jsx';
 import SoundPanel from './SoundPanel.jsx';
 import Avatar from './Avatar.jsx';
+import { InviteButton, PendingInvites } from './CallInvite.jsx';
 
 /** Quando cada chamada começou a valer (alguém do outro lado conectou), para o relógio. */
 const started = new Map();
@@ -99,8 +100,11 @@ export default function CallScreen() {
   if (!phone || !voice) return null;
   const st = vc.getState();
   const calling = voice.dm && voice.peers.length === 0;
-  const title = dm ? plain(dm.recipient.displayName) : channel ? channel.name : 'Chamada';
-  const sub = dm ? null : guild?.name;
+  // Chamada privada com mais gente (ou da qual sou convidado): o nome de todos.
+  const names = voice.dm ? voice.peers.map((p) => plain(p.user?.displayName || '')).filter(Boolean) : [];
+  const group = voice.dm && (names.length > 1 || (!dm && names.length > 0));
+  const title = group ? names.join(', ') : dm ? plain(dm.recipient.displayName) : channel ? channel.name : 'Chamada';
+  const sub = voice.dm ? null : guild?.name;
   const status = calling ? 'Chamando…' : clock || 'Conectando…';
   const stageChannel = dm ? { id: dm.id, name: title, dm: true } : channel || { id: voice.channelId, name: title };
   const minimize = () => useStore.setState({ callMinimized: true });
@@ -111,7 +115,7 @@ export default function CallScreen() {
       <button type="button" className="call-bar" data-sysbar="--callbar" onClick={restore}>
         <Phone size={14} />
         <span className="cb-text">
-          {dm ? `Em chamada com ${title}` : `🔊 ${title}`} · {status}
+          {voice.dm ? `Em chamada com ${title}` : `🔊 ${title}`} · {status}
         </span>
         <span className="cb-back">
           Voltar <ChevronRight size={14} />
@@ -121,20 +125,24 @@ export default function CallScreen() {
   }
 
   return (
-    <div className="call-screen" role="dialog" aria-label={dm ? `Chamada com ${title}` : `Canal de voz ${title}`} data-sysbar="--cs-top" data-sysbar-bottom="--cs-bottom">
+    <div className="call-screen" role="dialog" aria-label={voice.dm ? `Chamada com ${title}` : `Canal de voz ${title}`} data-sysbar="--cs-top" data-sysbar-bottom="--cs-bottom">
       <header className="cs-head">
         <button type="button" className="cs-ic" onClick={minimize} title="Minimizar (a chamada continua)" aria-label="Minimizar a chamada">
           <ChevronDown size={20} />
         </button>
         <div className="cs-title">
-          <b>{dm ? title : `🔊 ${title}`}</b>
+          <b>{voice.dm ? title : `🔊 ${title}`}</b>
           <span>
             {sub ? `${sub} · ` : ''}
             <span className="cs-clock">{status}</span>
             <Quality ping={ping} />
           </span>
         </div>
-        <span className="cs-ic-space" />
+        {voice.dm && vc === useStore ? (
+          <InviteButton className="cs-ic" />
+        ) : (
+          <span className="cs-ic-space" />
+        )}
       </header>
 
       <div className="cs-stage">
@@ -152,6 +160,7 @@ export default function CallScreen() {
         ) : (
           <VoiceView channel={stageChannel} variant="call" />
         )}
+        <PendingInvites />
       </div>
 
       <div className="cs-bottom">
@@ -184,9 +193,9 @@ export default function CallScreen() {
         <CtlButton on={sheet} label="Sons" onClick={() => setSheet((v) => !v)} pressed={sheet}>
           <LayoutGrid />
         </CtlButton>
-        <button type="button" className="cs-hangup" onClick={st.leaveVoice} aria-label={dm ? 'Desligar' : 'Sair do canal'}>
+        <button type="button" className="cs-hangup" onClick={st.leaveVoice} aria-label={voice.dm ? 'Desligar' : 'Sair do canal'}>
           <PhoneOff />
-          <span>{dm ? 'Desligar' : 'Sair'}</span>
+          <span>{voice.dm ? 'Desligar' : 'Sair'}</span>
         </button>
       </nav>
       </div>

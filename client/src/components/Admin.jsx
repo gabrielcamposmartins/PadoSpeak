@@ -25,6 +25,8 @@ import {
   Sticker,
 } from 'lucide-react';
 import { useStore } from '../store.js';
+import AgentKeys from './AgentKeys.jsx';
+import MediaAdmin from './MediaAdmin.jsx';
 import Avatar, { UserName } from './Avatar.jsx';
 import { SceneArt } from './Aero.jsx';
 import { fmtSize, ttlWords, FileView, VoiceNote, parseFile, parseVoice } from './Files.jsx';
@@ -1151,6 +1153,8 @@ export default function AdminPage() {
               ['pessoas', `Pessoas (${data.users.length})`],
               ['servidores', `Servidores (${data.guilds.length})`],
               ['arquivos', 'Arquivos'],
+              ['midia', 'Mídia'],
+              ['assistente', 'Assistente'],
               ['acesso', 'Quem vê o painel'],
             ].map(([id, label]) => (
               <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? 'on' : ''} onClick={() => setTab(id)}>
@@ -1170,6 +1174,8 @@ export default function AdminPage() {
             {tab === 'pessoas' && <UsersTable users={data.users} now={data.now} />}
             {tab === 'servidores' && <GuildsTable guilds={data.guilds} base={base} now={data.now} />}
             {tab === 'arquivos' && <FilePolicy />}
+            {tab === 'midia' && <MediaAdmin />}
+            {tab === 'assistente' && <AgentKeys scope="admin" />}
             {tab === 'acesso' && <Viewers owner={access.owner} />}
           </section>
         </div>

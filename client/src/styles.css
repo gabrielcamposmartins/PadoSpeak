@@ -12759,3 +12759,162 @@ html[data-kb] .m-tabs {
   display: flex;
   gap: 8px;
 }
+
+/* ---------- Hostear: nó de mídia deste PC ---------- */
+.host-media-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.host-media-form input {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.host-media-form input[inputmode='numeric'] {
+  flex: 0 1 150px;
+}
+.host-media-error {
+  color: var(--danger-ink) !important;
+}
+
+/* ---------- Miniatura da chamada fora da tela dela (MiniCall.jsx) ---------- */
+.mini-call {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-width: 100%;
+  margin: 0 0 8px;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  background: linear-gradient(180deg, #1d3550, #0b1a2c);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+  color: #fff;
+}
+.mini-call:hover {
+  filter: brightness(1.08);
+}
+.mini-call:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
+.mini-call.speaking {
+  border-color: var(--ok-border);
+  box-shadow: 0 0 0 2px var(--ok-border), 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+.mini-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #000;
+}
+.mini-video.mirror {
+  transform: scaleX(-1);
+}
+.mini-face {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding-bottom: 14px;
+}
+.mini-label {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: left;
+  background: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.65));
+}
+.mini-label span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Flutuando: celular (chamada minimizada), tablet e as páginas Hostear/Painel. */
+.mini-call.floating {
+  position: fixed;
+  z-index: 60;
+  left: max(12px, env(safe-area-inset-left, 0px));
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 16px);
+  width: 176px;
+  margin: 0;
+  border-width: 2px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+.mini-call.floating.phone {
+  /* Acima das abas e do campo de mensagem do celular. */
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 84px);
+  width: 140px;
+}
+
+/* ---------- Chamar mais gente para a chamada privada (CallInvite.jsx) ---------- */
+.pick-check {
+  cursor: pointer;
+}
+.pick-check input[type='checkbox'] {
+  flex: none;
+  margin: 0;
+}
+.pick-check.on {
+  background: var(--row-sel);
+  border-color: var(--row-sel-border);
+}
+.call-pending {
+  position: absolute;
+  z-index: 5;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - 24px);
+  padding: 4px 12px 4px 6px;
+  border-radius: 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: linear-gradient(180deg, rgba(20, 60, 100, 0.7), rgba(5, 30, 60, 0.88));
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  animation: pulse 1.6s infinite;
+  pointer-events: none;
+}
+.call-pending-faces {
+  display: inline-flex;
+}
+.call-pending-faces > * + * {
+  margin-left: -6px;
+}
+.cs-stage {
+  position: relative;
+}
+.guest-call .dm-call {
+  flex: 1 1 auto;
+  height: auto;
+}
+.guest-call-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -18,8 +18,9 @@ import {
   X,
   CircleAlert,
   ChartColumn,
+  Sparkles,
 } from 'lucide-react';
-import { useStore, primaryConn, localLogout, openMyProfile } from '../store.js';
+import { useStore, primaryConn, localLogout, openMyProfile, agentOn } from '../store.js';
 import { isDesktop } from '../lib/env.js';
 import { unreadTotal, useAcross } from './conn.jsx';
 import Avatar from './Avatar.jsx';
@@ -162,6 +163,7 @@ function MePage() {
   const base = prim((s) => s.baseUrl);
   const myStatus = prim((s) => s.myStatus);
   const adminAccess = useStore((s) => Boolean(s.appAdmin?.canView));
+  const agent = useStore(agentOn);
   if (!me) return null;
   const { openModal, logout } = useStore.getState();
   const info = STATUS_INFO[myStatus] || STATUS_INFO.online;
@@ -192,6 +194,15 @@ function MePage() {
           </span>
         </button>
         <PushCard />
+        {agent && (
+          <button className="m-row" onClick={() => useStore.getState().openAgent()}>
+            <Sparkles size={20} className="ico-purple" />
+            <span>
+              <b>Assistente</b>
+              <small>Peça para mandar mensagens, criar canais, ajustar configurações…</small>
+            </span>
+          </button>
+        )}
         <button className="m-row" onClick={() => openModal({ type: 'settings' })}>
           <Settings size={20} className="ico-blue" />
           <span>
@@ -256,7 +267,7 @@ export default function MobileShell() {
   const view = useStore((s) => s.view);
   const music = useStore((s) => s.sidebarView === 'music' && s.currentGuildId != null);
 
-  const detail = pane === 'detail' && (music || ['dm', 'text', 'voice'].includes(view?.type));
+  const detail = pane === 'detail' && (music || ['dm', 'text', 'voice', 'agent', 'call'].includes(view?.type));
   const bg = useAppBackground();
   return (
     <div className={`aero-app mobile-app${detail ? ' m-open' : ''}`} {...bg}>

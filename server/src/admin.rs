@@ -41,7 +41,7 @@ pub fn router() -> Router<Arc<App>> {
 }
 
 /// (pode ver, é o dono)
-async fn rights(app: &App, user: &User) -> ApiResult<(bool, bool)> {
+pub(crate) async fn rights(app: &App, user: &User) -> ApiResult<(bool, bool)> {
     if app.lan.is_some() {
         return Ok((false, false));
     }

@@ -1,0 +1,126 @@
+/* Painel → Mídia (MediaAdmin.jsx): os nós de mídia. Usa os mesmos tokens do resto do painel. */
+.ma-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 8px;
+}
+.ma-nodes {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.ma-node {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  display: grid;
+  gap: 6px;
+}
+.ma-node-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ma-node-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 600;
+}
+input.ma-node-name {
+  max-width: 280px;
+}
+.ma-state {
+  font-size: 12px;
+  color: var(--muted);
+}
+.ma-actions {
+  display: inline-flex;
+  gap: 2px;
+}
+.ma-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.ma-dot.on {
+  background: var(--ok-border);
+}
+.ma-dot.wait {
+  background: var(--ok-border);
+  opacity: 0.5;
+}
+.ma-dot.down {
+  background: var(--danger-ink);
+}
+.ma-node-meta {
+  margin: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.ma-node-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ma-node-foot .checkbox {
+  margin-bottom: 0;
+}
+.ma-add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ma-add input {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.ma-code {
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--row-sel-border);
+  border-radius: 10px;
+  background: var(--row-sel);
+}
+.ma-code h4 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 6px;
+}
+.ma-code-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+.ma-code-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.ma-steps {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  font-size: 13px;
+  display: grid;
+  gap: 4px;
+}
+.ma-steps code {
+  font-size: 12px;
+}

@@ -361,8 +361,12 @@ export function createConnStore({ key, kind, base, primary = false }) {
     // Avisos dos servidores ainda não vistos (a bolinha vermelha no ícone do servidor): por canal
     // (mensagens que avisaram, chamar atenção) e `g:<servidor>` (entrou na voz, transmissão, membro novo).
     alerts: {}, // chave -> { g: guildId, n }
-    incomingCall: null, // { dmId, from }
+    incomingCall: null, // { dmId, from, group?, members? }
+    // Quem eu chamei para a chamada da conversa privada e ainda não entrou: [{ user, at }].
+    callInvites: [],
     sidebarView: 'channels', // channels | music
+    agentStatus: null, // o que o assistente está fazendo agora (texto), ou null
+    agentFrom: null, // { guildId, channelId }: de onde a pessoa abriu o assistente ("aqui", "neste servidor")
     music: {}, // canal de voz -> estado da fila (music:state)
     serverOffset: 0, // relógio do servidor − relógio local (ms)
     musicLibrary: { guildId: null, favorites: [], top: [] }, // favoritas e mais tocadas
@@ -417,6 +421,13 @@ export function createConnStore({ key, kind, base, primary = false }) {
     saveFilePolicy: (policy, applyToGuilds = false) => api.put('/api/admin/files', { policy, applyToGuilds }),
     grantAdmin: (username) => api.put('/api/admin/viewers', { username }),
     revokeAdmin: (userId) => api.del(`/api/admin/viewers/${userId}`),
+    /** Nós de mídia (SFU das chamadas e token da música, veja server/src/media). */
+    adminMedia: () => api.get('/api/admin/media'),
+    saveMediaSettings: (settings) => api.put('/api/admin/media', settings),
+    addMediaNode: (name) => api.post('/api/admin/media/nodes', { name, url: baseUrl || location.origin }),
+    editMediaNode: (id, patch) => api.patch(`/api/admin/media/nodes/${id}`, patch),
+    removeMediaNode: (id) => api.del(`/api/admin/media/nodes/${id}`),
+    newMediaNodeCode: (id) => api.post(`/api/admin/media/nodes/${id}/code`, { url: baseUrl || location.origin }),
 
     // ---------- Sessão ----------
     /** Abertura do app (só no principal): no navegador entra no servidor; no desktop, no perfil local. */
@@ -517,6 +528,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
         lastUnread: {},
         alerts: {},
         incomingCall: null,
+        callInvites: [],
         lanPeers: [],
         nudgeSettings: null,
         marks: { hidden: {}, nsfw: {}, star: {} },
@@ -795,14 +807,22 @@ export function createConnStore({ key, kind, base, primary = false }) {
           return { messages: { ...s.messages, [channelId]: list.map((m) => (m.id === id ? { ...m, expiresAt } : m)) } };
         }),
       );
-      rt.on('call:ring', ({ dmId, from }) => {
+      rt.on('call:ring', ({ dmId, from, group, members }) => {
         if (get().voice?.channelId === dmId) return;
-        set({ incomingCall: { dmId, from } });
+        // `group`: chamaram você para a chamada de uma conversa (com quem já está nela).
+        set({ incomingCall: { dmId, from, group: Boolean(group), members: members || [] } });
         showAppWindow();
         if (!get().dms.some((d) => d.id === dmId)) get().loadDms();
       });
-      rt.on('call:declined', ({ dmId, by }) => {
+      rt.on('call:declined', ({ dmId, by, guest }) => {
         const v = get().voice;
+        // Quem foi chamado para a chamada recusou: ela continua.
+        if (guest) {
+          if (v?.channelId !== dmId) return;
+          set((s) => ({ callInvites: s.callInvites.filter((i) => i.user.id !== by.id) }));
+          notify(`${by.displayName} recusou o convite para a chamada`, 'info');
+          return;
+        }
         if (v?.channelId === dmId && v.peers.length === 0) {
           get().leaveVoice();
           playSound('callEnd');
@@ -855,6 +875,21 @@ export function createConnStore({ key, kind, base, primary = false }) {
       );
       // O administrador do app mudou os limites dos arquivos: os avisos antes de enviar acompanham.
       rt.on('files:limits', (files) => set((s) => (s.config ? { config: { ...s.config, files } } : {})));
+      // Assistente (veja agent.rs): ligado ou desligado pelo dono, o que ele está fazendo, a aparência que ele
+      // mudou e as notificações que alguém mandou por ele.
+      rt.on('app:agent', ({ enabled }) => {
+        set((s) => (s.config ? { config: { ...s.config, agent: Boolean(enabled) } } : {}));
+        if (!enabled && primary && ui().getState().view?.type === 'agent') get().goHome();
+      });
+      rt.on('agent:status', (d) => primary && ui().setState({ agentStatus: d.busy ? d.label || 'Pensando…' : null }));
+      rt.on('agent:action', (a) => {
+        if (primary && a?.type === 'appearance' && a.patch) ui().getState().setAppearance(a.patch);
+      });
+      rt.on('agent:notice', ({ title, body, from }) => {
+        alertSound('message');
+        notify(`🔔 ${title}: ${body}`, 'info', from);
+        systemNotify(`${title}: ${body}`, from || null, '/');
+      });
       rt.on('mark:update', ({ kind: mark, id, on }) =>
         set((s) => (s.marks[mark] ? { marks: { ...s.marks, [mark]: { ...s.marks[mark], [id]: on || undefined } } } : {})),
       );
@@ -1028,6 +1063,14 @@ export function createConnStore({ key, kind, base, primary = false }) {
     goHome() {
       ui().setState({ currentGuildId: null, view: { type: 'friends' }, sidebarView: 'channels', mobilePane: 'list' });
     },
+    /** Abre a conversa com o assistente, como uma conversa do Início (só no servidor principal). */
+    openAgent() {
+      if (!primary || !agentOn(get())) return;
+      const prev = ui().getState();
+      // de onde a pessoa veio: "aqui" e "neste servidor" no pedido são esse servidor e esse canal
+      const agentFrom = prev.view?.type === 'agent' ? prev.agentFrom : { guildId: prev.currentGuildId, channelId: prev.view?.channelId || null };
+      ui().setState({ currentGuildId: null, view: { type: 'agent' }, agentFrom, sidebarView: 'channels', mobilePane: 'detail' });
+    },
 
     async loadFriends() {
       const list = await api.get('/api/friends').catch(() => null);
@@ -1181,8 +1224,21 @@ export function createConnStore({ key, kind, base, primary = false }) {
       const call = get().incomingCall || (dmId ? { dmId } : null);
       if (!call) return;
       set({ incomingCall: null });
-      get().selectDm(call.dmId);
-      await get().joinVoice(call.dmId);
+      // Chamado para a chamada de uma conversa que não é minha: entro só na chamada.
+      const member = get().dms.some((d) => d.id === call.dmId);
+      if (member) get().selectDm(call.dmId);
+      await get().joinVoice(call.dmId, { guest: !member });
+    },
+
+    /** Chama mais gente para a chamada desta conversa privada (amigos de quem chama). */
+    async inviteToCall(users) {
+      const v = get().voice;
+      if (!v?.dm || !rt) throw new Error('Entre numa chamada privada para chamar mais gente');
+      const res = await rt.request('call:invite', { dmId: v.channelId, userIds: users.map((u) => u.id) });
+      if (res?.error) throw new Error(res.error);
+      const at = Date.now();
+      set((s) => ({ callInvites: [...s.callInvites.filter((i) => !users.some((u) => u.id === i.user.id)), ...users.map((user) => ({ user, at }))] }));
+      return res;
     },
 
     declineCall(dmId) {
@@ -1719,12 +1775,9 @@ export function createConnStore({ key, kind, base, primary = false }) {
     sendTyping: (channelId) => rt?.send('typing', { channelId }),
 
     // ---------- Voz ----------
-    async joinVoice(channelId) {
+    async joinVoice(channelId, { guest = false } = {}) {
       if (get().voice?.channelId === channelId) {
-        if (primary && !get().dms.some((d) => d.id === channelId)) {
-          set({ view: { type: 'voice', channelId } });
-          openPane();
-        }
+        if (primary && !get().dms.some((d) => d.id === channelId)) get().showVoice();
         return;
       }
       // Uma chamada por vez, em qualquer conexão.
@@ -1746,6 +1799,12 @@ export function createConnStore({ key, kind, base, primary = false }) {
             return;
           }
           set({ voice: snap });
+          // Quem eu chamei entrou (ou não respondeu em 1 minuto): sai da lista de "chamando".
+          const invites = get().callInvites;
+          if (invites.length) {
+            const left = invites.filter((i) => Date.now() - i.at < 60000 && !snap.peers.some((p) => p.user?.id === i.user.id));
+            if (left.length !== invites.length) set({ callInvites: left });
+          }
           // App do Windows: dock flutuante enquanto transmite (Trocar, Som, Parar, Ocultar).
           syncShareDock(snap, {
             switch: () => get().askSwitchScreen(),
@@ -1757,7 +1816,11 @@ export function createConnStore({ key, kind, base, primary = false }) {
       voiceClient = client;
       globalThis.__padospeakVoice = client; // diagnóstico pelo DevTools
       const isDm = get().dms.some((d) => d.id === channelId);
-      if (!isDm && primary) {
+      if (guest) {
+        // A chamada de uma conversa que não é minha: tela própria, só com a chamada.
+        setView({ currentGuildId: null, sidebarView: 'channels', view: { type: 'call', channelId } });
+        openPane();
+      } else if (!isDm && primary) {
         set({ view: { type: 'voice', channelId } });
         openPane();
       }
@@ -1792,14 +1855,22 @@ export function createConnStore({ key, kind, base, primary = false }) {
       stopSoundboard();
       voiceClient?.leave();
       voiceClient = null;
-      set({ voice: null });
-      if (primary && get().view?.type === 'voice' && get().view.channelId === ch) get().selectGuild(get().currentGuildId);
+      set({ voice: null, callInvites: [] });
+      const view = ui().getState().view;
+      if (primary && view?.type === 'voice' && view.channelId === ch) get().selectGuild(get().currentGuildId);
+      // A tela da chamada de uma conversa que não é minha acaba com ela.
+      else if (view?.type === 'call' && view.channelId === ch) get().goHome();
     },
 
     showVoice() {
       const v = get().voice;
       if (!v) return;
-      if (v.dm) return get().selectDm(v.channelId);
+      if (v.dm && get().dms.some((d) => d.id === v.channelId)) return get().selectDm(v.channelId);
+      if (v.dm) {
+        setView({ currentGuildId: null, sidebarView: 'channels', view: { type: 'call', channelId: v.channelId } });
+        openPane();
+        return;
+      }
       if (get().currentGuildId !== v.guildId) set({ currentGuildId: v.guildId });
       set({ view: { type: 'voice', channelId: v.channelId } });
       openPane();
@@ -2018,6 +2089,8 @@ export function createConnStore({ key, kind, base, primary = false }) {
     musicUrl: (id) => `${baseUrl}/api/music/stream/${id}?token=${encodeURIComponent(token || '')}`,
     /** Endereço deste servidor com o token (o `<img>` não manda cabeçalho): a foto de quem usa
      * "esconder meu perfil de" só sai para quem fez login. */
+    /** O cliente da API desta conexão (com o login): a tela do assistente chama as rotas dela. */
+    api: () => api,
     withToken: (url) => (token && url ? `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}` : url),
     /** "Esconder meu perfil de": quem está na lista não vê minha foto, mensagem pessoal nem banner. */
     listHidden: () => api.get('/api/me/hidden'),
@@ -2353,6 +2426,9 @@ export function dropConn(key) {
 }
 
 /** O servidor de comunidade (e a interface). */
+/** O assistente está ligado no servidor (o dono liga no painel do administrador). */
+export const agentOn = (s) => s.config?.agent === true && Boolean(s.me);
+
 export const useStore = createConnStore({ key: 'server', kind: 'server', base: savedServerUrl(), primary: true });
 syncConnKeys();
 

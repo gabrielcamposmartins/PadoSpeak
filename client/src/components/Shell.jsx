@@ -31,17 +31,20 @@ import {
   RefreshCw,
   Gamepad2,
   WifiOff,
+  Sparkles,
 } from 'lucide-react';
-import { useStore, primaryConn, setStatusEverywhere, connRegistry, usePerms, openMyProfile } from '../store.js';
+import { useStore, primaryConn, setStatusEverywhere, connRegistry, usePerms, openMyProfile, agentOn } from '../store.js';
 import { isDesktop, DOWNLOAD_URL } from '../lib/env.js';
 import { useUpdate, installAvailable } from '../lib/update.js';
 import { offerWindowsApp } from './AuthPage.jsx';
 import { ConnProvider, useAcross, useVoiceConn } from './conn.jsx';
 import { canHost } from '../lib/host.js';
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useLayout, useNarrow, isTouch } from '../lib/layout.js';
 import MobileShell, { MobileBack } from './Mobile.jsx';
+import GuestCall from './GuestCall.jsx';
+import MiniCall, { useOnCallPage } from './MiniCall.jsx';
 import Avatar, { UserName, Orb, useActivity, useGame, gameText, STATUS_INFO, colorClass, colorStyle } from './Avatar.jsx';
 import { useUserMenu, GuildMenu, ChannelMenu } from './ContextMenus.jsx';
 import { SceneArt, BuddiesIcon } from './Aero.jsx';
@@ -56,6 +59,9 @@ import { FormattedText, Floating } from './Emotes.jsx';
 import { plain } from '../lib/text.js';
 import { useVoicePerson, voiceDropProps } from './VoiceMenus.jsx';
 import { GroupHeader, useCollapsed } from './Group.jsx';
+
+// A conversa com o assistente só é baixada quando alguém a abre.
+const AgentView = lazy(() => import('./Agent.jsx'));
 
 const NO_PERMS = {};
 const openProfile = (userId) => useStore.getState().openModal({ type: 'profile', userId });
@@ -318,9 +324,12 @@ export function GuildRail() {
   const guildAlerts = JSON.parse(alertsJson);
   const [tip, setTip] = useState(null); // { guild, anchor }
   const [menu, setMenu] = useState(null); // { guild, x, y }: notificações do servidor (botão direito)
+  // Assistente (ligado pelo dono do app): um ícone como o de um servidor, logo abaixo do Início
+  const agent = useStore(agentOn);
+  const agentView = useStore((s) => s.view?.type === 'agent');
   return (
     <nav className="guild-rail glass" aria-label="Servidores">
-      <div className={`gel-slot${current == null ? ' active' : ''}`}>
+      <div className={`gel-slot${current == null && !agentView ? ' active' : ''}`}>
         <button
           className="gel home guild-icon"
           title="Início — amigos e conversas"
@@ -331,6 +340,18 @@ export function GuildRail() {
         </button>
         {badge > 0 && <span className="badge guild-badge">{badge > 99 ? '99+' : badge}</span>}
       </div>
+      {agent && (
+        <div className={`gel-slot${agentView ? ' active' : ''}`}>
+          <button
+            className="gel guild guild-icon agent-gel"
+            title="Assistente: peça o que precisar"
+            aria-label="Assistente"
+            onClick={() => useStore.getState().openAgent()}
+          >
+            <Sparkles size={22} />
+          </button>
+        </div>
+      )}
       <div className="rail-sep" />
       {guilds.map((g) => (
         <div key={g.id} className={`gel-slot${g.id === current ? ' active' : ''}`}>
@@ -750,6 +771,9 @@ export function VoiceStatus() {
   const online = vc((s) => s.rtStatus === 'connected');
   const muted = useStore((s) => s.selfMuted);
   const deafened = useStore((s) => s.selfDeafened);
+  // Fora da tela da chamada, a miniatura dela fica aqui (computador; no resto ela flutua, veja MiniCall).
+  const desktop = useLayout() === 'desktop';
+  const onCallPage = useOnCallPage();
   if (!voice) return null;
   const { toggleMute, toggleDeafen } = useStore.getState();
   const { showVoice, leaveVoice, openModal } = vc.getState();
@@ -760,9 +784,19 @@ export function VoiceStatus() {
   const lostAll = voice.linked && voice.peers.length >= 2 && up === 0;
   const connected = online && !joining && !lostAll;
   const calling = voice.dm && voice.peers.length === 0;
-  const where = dm ? `Chamada com ${plain(dm.recipient.displayName)}` : `${channel?.name} · ${guild?.name}`;
+  // Chamada privada com mais gente (ou da qual sou convidado): quem está nela.
+  const names = voice.dm ? voice.peers.map((p) => plain(p.user?.displayName || '')).filter(Boolean) : [];
+  const where =
+    names.length > 1 || (voice.dm && !dm && names.length)
+      ? `Chamada com ${names.join(', ')}`
+      : dm
+        ? `Chamada com ${plain(dm.recipient.displayName)}`
+        : voice.dm
+          ? 'Chamada em grupo'
+          : `${channel?.name} · ${guild?.name}`;
   return (
     <div className={`voice-status${connected && !calling ? '' : ' pending'}`}>
+      {desktop && !onCallPage && <MiniCall />}
       <button className="conn" onClick={showVoice} title="Abrir chamada">
         <b>
           <Orb status={connected && !calling ? 'on' : 'off'} />
@@ -910,6 +944,7 @@ export function Main() {
   const membersOpen = useStore((s) => s.membersOpen);
   const voiceMembersOpen = useStore((s) => s.voiceMembersOpen);
   const home = useStore((s) => s.currentGuildId == null);
+  const agentChat = useStore(agentOn);
   const { openModal } = useStore.getState();
   const layout = useLayout();
   // Em telas estreitas (celular, tablet, janela pequena) a lista de membros abre por cima da conversa.
@@ -919,7 +954,17 @@ export function Main() {
     useStore.setState(narrow ? { membersOpen: !membersOpen } : { showMembers: !desktopMembers });
 
   if (home) {
+    if (view?.type === 'agent' && agentChat)
+      return (
+        <main className="main glass agent-main">
+          <Suspense fallback={<div className="empty">Abrindo o assistente…</div>}>
+            <AgentView />
+          </Suspense>
+        </main>
+      );
     if (view?.type === 'dm') return <DmView key={`${view.conn}:${view.channelId}`} dmId={view.channelId} conn={view.conn} />;
+    // Chamada de uma conversa que não é minha (fui chamado para ela).
+    if (view?.type === 'call') return <GuestCall channelId={view.channelId} />;
     return <FriendsPage />;
   }
 

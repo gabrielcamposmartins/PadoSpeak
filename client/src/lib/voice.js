@@ -4,9 +4,22 @@ import { isTauri } from './env.js';
 import { startNativeScreenAudio } from './screenAudio.js';
 import { keepAwake } from './audioWake.js';
 import { videoTarget } from './videoBudget.js';
+import { SfuLink, CAMERA_LAYERS } from './sfu.js';
+import { MediaCrypt } from './mediaCrypt.js';
 
 // Voz, câmera e compartilhamento de tela via WebRTC em malha (P2P), com "perfect negotiation".
 // O servidor Rust só repassa a sinalização (oferta/resposta/ICE) entre quem está no mesmo canal.
+//
+// Nó de mídia (SFU, veja sfu.js e server/src/media): com um nó de pé, o canal de voz passa para ele
+// (`voice:mode`) e cada um manda a voz uma vez só, cifrada (mediaCrypt.js). Para a queda do nó não ser
+// percebida, a malha continua de pé por baixo (salas de até STANDBY_MAX pessoas), só sem mandar nada, e
+// cada par decide por onde trocar a voz:
+//   - eu mando para P pela malha se nós dois não estamos no mesmo nó pronto (`sfuWith`), ou se P pediu
+//     (`meshPlease`, o SFU não está trazendo a minha voz para ele), ou logo depois de eu passar para o SFU;
+//   - eu toco P pela malha se não estamos no mesmo nó, ou se a voz dele não está chegando pelo SFU.
+// O nó caiu: o batimento dele some em menos de 1 s, e a voz passa para a malha de reserva na hora
+// (`replaceTrack`, sem renegociar). O nó voltou: liga a ligação nova, e só quando ela traz a voz é que a
+// malha para de mandar (fazer antes de desfazer).
 
 export const SCREEN_PRESETS = {
   '1080p60': { label: '1080p · 60 fps', width: 1920, height: 1080, fps: 60, bitrate: 9_000_000, hint: 'motion' },
@@ -52,6 +65,25 @@ const MIC_STALL_MS = 2500;
 const AWAY_GRACE_MS = 3000;
 /** Na volta, espera o sistema devolver as trilhas pausadas antes de abrir de novo as que não voltaram. */
 const REVIVE_DELAY_MS = 1200;
+/** Salas de até tantas pessoas mantêm a malha de pé por baixo do SFU (a reserva para a queda do nó). */
+const STANDBY_MAX = 8;
+/** Depois de eu passar para o SFU, ainda mando pela malha por este tempo (quem recebe troca junto). */
+const OVERLAP_MS = 1500;
+/** Pedido de "me manda pela malha" (`meshPlease`): vale por este tempo, renovado enquanto precisar. */
+const MESH_PLEASE_MS = 3000;
+/** A voz de alguém pelo SFU parou de chegar há mais que isto: ouço pela malha. */
+const SFU_SILENT_MS = 1000;
+/** Sala grande no SFU: quem está na malha ganha a conexão direta só depois deste tempo (quem acabou de
+ * entrar fica na malha até a ligação com o nó ficar pronta, um ou dois segundos). */
+const JOIN_GRACE_MS = 4000;
+/** Depois de entrar no nó, espera isto antes de achar que a voz de alguém não está chegando por ele. */
+const SETTLE_MS = 2500;
+/** Banda com que a tela começa pelo SFU (veja `SfuLink.startScreen`). */
+const SFU_START_KBPS = 3000;
+/** Pedido de vídeo vazio (o que pedir pela malha a quem chega pelo SFU). */
+const NO_VIDEO = { camera: false, screen: false };
+/** Voltando para um servidor que reiniciou sem a sala no nó ainda: a ligação com o nó espera este tempo. */
+const RESUME_KEEP_MS = 10000;
 
 /** Restrições da câmera no tamanho da chamada; `pick` escolhe qual (deviceId ou facingMode). */
 const cameraVideo = (pick) => ({
@@ -92,6 +124,9 @@ function hardwareVideoCodec() {
 // Com o RNNoise ligado, o supressor nativo do navegador fica desligado para não processar o áudio duas vezes.
 /** Chave local de cada par (não muda quando ele volta com outro id). */
 let peerSeq = 0;
+
+/** Medidor de nível de um áudio: os do SFU têm os mesmos ids de stream da malha. */
+const meterKey = (owner, streamId, path) => (path === 'sfu' ? `${owner}:sfu:${streamId}` : `${owner}:${streamId}`);
 
 const audioConstraints = (deviceId, rnnoise) => ({
   deviceId: deviceId ? { exact: deviceId } : undefined,
@@ -138,6 +173,18 @@ export class VoiceClient {
     // Desligam o `keepAwake` dos AudioContext da chamada.
     this.sleepless = [];
     this.missedPings = 0;
+    // Nó de mídia: a rota da sala ({ node, epoch } ou null = malha), a ligação com ele (e a de antes,
+    // durante uma troca de nó), por onde eu ando agora (`mesh` ou o id do nó) e a cifragem.
+    this.room = null;
+    this.sfu = null;
+    this.oldSfu = null;
+    this.myRoute = 'mesh';
+    // A rota que o servidor aceitou (veja `announceRoute`).
+    this.ackRoute = 'mesh';
+    this.crypt = null;
+    this.sfuViewers = { camera: 0, screen: 0 };
+    // id do usuário → quando chegou voz decifrada dele pelo SFU.
+    this.heard = new Map();
   }
 
   // ---------- Ciclo de vida ----------
@@ -160,16 +207,42 @@ export class VoiceClient {
     this.videoCodec = await codec;
     this.audioCtx = new AudioContext();
     this.sleepless.push(keepAwake(this.audioCtx));
+    // Com a cifragem dos quadros, o app pode usar o nó de mídia; sem ela, fica sempre na malha.
+    this.crypt = null;
+    if (MediaCrypt.supported()) {
+      try {
+        this.crypt = await new MediaCrypt({
+          salt: channelId,
+          send: (to, payload) => this.signal(to, { mediaKey: payload }),
+          // Chegou a chave de alguém: os quadros de vídeo de antes não decifraram, então um quadro-chave.
+          onKey: (owner) => {
+            const peer = [...this.peers.values()].find((p) => p.info.user?.id === owner);
+            if (peer) this.sfu?.askKeyframe(peer.id);
+          },
+          onAlive: (owner) => this.heard.set(owner, Date.now()),
+        }).init();
+      } catch (e) {
+        console.warn('[voz] sem cifragem dos quadros; a chamada fica na malha', e);
+        this.crypt = null;
+      }
+    }
 
     const on = (ev, fn) => this.unsubs.push(this.rt.on(ev, fn));
     on('voice:peer-joined', (p) => {
       this.adopt(p);
+      this.syncMesh();
       this.changed();
     });
     on('voice:peer-left', ({ peerId }) => this.removePeer(peerId));
     on('voice:peer-state', (p) => {
       this.ensurePeer(p.peerId, p);
+      this.syncMesh();
       this.changed();
+    });
+    // A sala passou para um nó de mídia, trocou de nó ou voltou para a malha.
+    on('voice:mode', ({ channelId, node, epoch }) => {
+      if (channelId !== this.state.channelId || (epoch || 0) <= (this.roomEpoch || 0)) return;
+      this.setRoom(node ? { node, epoch } : null, epoch);
     });
     on('voice:signal', ({ from, data }) => this.handleSignal(from, data));
     // Uma chamada por conta: entrar por outro aparelho tira este da chamada.
@@ -216,7 +289,7 @@ export class VoiceClient {
     };
     document.addEventListener('visibilitychange', this.onVisibility);
 
-    const res = await this.rt.request('voice:join', { channelId, muted, deafened });
+    const res = await this.rt.request('voice:join', { channelId, muted, deafened, ...this.mediaCaps() });
     if (res.error) {
       this.cleanup();
       throw new Error(res.error);
@@ -229,7 +302,12 @@ export class VoiceClient {
     this.state.channelId = res.channelId;
     this.state.guildId = res.guildId;
     this.state.dm = Boolean(res.dm);
+    // A rota antes dos pares: numa sala grande no SFU, a malha não é montada.
+    this.room = res.media?.node && this.crypt ? { node: res.media.node, epoch: res.media.epoch || 0 } : null;
+    // O tamanho da sala conta todos de uma vez (os pares são criados um a um logo abaixo).
+    this.joining = res.peers.length;
     for (const p of res.peers) this.ensurePeer(p.peerId, p);
+    this.joining = 0;
     // Quem já estava no canal (ou mandou sinal antes da resposta) recebe o pedido conforme as preferências.
     for (const peer of this.peers.values()) this.applyAutoWatch(peer);
     if (this.mic) this.watchLevel('me', this.mic);
@@ -239,8 +317,18 @@ export class VoiceClient {
       this.startLateSenders();
       this.checkPeers();
       this.refreshIce();
+      this.sfu?.check();
+      this.oldSfu?.check();
     }, 2000);
+    // Por onde cada par anda (e a queda do nó) muda em frações de segundo.
+    this.routeTimer = setInterval(() => this.routeTick(), 250);
+    if (this.room) this.setRoom(res.media, res.media.epoch, true);
     this.changed();
+  }
+
+  /** O que vai no `voice:join` para o servidor saber se este app usa o nó de mídia. */
+  mediaCaps() {
+    return this.crypt ? { sfu: true, e2e: this.crypt.publicKey } : {};
   }
 
   leave() {
@@ -268,6 +356,7 @@ export class VoiceClient {
       channelId: this.state.channelId,
       muted: this.state.muted,
       deafened: this.state.deafened,
+      ...this.mediaCaps(),
       resume: {
         was: pending.was,
         since: this.joinedAt,
@@ -276,6 +365,8 @@ export class VoiceClient {
         screen: Boolean(this.screen),
         cameraStreamId: this.camera?.id || null,
         screenStreamId: this.screen?.id || null,
+        // O nó em que a sala estava: o servidor que reiniciou a põe de volta nele (a mídia não parou).
+        media: this.sfu?.node || null,
       },
     });
     if (this.suspended !== pending) return;
@@ -301,6 +392,15 @@ export class VoiceClient {
       for (const peer of this.peers.values()) if (!back.has(peer.id)) peer.orphanSince = now;
       for (const peer of this.peers.values()) peer.polite = this.selfId < peer.id;
     }
+    // A rota da sala de agora (num servidor que reiniciou, as vezes recomeçam do zero, e a minha rota
+    // precisa ser aceita de novo).
+    if (!sameServer) {
+      this.roomEpoch = 0;
+      this.ackRoute = 'mesh';
+    }
+    this.setRoom(res.media?.node ? res.media : null, res.media?.epoch || 0, true);
+    // Quem eu era para os outros (o servidor guarda a rota de cada um): conta de novo.
+    if (this.myRoute !== 'mesh') this.announceRoute();
     this.changed();
   }
 
@@ -312,13 +412,15 @@ export class VoiceClient {
     const ends = list.map((s) => /^(\d+):/.exec(s.username || '')?.[1]).filter(Boolean);
     this.iceExpiresAt = ends.length ? Math.min(...ends.map(Number)) * 1000 : null;
     for (const peer of this.peers.values()) {
-      if (peer.pc.signalingState === 'closed') continue;
+      if (!peer.pc || peer.pc.signalingState === 'closed') continue;
       try {
         peer.pc.setConfiguration({ ...peer.pc.getConfiguration(), iceServers: list });
       } catch (e) {
         console.warn('[voz] senha do relay', e);
       }
     }
+    this.sfu?.setIceServers(list);
+    this.oldSfu?.setIceServers(list);
   }
 
   /** Chamada chegando às 24 h da senha do relay: pede uma nova (no máximo uma vez por minuto). */
@@ -352,7 +454,7 @@ export class VoiceClient {
       if (m.owner !== oldId) continue;
       this.meters.delete(key);
       m.owner = newId;
-      this.meters.set(`${newId}:${m.stream.id}`, m);
+      this.meters.set(meterKey(newId, m.stream.id, m.path), m);
     }
     for (const map of [this.speaking, this.lastLoud]) {
       if (oldId in map) {
@@ -365,6 +467,10 @@ export class VoiceClient {
         map.set(newId, map.get(oldId));
         map.delete(oldId);
       }
+    }
+    // As trilhas que chegam pelo SFU continuam as mesmas (o nó também trocou a conexão dela, sem renegociar).
+    for (const link of [this.sfu, this.oldSfu]) {
+      for (const info of Object.values(link?.tracks || {})) if (info?.peerId === oldId) info.peerId = newId;
     }
     this.peerLog(peer, 'voltou depois de reconectar ao servidor');
   }
@@ -387,6 +493,14 @@ export class VoiceClient {
     }
     this.sleepless.forEach((stop) => stop());
     this.sleepless = [];
+    clearInterval(this.routeTimer);
+    for (const link of [this.sfu, this.oldSfu]) link?.close(false);
+    this.sfu = this.oldSfu = this.room = null;
+    this.roomEpoch = 0;
+    this.myRoute = this.ackRoute = 'mesh';
+    this.crypt?.close();
+    this.crypt = null;
+    this.heard.clear();
     for (const id of [...this.peers.keys()]) this.removePeer(id, false);
     for (const s of [this.rawMic, this.mic, this.camera, this.screen]) s?.getTracks().forEach((t) => t.stop());
     this.screenAudio?.stop();
@@ -416,19 +530,21 @@ export class VoiceClient {
       if (info) {
         const wasLive = Boolean(peer.info.screen);
         Object.assign(peer.info, info);
+        this.notePeerRoute(peer);
+        this.knowPeer(peer);
         // A transmissão acabou: da próxima vez é preciso pedir de novo (a não ser que assista automaticamente).
         if (wasLive && !peer.info.screen && peer.watching.screen && !this.watchPrefs.screen) this.setWatching(peer, { screen: false });
         this.applyAudio(peer);
       }
       return peer;
     }
-    const pc = new RTCPeerConnection({ iceServers: this.iceServers });
     peer = {
       id: peerId,
       // Não muda quando a pessoa volta com outro id (sons de entrada/saída, listas na tela).
       key: `p${++peerSeq}`,
       info: { peerId, ...(info || {}) },
-      pc,
+      // Conexão da malha com esta pessoa (sem ela numa sala grande no SFU; veja `meshNeeded`).
+      pc: null,
       // Um lado "educado" cede em colisões de oferta; o critério só precisa ser determinístico.
       polite: (this.selfId || this.rt.peerId || '') < peerId,
       makingOffer: false,
@@ -436,6 +552,8 @@ export class VoiceClient {
       queue: Promise.resolve(),
       streams: new Map(),
       audioEls: new Map(),
+      // O que chega desta pessoa pelo SFU (os ids dos streams são os mesmos da malha).
+      sfu: { streams: new Map(), audioEls: new Map() },
       senders: {},
       // O que esta pessoa pediu para receber de mim / o que eu pedi para receber dela.
       wants: { camera: false, screen: false },
@@ -450,9 +568,50 @@ export class VoiceClient {
       lastRestart: 0,
       lastReset: 0,
       resets: 0,
+      // Até quando mando pela malha mesmo estando no SFU (pedido dela / logo depois de eu trocar).
+      meshUntil: 0,
+      overlapUntil: 0,
       log: [],
     };
     this.peers.set(peerId, peer);
+    this.notePeerRoute(peer);
+    this.knowPeer(peer);
+    if (this.meshNeeded(peer)) this.createPc(peer);
+    if (this.state.channelId) this.applyAutoWatch(peer);
+    return peer;
+  }
+
+  /** Desde quando a pessoa está na malha (numa sala grande, a conexão direta com ela espera um pouco). */
+  notePeerRoute(peer) {
+    const route = peer.info.route || 'mesh';
+    if (route !== 'mesh') peer.meshSince = null;
+    else peer.meshSince ??= Date.now();
+    if (route !== peer.lastRoute) {
+      peer.lastRoute = route;
+      peer.routeAt = Date.now();
+    }
+  }
+
+  /** A chave pública da pessoa nesta chamada (cifragem pelo SFU) e de quem são as trilhas dela. */
+  knowPeer(peer) {
+    const user = peer.info.user?.id;
+    if (!this.crypt || !user) return;
+    if (peer.info.e2e) this.crypt.setPeer(user, peer.id, peer.info.e2e);
+    this.crypt.alias(`conn:${peer.id}`, user);
+    const key = this.pendingKeys?.get(peer.id);
+    if (key) {
+      this.pendingKeys.delete(peer.id);
+      this.crypt.receive(user, key);
+    }
+  }
+
+  /** Cria a conexão da malha com o par (na sala em malha, na reserva por baixo do SFU, ou quando preciso). */
+  createPc(peer) {
+    if (peer.pc) return peer.pc;
+    const pc = new RTCPeerConnection({ iceServers: this.iceServers });
+    peer.pc = pc;
+    peer.badSince = Date.now();
+    peer.createdAt = Date.now();
 
     pc.onnegotiationneeded = async () => {
       try {
@@ -503,20 +662,20 @@ export class VoiceClient {
     // Na primeira negociação só o lado não educado oferece. Se os dois oferecem juntos, o educado desfaz a
     // oferta no meio da coleta ICE e o Chrome às vezes nunca mais gera candidatos ("Conectando…" para
     // sempre). O educado só anexa a voz depois de responder (startSenders).
-    peer.createdAt = Date.now();
     if (peer.polite) peer.lateSenders = true;
     else this.startSenders(peer);
-    if (this.state.channelId) this.applyAutoWatch(peer);
-    return peer;
+    return pc;
   }
 
   /** Anexa a voz (sempre vai; câmera e tela só depois que a pessoa pedir, em syncVideo). */
   startSenders(peer) {
     peer.lateSenders = false;
     const { pc } = peer;
-    if (pc.signalingState === 'closed') return;
+    if (!pc || pc.signalingState === 'closed') return;
     if (this.mic) {
       if (!peer.senders.mic) peer.senders.mic = pc.addTrack(this.mic.getAudioTracks()[0], this.mic);
+      // Na reserva (estamos os dois no SFU), a trilha fica de fora até precisar: não manda nada.
+      this.applyMeshSend(peer);
     } else if (!peer.polite && !pc.getTransceivers().length) {
       // Sem microfone: ainda assim inicia a negociação para ouvir a outra pessoa.
       pc.addTransceiver('audio', { direction: 'recvonly' });
@@ -547,6 +706,7 @@ export class VoiceClient {
     peer.watching = next;
     peer.wantDirty = true;
     this.sendWant(peer);
+    this.sendSfuWants();
   }
 
   /**
@@ -554,22 +714,26 @@ export class VoiceClient {
    * mesmo tempo na negociação inicial (o Chrome às vezes não se recupera dessa colisão).
    */
   sendWant(peer) {
-    if (!peer.wantDirty || peer.pc.connectionState !== 'connected') return;
+    if (!peer.wantDirty || peer.pc?.connectionState !== 'connected') return;
     peer.wantDirty = false;
-    this.signal(peer.id, { want: peer.watching });
+    // O vídeo de quem chega pelo SFU vem pelo SFU (`sendSfuWants`): pela malha, nada.
+    const want = this.sfuWith(peer) ? NO_VIDEO : peer.watching;
+    peer.sentMeshWant = JSON.stringify(want);
+    this.signal(peer.id, { want });
   }
 
   watch(peerId, kind, on) {
     const peer = this.peers.get(peerId);
     if (!peer) return;
     this.setWatching(peer, { [kind]: on });
+    this.sendSfuWants();
     this.changed();
   }
 
   /** Emissor: deixa as trilhas de vídeo de um par de acordo com o que está ligado e o que ele pediu. */
   syncVideo(peer) {
     const { pc, senders, wants } = peer;
-    if (pc.signalingState === 'closed' || peer.lateSenders) return;
+    if (!pc || pc.signalingState === 'closed' || peer.lateSenders) return;
     const camTrack = this.camera?.getVideoTracks()[0];
     const before = [Boolean(senders.camera), Boolean(senders.screenVideo)];
     if (camTrack && wants.camera && !senders.camera) {
@@ -598,11 +762,14 @@ export class VoiceClient {
   removePeer(peerId, notify = true) {
     const peer = this.peers.get(peerId);
     if (!peer) return;
-    peer.pc.close();
+    peer.pc?.close();
     for (const id of [...peer.audioEls.keys()]) this.stopAudio(peer, id);
+    this.clearSfuMedia(peer);
     for (const key of this.meters.keys()) if (key.startsWith(`${peerId}:`)) this.meters.delete(key);
     delete this.speaking[peerId];
     this.peers.delete(peerId);
+    // Saiu da chamada (e não só trocou de conexão): a minha chave de mídia muda.
+    if (notify && peer.info.user?.id) this.crypt?.removePeer(peer.info.user.id);
     if (notify) this.changed();
   }
 
@@ -617,7 +784,7 @@ export class VoiceClient {
 
   /** Reinicia o ICE (só o lado não educado; o educado responde à oferta). `force`: a rede mudou. */
   restartIce(peer, force = false) {
-    if (peer.polite || peer.pc.signalingState === 'closed' || (!force && Date.now() - peer.lastRestart < RESTART_AFTER_MS)) return;
+    if (peer.polite || !peer.pc || peer.pc.signalingState === 'closed' || (!force && Date.now() - peer.lastRestart < RESTART_AFTER_MS)) return;
     peer.lastRestart = Date.now();
     this.peerLog(peer, 'reiniciando o ICE');
     peer.pc.restartIce();
@@ -644,6 +811,8 @@ export class VoiceClient {
     };
     this.removePeer(peerId, false);
     const peer = this.ensurePeer(peerId, keep.info);
+    // Refazer é coisa da malha: a conexão nova sai mesmo numa sala grande no SFU.
+    this.createPc(peer);
     Object.assign(peer, {
       key: keep.key,
       // Esperando voltar depois de o servidor reiniciar: refazer a conexão não zera a espera.
@@ -686,7 +855,7 @@ export class VoiceClient {
         else this.restartIce(peer, true);
         continue;
       }
-      if (!peer.badSince || peer.pc.connectionState === 'connected') continue;
+      if (!peer.pc || !peer.badSince || peer.pc.connectionState === 'connected') continue;
       const bad = now - peer.badSince;
       if (bad > RESET_AFTER_MS && now - Math.max(peer.lastReset, peer.createdAt) > RESET_EVERY_MS) {
         if (peer.polite) {
@@ -700,9 +869,26 @@ export class VoiceClient {
   }
 
   handleSignal(from, data) {
+    // A chave de mídia de alguém (cifragem pelo SFU), embrulhada para mim.
+    if (data.mediaKey) {
+      const user = this.peers.get(from)?.info.user?.id;
+      if (user) this.crypt?.receive(user, data.mediaKey);
+      // Ainda não sei de quem é esta conexão: fica para quando souber (`knowPeer`).
+      else (this.pendingKeys ||= new Map()).set(from, data.mediaKey);
+      return;
+    }
+    // O SFU não está trazendo a minha voz para esta pessoa: mando pela malha também, enquanto ela pedir.
+    if (data.meshPlease) {
+      const peer = this.ensurePeer(from);
+      peer.meshUntil = Date.now() + MESH_PLEASE_MS;
+      this.syncMesh();
+      return;
+    }
     // O outro lado refez a conexão comigo: refaço a minha também (antes de qualquer sinal novo dele).
     if (data.reset) return this.resetPeer(from, true);
     const peer = this.ensurePeer(from);
+    // Sinal da malha de quem eu ainda não tinha conexão (sala grande no SFU): ela vem agora.
+    if (!peer.pc && (data.description || data.candidate || data.resetRequest || data.restartRequest)) this.createPc(peer);
     if (data.resetRequest) {
       if (!peer.polite) this.resetPeer(from);
       return;
@@ -718,6 +904,10 @@ export class VoiceClient {
 
   async processSignal(peer, { description, candidate, want }) {
     const { pc } = peer;
+    if (!pc) {
+      if (want) peer.wants = { camera: Boolean(want.camera), screen: Boolean(want.screen) };
+      return;
+    }
     if (want) {
       peer.wants = { camera: Boolean(want.camera), screen: Boolean(want.screen) };
       this.syncVideo(peer);
@@ -785,6 +975,390 @@ export class VoiceClient {
     }
   }
 
+  // ---------- Nó de mídia (SFU) ----------
+
+  /**
+   * A rota da sala mudou (`voice:mode`, ou a resposta do `voice:join`): liga a ligação com o nó novo em
+   * segundo plano (a de antes, se havia, continua até a nova ficar pronta) ou volta tudo para a malha.
+   */
+  setRoom(media, epoch = 0, force = false, drop = false) {
+    if (!force && !drop && (epoch || 0) <= (this.roomEpoch || 0) && (media?.node || null) === (this.room?.node || null)) return;
+    this.roomEpoch = Math.max(this.roomEpoch || 0, epoch || 0);
+    const node = this.crypt && media?.node ? media.node : null;
+    this.room = node ? { node, epoch: epoch || 0 } : null;
+    clearTimeout(this.keepTimer);
+    if (!node && force && this.sfu?.isReady()) {
+      // Voltando para um servidor que reiniciou: o nó ainda não religou a ele, mas a ligação com o nó
+      // continua de pé. Ela fica por um tempo (a sala volta para o nó em instantes, sem refazer nada).
+      const link = this.sfu;
+      this.keepTimer = setTimeout(() => {
+        if (this.room || this.sfu !== link) return;
+        this.setRoom(null, this.roomEpoch, false, true);
+      }, RESUME_KEEP_MS);
+    } else if (!node) {
+      for (const link of [this.sfu, this.oldSfu]) link?.close();
+      this.sfu = this.oldSfu = null;
+      for (const peer of this.peers.values()) this.clearSfuMedia(peer);
+    } else if (this.sfu?.node !== node) {
+      // Troca de nó: a ligação de antes segura a voz até a nova trazer (fazer antes de desfazer).
+      this.oldSfu?.close();
+      this.oldSfu = this.sfu?.isReady() ? this.sfu : null;
+      if (this.sfu && !this.oldSfu) {
+        this.sfu.close();
+        for (const peer of this.peers.values()) this.clearSfuMedia(peer);
+      }
+      this.sfu = this.startSfu(node);
+    }
+    const before = this.myRoute;
+    this.updateMyRoute();
+    // A sala voltou para o nó em que eu já estava: o servidor precisa saber de novo por onde eu ando.
+    if (this.room && this.myRoute === this.room.node && before === this.myRoute) this.announceRoute();
+    this.syncMesh();
+    this.changed();
+  }
+
+  /** Liga a ligação com o nó, com o que já estou enviando (tudo cifrado). */
+  startSfu(node) {
+    const link = new SfuLink({
+      node,
+      rt: this.rt,
+      iceServers: this.iceServers,
+      crypt: this.crypt,
+      ownerOf: (peerId) => this.peers.get(peerId)?.info.user?.id || null,
+      onTrack: (e, info) => this.sfuTrack(link, e, info),
+      onState: () => {
+        this.routeTick();
+        this.changed();
+      },
+      onViewers: (v) => {
+        if (link !== this.sfu) return;
+        this.sfuViewers = v;
+        this.tuneSfu();
+        this.changed();
+      },
+      onReset: () => {
+        if (link !== this.sfu) return;
+        for (const peer of this.peers.values()) this.clearSfuMedia(peer);
+        this.changed();
+      },
+      onUnreachable: () => this.routeTick(),
+      log: (text) => {
+        for (const peer of this.peers.values()) this.peerLog(peer, text);
+      },
+    });
+    const [mic] = this.mic?.getAudioTracks() || [];
+    if (mic) link.attach('mic', mic, this.mic);
+    if (this.camera) link.attach('camera', this.camera.getVideoTracks()[0], this.camera, { sendEncodings: CAMERA_LAYERS });
+    if (this.screen) this.attachSfuScreen(link, false);
+    link.start().then(() => {
+      this.sendSfuWants();
+      this.tuneSfu();
+    }).catch((e) => console.warn('[voz] SFU', e));
+    return link;
+  }
+
+  /** Uma trilha que chegou pelo SFU: fica com o par dono dela, ao lado do que vem pela malha. */
+  sfuTrack(link, { track, streams }, info) {
+    if (!info?.peerId || (link !== this.sfu && link !== this.oldSfu)) return;
+    const peer = this.peers.get(info.peerId) || this.ensurePeer(info.peerId);
+    const stream = streams[0] || new MediaStream([track]);
+    // Os ids dos streams são os do lado de quem manda: a trilha que chegou por último (a ligação nova,
+    // numa troca de nó) fica no lugar da anterior.
+    const had = peer.sfu.audioEls.get(stream.id);
+    if (had && had.srcObject !== stream) this.stopSfuAudio(peer, stream.id);
+    if (peer.sfu.streams.get(stream.id) !== stream) this.meters.delete(meterKey(peer.id, stream.id, 'sfu'));
+    peer.sfu.streams.set(stream.id, stream);
+    peer.sfu.node = link.node;
+    if (track.kind === 'audio') {
+      this.playSfuAudio(peer, stream);
+      this.watchLevel(peer.id, stream, 'sfu');
+    }
+    stream.onremovetrack = () => {
+      // Só se ainda for este (a ligação nova pode ter trazido outro com o mesmo id).
+      if (stream.getTracks().length === 0 && peer.sfu.streams.get(stream.id) === stream) {
+        peer.sfu.streams.delete(stream.id);
+        this.stopSfuAudio(peer, stream.id);
+        this.meters.delete(meterKey(peer.id, stream.id, 'sfu'));
+      }
+      this.changed();
+    };
+    track.onunmute = () => this.changed();
+    this.changed();
+  }
+
+  /**
+   * Conta ao servidor por onde eu ando. No nó, só passo a trocar mídia por ele depois que o servidor aceitar
+   * (`ackRoute`): os outros me veem pelo que o servidor diz, e os dois lados de cada par precisam concordar.
+   */
+  announceRoute() {
+    const route = this.myRoute;
+    if (route === 'mesh') this.ackRoute = 'mesh';
+    if (!this.state.channelId || this.suspended) return;
+    this.rt
+      .request('voice:route', { route })
+      .then((res) => {
+        if (route !== this.myRoute || !res || res.error) return;
+        const ack = res.route || 'mesh';
+        if (ack === this.ackRoute) return;
+        this.ackRoute = ack;
+        this.ackAt = Date.now();
+        // Passei a trocar pelo nó agora: a malha continua mandando um pouco, até os outros trocarem também.
+        if (ack !== 'mesh') {
+          const until = Date.now() + OVERLAP_MS;
+          for (const peer of this.peers.values()) peer.overlapUntil = until;
+        }
+        this.syncMesh();
+        this.changed();
+      })
+      .catch(() => {});
+  }
+
+  /** A ligação com o SFU pela qual eu e `peer` trocamos mídia agora (os dois no mesmo nó, ela pronta), ou null. */
+  sfuWith(peer) {
+    const route = peer.info.route;
+    if (!route || route === 'mesh' || route !== this.myRoute || this.ackRoute !== route) return null;
+    const link = [this.sfu, this.oldSfu].find((l) => l?.node === route);
+    return link?.isReady() ? link : null;
+  }
+
+  /** Mando a minha voz para `peer` pela malha agora? */
+  sendsMesh(peer) {
+    const now = Date.now();
+    return !this.sfuWith(peer) || now < peer.meshUntil || now < peer.overlapUntil;
+  }
+
+  /** Toco a voz de `peer` pela malha agora? (pelo SFU só quando ela está chegando por lá) */
+  playsMesh(peer) {
+    const link = this.sfuWith(peer);
+    return !link || this.sfuSilent(peer, link);
+  }
+
+  /** A voz de `peer` não está chegando por esta ligação (ainda não chegou, ou parou). */
+  sfuSilent(peer, link) {
+    if (!link.carries(peer.id) || peer.sfu.node !== link.node || !peer.sfu.audioEls.size) return true;
+    return Date.now() - (this.heard.get(peer.info.user?.id) || 0) > SFU_SILENT_MS;
+  }
+
+  /** A conexão da malha com `peer` precisa existir? */
+  meshNeeded(peer) {
+    // Sala em malha (ou este app sem cifragem): a malha de sempre.
+    if (!this.room) return true;
+    // Sala pequena: a malha fica de pé por baixo, como reserva.
+    if (Math.max(this.peers.size, this.joining || 0) + 1 <= STANDBY_MAX) return true;
+    // Sala grande: só com quem não está no SFU (depois de dar tempo de a pessoa chegar ao nó), com quem
+    // pediu, ou quando perdi o SFU.
+    const now = Date.now();
+    if (peer.meshSince != null && now - peer.meshSince > JOIN_GRACE_MS) return true;
+    if (now < peer.meshUntil || now < (peer.pleaseUntil || 0)) return true;
+    return Boolean(this.sfu && (this.sfu.isLost() || this.sfu.unreachable));
+  }
+
+  /** A trilha do microfone na conexão da malha com `peer`: a voz, ou nada (reserva). Sem renegociar. */
+  applyMeshSend(peer) {
+    const sender = peer.senders.mic;
+    if (!sender) return;
+    const want = this.sendsMesh(peer) ? this.mic?.getAudioTracks()[0] || null : null;
+    if (sender.track !== want) sender.replaceTrack(want).catch(() => {});
+  }
+
+  /** Por onde eu ando agora: o nó da ligação pronta (a nova, ou a de antes durante a troca), ou a malha. */
+  updateMyRoute() {
+    let next = 'mesh';
+    if (this.sfu?.isReady()) next = this.sfu.node;
+    else if (this.oldSfu?.isReady()) next = this.oldSfu.node;
+    if (next === this.myRoute) return;
+    this.myRoute = next;
+    // Acabei de passar para o SFU: continuo mandando pela malha um pouco, até os outros saberem.
+    if (next !== 'mesh') {
+      const until = Date.now() + OVERLAP_MS;
+      for (const peer of this.peers.values()) peer.overlapUntil = until;
+    }
+    this.announceRoute();
+    // A troca de nó terminou: a ligação de antes sai depois que os outros também trocaram.
+    if (this.oldSfu && next === this.sfu?.node) {
+      const old = this.oldSfu;
+      this.oldSfu = null;
+      setTimeout(() => old.close(), OVERLAP_MS * 2);
+    }
+    for (const peer of this.peers.values()) this.peerLog(peer, next === 'mesh' ? 'mídia pela malha' : `mídia pelo nó ${next}`);
+  }
+
+  /**
+   * Põe cada par no caminho certo: cria a conexão da malha onde ela é necessária, liga ou solta a voz nela,
+   * escolhe qual áudio tocar e o que pedir de vídeo por cada lado.
+   */
+  syncMesh() {
+    if (!this.state.channelId) return;
+    for (const peer of this.peers.values()) {
+      if (!peer.pc && this.meshNeeded(peer)) this.createPc(peer);
+      this.applyMeshSend(peer);
+      const playing = this.playsMesh(peer) ? 'mesh' : 'sfu';
+      if (playing !== peer.playing) {
+        this.applyAudio(peer);
+        this.peerLog(peer, playing === 'mesh' ? 'tocando pela malha' : 'tocando pelo SFU');
+      }
+      // O vídeo segue o caminho da pessoa (sem depender de a voz estar chegando agora).
+      const want = JSON.stringify(this.sfuWith(peer) ? NO_VIDEO : peer.watching);
+      if (peer.pc && want !== peer.sentMeshWant) {
+        peer.wantDirty = true;
+        this.sendWant(peer);
+      }
+    }
+    this.sendSfuWants();
+  }
+
+  /**
+   * A cada 250 ms (só com a sala num nó): a queda do nó, a ligação nova ficando pronta, os pedidos de "me
+   * manda pela malha" e o fim das sobreposições.
+   */
+  routeTick() {
+    if (!this.state.channelId || (!this.room && !this.sfu && !this.oldSfu && this.myRoute === 'mesh')) return;
+    const before = this.myRoute;
+    this.updateMyRoute();
+    const now = Date.now();
+    for (const peer of this.peers.values()) {
+      const link = this.sfuWith(peer);
+      // Ele manda a voz pelo SFU, mas ela não chega aqui: peço que mande pela malha também. Logo depois de
+      // um dos dois entrar no nó, a voz ainda está a caminho (chaves, renegociação): espera um pouco.
+      const settled = now - (this.ackAt || 0) > SETTLE_MS && now - (peer.routeAt || 0) > OVERLAP_MS;
+      const silent = link && settled && link.carries(peer.id) && this.sfuSilent(peer, link);
+      if (silent && now - (peer.pleaseAt || 0) > 1000) {
+        peer.pleaseAt = now;
+        peer.pleaseUntil = now + MESH_PLEASE_MS;
+        this.signal(peer.id, { meshPlease: true });
+      }
+    }
+    this.syncMesh();
+    if (before !== this.myRoute) this.changed();
+  }
+
+  /**
+   * Pede ao SFU a câmera/tela de quem estou assistindo e que chega por ele. A camada da câmera depende de
+   * quantas assisto: uma só, inteira; até quatro, a do meio; mais que isso, a menor.
+   */
+  sendSfuWants() {
+    if (!this.sfu) return;
+    const viaSfu = [...this.peers.values()].filter((p) => this.sfuWith(p) === this.sfu);
+    const cams = viaSfu.filter((p) => p.watching.camera && p.info.video).length;
+    const quality = cams <= 1 ? 'f' : cams <= 4 ? 'h' : 'q';
+    const wants = {};
+    for (const p of viaSfu) {
+      if (p.watching.camera || p.watching.screen) wants[p.id] = { camera: p.watching.camera, screen: p.watching.screen, quality };
+    }
+    this.sfu.setWants(wants);
+  }
+
+  /**
+   * O que eu envio ao SFU: a câmera e a tela só vão quando alguém assiste (sem ninguém, o navegador
+   * nem codifica), e a tela vai na qualidade escolhida inteira (é um envio só, não um por pessoa).
+   */
+  tuneSfu() {
+    const sfu = this.sfu;
+    if (!sfu) return;
+    const relay = this.sfuStats?.route === 'relay';
+    const cam = sfu.sender('camera');
+    if (cam?.track) {
+      const params = cam.getParameters();
+      if (params.encodings?.length) {
+        params.encodings.forEach((e, i) => {
+          const layer = CAMERA_LAYERS.find((l) => l.rid === e.rid) || CAMERA_LAYERS[i] || CAMERA_LAYERS[2];
+          e.active = this.sfuViewers.camera > 0 && (!relay || layer.rid !== 'f');
+          e.maxBitrate = layer.maxBitrate;
+          e.maxFramerate = CAMERA.fps;
+        });
+        cam.setParameters(params).catch((e) => console.warn('[voz] câmera no SFU', e));
+      }
+    }
+    const scr = sfu.sender('screen');
+    if (scr?.track) {
+      const preset = SCREEN_PRESETS[this.state.screenPreset];
+      const target = videoTarget({ kind: 'screen', preset, viewers: 1, relay });
+      const live = this.sfuViewers.screen > 0;
+      if (!live) sfu.stopScreen();
+      else if (!sfu.isScreenLive()) {
+        // A banda de partida antes de ligar: o primeiro quadro já sai com ela.
+        const started = sfu.startScreen(Math.min(SFU_START_KBPS, target.bitrate / 1000), this.sfuStats?.upKbps);
+        if (started) {
+          started.then(() => this.tuneSfu());
+          return;
+        }
+      }
+      const params = scr.getParameters();
+      if (params.encodings?.length) {
+        Object.assign(params.encodings[0], {
+          active: live,
+          maxBitrate: target.bitrate,
+          maxFramerate: target.fps,
+          scaleResolutionDownBy: target.scale,
+          priority: 'high',
+          networkPriority: 'high',
+        });
+        params.degradationPreference = preset.hint === 'motion' ? 'maintain-framerate' : 'maintain-resolution';
+        scr.setParameters(params).catch(() => {});
+      }
+    }
+  }
+
+  /** Caminho até o nó (direto/relay), banda de envio e o vídeo que chega pelo SFU (para o selo na tela). */
+  async collectSfuStats() {
+    const link = this.sfu;
+    if (!link?.sub || !link?.pub) {
+      this.sfuStats = null;
+      return;
+    }
+    try {
+      const [inR, outR] = await Promise.all([link.sub.getStats(), link.pub.getStats()]);
+      const prev = this.sfuPrev || new Map();
+      const now = new Map();
+      const video = {};
+      let path = null;
+      let upKbps = null;
+      const readPath = (report) => {
+        report.forEach((s) => {
+          if (s.type !== 'transport' || !s.selectedCandidatePairId || path) return;
+          const pair = report.get(s.selectedCandidatePairId);
+          const l = report.get(pair?.localCandidateId);
+          const r = report.get(pair?.remoteCandidateId);
+          if (pair)
+            path = {
+              local: `${l?.candidateType}/${l?.protocol}${l?.relayProtocol ? `/turn-${l.relayProtocol}` : ''}`,
+              remote: `${r?.candidateType}/${r?.protocol}`,
+              rttMs: pair.currentRoundTripTime != null ? Math.round(pair.currentRoundTripTime * 1000) : null,
+            };
+          if (pair?.availableOutgoingBitrate && report === outR) upKbps = Math.round(pair.availableOutgoingBitrate / 1000);
+        });
+      };
+      readPath(outR);
+      readPath(inR);
+      inR.forEach((s) => {
+        if (s.type !== 'inbound-rtp' || s.kind !== 'video') return;
+        now.set(s.id, s);
+        const p = prev.get(s.id);
+        const kbps = p && s.timestamp > p.timestamp ? Math.round(((s.bytesReceived - p.bytesReceived) * 8) / (s.timestamp - p.timestamp)) : null;
+        video[s.trackIdentifier] = {
+          dir: 'in',
+          codec: inR.get(s.codecId)?.mimeType?.replace('video/', '') || '?',
+          w: s.frameWidth || 0,
+          h: s.frameHeight || 0,
+          fps: Math.round(s.framesPerSecond || 0),
+          frames: s.framesDecoded || 0,
+          bytes: s.bytesReceived || 0,
+          kbps,
+          lost: s.packetsLost || 0,
+          keyframes: s.keyFramesDecoded || 0,
+          decoder: s.decoderImplementation,
+        };
+      });
+      this.sfuPrev = now;
+      const route = path ? (path.local.startsWith('relay') || path.remote.startsWith('relay') ? 'relay' : 'direto') : null;
+      const retune = route !== (this.sfuStats?.route ?? null);
+      this.sfuStats = { route, path, upKbps, video };
+      if (retune) this.tuneSfu();
+    } catch (e) {
+      console.warn('[voz] getStats do SFU', e);
+    }
+  }
+
   // ---------- Áudio remoto ----------
 
   playAudio(peer, stream) {
@@ -815,7 +1389,7 @@ export class VoiceClient {
       window.removeEventListener('keydown', this.unblock, true);
       this.unblock = null;
       this.state.audioBlocked = false;
-      for (const peer of this.peers.values()) for (const el of peer.audioEls.values()) if (el.paused) this.play(el);
+      for (const el of this.audioEls()) if (el.paused) this.play(el);
       this.audioCtx?.resume().catch(() => {});
       this.boostCtx?.resume().catch(() => {});
       this.changed();
@@ -833,20 +1407,63 @@ export class VoiceClient {
   applyAudio(peer) {
     // A voz some se eu silenciei a pessoa para mim ou se um moderador a silenciou para todos.
     const voiceOff = this.localMutes.has(peer.info.user?.id) || Boolean(peer.info.serverMuted);
-    for (const [streamId, el] of peer.audioEls) {
-      const isScreen = streamId === peer.info.screenStreamId;
-      const off = this.state.deafened || (isScreen ? peer.streamMuted : voiceOff);
-      const volume = isScreen ? peer.streamVolume : peer.volume;
-      const boost = volume > 1 ? this.boost(peer, streamId, el) : null;
-      if (boost) {
-        el.muted = true;
-        el.volume = 1;
-        boost.gain.gain.value = off ? 0 : volume;
-      } else {
-        this.unboost(peer, streamId);
-        el.muted = off;
-        el.volume = Math.min(1, volume);
+    // Toca pelo caminho em uso (malha ou SFU); o outro fica mudo, para não ouvir duas vezes na troca.
+    const viaMesh = this.playsMesh(peer);
+    peer.playing = viaMesh ? 'mesh' : 'sfu';
+    for (const [path, els] of [['mesh', peer.audioEls], ['sfu', peer.sfu.audioEls]]) {
+      const inUse = (path === 'mesh') === viaMesh;
+      for (const [streamId, el] of els) {
+        const isScreen = streamId === peer.info.screenStreamId;
+        const off = !inUse || this.state.deafened || (isScreen ? peer.streamMuted : voiceOff);
+        const volume = isScreen ? peer.streamVolume : peer.volume;
+        const key = path === 'mesh' ? streamId : `sfu:${streamId}`;
+        const boost = volume > 1 ? this.boost(peer, key, el) : null;
+        if (boost) {
+          el.muted = true;
+          el.volume = 1;
+          boost.gain.gain.value = off ? 0 : volume;
+        } else {
+          this.unboost(peer, key);
+          el.muted = off;
+          el.volume = Math.min(1, volume);
+        }
       }
+    }
+  }
+
+  /** Um áudio que chegou pelo SFU (voz ou som da tela de `peer`). */
+  playSfuAudio(peer, stream) {
+    if (peer.sfu.audioEls.has(stream.id)) return;
+    const el = new Audio();
+    el.autoplay = true;
+    el.srcObject = stream;
+    if (this.devices.output && el.setSinkId) el.setSinkId(this.devices.output).catch(() => {});
+    this.play(el);
+    peer.sfu.audioEls.set(stream.id, el);
+    this.applyAudio(peer);
+  }
+
+  stopSfuAudio(peer, streamId) {
+    const el = peer.sfu.audioEls.get(streamId);
+    if (!el) return;
+    this.unboost(peer, `sfu:${streamId}`);
+    el.pause();
+    el.srcObject = null;
+    peer.sfu.audioEls.delete(streamId);
+  }
+
+  /** Esquece o que chegava de um par pelo SFU (a ligação foi refeita ou a sala saiu do nó). */
+  clearSfuMedia(peer) {
+    for (const id of [...peer.sfu.audioEls.keys()]) this.stopSfuAudio(peer, id);
+    for (const key of [...this.meters.keys()]) if (key.startsWith(`${peer.id}:sfu:`)) this.meters.delete(key);
+    peer.sfu.streams.clear();
+  }
+
+  /** Todos os <audio> da chamada (os dois caminhos). */
+  *audioEls() {
+    for (const peer of this.peers.values()) {
+      yield* peer.audioEls.values();
+      yield* peer.sfu.audioEls.values();
     }
   }
 
@@ -934,15 +1551,15 @@ export class VoiceClient {
 
   // ---------- Indicador de fala ----------
 
-  watchLevel(owner, stream) {
+  watchLevel(owner, stream, path = 'mesh') {
     if (!this.audioCtx || !stream.getAudioTracks().length) return;
-    const key = `${owner}:${stream.id}`;
+    const key = meterKey(owner, stream.id, path);
     if (this.meters.has(key)) return;
     const source = this.audioCtx.createMediaStreamSource(stream);
     const analyser = this.audioCtx.createAnalyser();
     analyser.fftSize = 512;
     source.connect(analyser);
-    this.meters.set(key, { owner, stream, analyser, buf: new Float32Array(analyser.fftSize) });
+    this.meters.set(key, { owner, stream, path, analyser, buf: new Float32Array(analyser.fftSize) });
   }
 
   tickSpeaking() {
@@ -952,6 +1569,8 @@ export class VoiceClient {
       // Áudio da tela compartilhada não conta como "falando".
       const peer = this.peers.get(m.owner);
       if (peer && m.stream.id === peer.info.screenStreamId) continue;
+      // Só o caminho que está tocando (o outro está mudo, ou calado).
+      if (peer && m.path !== (peer.playing || 'mesh')) continue;
       m.analyser.getFloatTimeDomainData(m.buf);
       let sum = 0;
       for (const v of m.buf) sum += v * v;
@@ -1061,6 +1680,7 @@ export class VoiceClient {
   /** Sem microfone nenhum: os outros deixam de receber a minha voz, e eu continuo ouvindo. */
   dropMic() {
     for (const peer of this.peers.values()) peer.senders.mic?.replaceTrack(null).catch(() => {});
+    for (const link of [this.sfu, this.oldSfu]) link?.sender('mic')?.replaceTrack(null).catch(() => {});
     for (const s of [this.rawMic, this.mic]) s?.getTracks().forEach((t) => t.stop());
     this.nsPipe?.close();
     this.nsPipe = null;
@@ -1093,9 +1713,14 @@ export class VoiceClient {
     await this.acquireMic();
     const track = this.mic.getAudioTracks()[0];
     for (const peer of this.peers.values()) {
-      if (peer.senders.mic) await peer.senders.mic.replaceTrack(track);
-      else if (!peer.lateSenders) peer.senders.mic = peer.pc.addTrack(track, this.mic);
+      // Na reserva (os dois no SFU), a trilha continua de fora.
+      if (peer.senders.mic) await peer.senders.mic.replaceTrack(this.sendsMesh(peer) ? track : null);
+      else if (peer.pc && !peer.lateSenders) {
+        peer.senders.mic = peer.pc.addTrack(track, this.mic);
+        this.applyMeshSend(peer);
+      }
     }
+    for (const link of [this.sfu, this.oldSfu]) await link?.setSource('mic', track, link.sources.get('mic')?.stream || this.mic);
     for (const s of [old.raw, old.mic]) s?.getTracks().forEach((t) => t.stop());
     old.pipe?.close();
     for (const k of [...this.meters.keys()]) if (k.startsWith('me:')) this.meters.delete(k);
@@ -1146,12 +1771,15 @@ export class VoiceClient {
       // Estado antes das trilhas: quem recebe já sabe que este stream é a câmera.
       this.pushState({ video: true, cameraStreamId: this.camera.id });
       for (const peer of this.peers.values()) this.syncVideo(peer);
+      for (const link of [this.sfu, this.oldSfu]) await link?.setSource('camera', track, this.camera, { sendEncodings: CAMERA_LAYERS });
+      this.tuneSfu();
     } else if (!on && this.camera) {
       this.state.cameraFacing = 'user';
       for (const peer of this.peers.values()) {
-        if (peer.senders.camera) peer.pc.removeTrack(peer.senders.camera);
+        if (peer.senders.camera) peer.pc?.removeTrack(peer.senders.camera);
         peer.senders.camera = null;
       }
+      for (const link of [this.sfu, this.oldSfu]) link?.setSource('camera', null);
       this.camera.getTracks().forEach((t) => t.stop());
       this.camera = null;
       this.pushState({ video: false, cameraStreamId: null });
@@ -1199,6 +1827,7 @@ export class VoiceClient {
       // Mesmo stream (quem recebe continua reconhecendo a câmera), só a trilha muda.
       this.camera.addTrack(track);
       for (const peer of this.peers.values()) if (peer.senders.camera) await peer.senders.camera.replaceTrack(track);
+      for (const link of [this.sfu, this.oldSfu]) await link?.setSource('camera', track, this.camera);
       this.state.cameraFacing = now;
       this.cameraPick = { facingMode: { ideal: now } };
       if (now !== facing) this.onNotice?.('Não deu para abrir a outra câmera deste aparelho.');
@@ -1248,7 +1877,7 @@ export class VoiceClient {
       this.reviveMic();
       this.reviveCamera();
       // O iPhone pausa os <audio> da chamada em segundo plano.
-      for (const peer of this.peers.values()) for (const el of peer.audioEls.values()) if (el.paused) this.play(el);
+      for (const el of this.audioEls()) if (el.paused) this.play(el);
     }, REVIVE_DELAY_MS);
   }
 
@@ -1276,6 +1905,7 @@ export class VoiceClient {
       track.onended = onended;
       this.camera.addTrack(track);
       for (const peer of this.peers.values()) if (peer.senders.camera) await peer.senders.camera.replaceTrack(track);
+      for (const link of [this.sfu, this.oldSfu]) await link?.setSource('camera', track, this.camera);
     } catch (e) {
       console.warn('[voz] a câmera não voltou', e);
       if (this.camera) await this.setCamera(false);
@@ -1285,6 +1915,22 @@ export class VoiceClient {
       this.reviveMic();
       this.changed();
     }
+  }
+
+  /** A tela (e o som dela) na ligação com o SFU. `negotiate`: renegociar já (a ligação está de pé). */
+  async attachSfuScreen(link, negotiate = true) {
+    if (!link || !this.screen) return;
+    const [video] = this.screen.getVideoTracks();
+    const [audio] = this.screen.getAudioTracks();
+    const prefer = (pc, sender) => this.preferVideoCodec(pc, sender);
+    if (!negotiate) {
+      link.attach('screen', video, this.screen, { prefer });
+      if (audio) link.attach('screenAudio', audio, this.screen);
+      return;
+    }
+    await link.setSource('screen', video, this.screen, { prefer });
+    await link.setSource('screenAudio', audio || null, this.screen);
+    this.tuneSfu();
   }
 
   addScreenTracks(peer) {
@@ -1408,12 +2054,17 @@ export class VoiceClient {
       this.state.screenPreset = presetKey;
       this.pushState({ screen: true, screenStreamId: this.screen.id });
       for (const peer of this.peers.values()) this.syncVideo(peer);
+      for (const link of [this.sfu, this.oldSfu]) await this.attachSfuScreen(link);
     } else if (!on && this.screen) {
       for (const peer of this.peers.values()) {
         for (const k of ['screenVideo', 'screenAudio']) {
-          if (peer.senders[k]) peer.pc.removeTrack(peer.senders[k]);
+          if (peer.senders[k]) peer.pc?.removeTrack(peer.senders[k]);
           peer.senders[k] = null;
         }
+      }
+      for (const link of [this.sfu, this.oldSfu]) {
+        link?.setSource('screen', null);
+        link?.setSource('screenAudio', null);
       }
       this.screen.getTracks().forEach((t) => t.stop());
       this.screenAudio?.stop();
@@ -1449,7 +2100,7 @@ export class VoiceClient {
     const [oldAudio] = this.screen.getAudioTracks();
     for (const peer of this.peers.values()) {
       const { pc, senders } = peer;
-      if (pc.signalingState === 'closed') continue;
+      if (!pc || pc.signalingState === 'closed') continue;
       if (senders.screenVideo) await senders.screenVideo.replaceTrack(video).catch((e) => console.warn('[voz] trocar imagem', e));
       if (senders.screenAudio) await senders.screenAudio.replaceTrack(audio || null).catch((e) => console.warn('[voz] trocar som', e));
       else if (senders.screenVideo && audio) senders.screenAudio = pc.addTrack(audio, this.screen);
@@ -1465,8 +2116,14 @@ export class VoiceClient {
     this.screenAudio = native;
     this.screen.addTrack(video);
     if (audio) this.screen.addTrack(audio);
+    for (const link of [this.sfu, this.oldSfu]) {
+      if (!link) continue;
+      await link.setSource('screen', video, this.screen);
+      await link.setSource('screenAudio', audio || null, this.screen);
+    }
     this.state.screenLabel = VoiceClient.screenLabel(video);
     this.peers.forEach((peer) => this.tuneSenders(peer));
+    this.tuneSfu();
     this.changed();
   }
 
@@ -1485,6 +2142,7 @@ export class VoiceClient {
         })
         .catch((e) => console.warn('[voz] applyConstraints', e));
       this.peers.forEach((peer) => this.tuneSenders(peer));
+      this.tuneSfu();
     }
     this.changed();
   }
@@ -1493,7 +2151,7 @@ export class VoiceClient {
     const prev = { ...this.devices };
     Object.assign(this.devices, devices);
     if (this.devices.output !== prev.output) {
-      this.peers.forEach((p) => p.audioEls.forEach((el) => el.setSinkId?.(this.devices.output).catch(() => {})));
+      for (const el of this.audioEls()) el.setSinkId?.(this.devices.output).catch(() => {});
       this.boostCtx?.setSinkId?.(this.devices.output || '').catch(() => {});
     }
     if (this.mic && this.devices.mic !== prev.mic) await this.replaceMic();
@@ -1508,6 +2166,7 @@ export class VoiceClient {
   /** Coleta, por par, o caminho da conexão e o que chega/sai de cada trilha de vídeo. */
   async collectStats() {
     for (const peer of this.peers.values()) {
+      if (!peer.pc) continue;
       try {
         const report = await peer.pc.getStats();
         const byId = new Map();
@@ -1598,6 +2257,7 @@ export class VoiceClient {
         console.warn('[voz] getStats', e);
       }
     }
+    await this.collectSfuStats();
     await this.sampleLatency();
     this.changed();
   }
@@ -1620,7 +2280,7 @@ export class VoiceClient {
       if (p.info.user) this.peerNames.set(p.id, plain(p.info.user.displayName));
       // Cor por pessoa, atribuída na primeira aparição e nunca reaproveitada (slot 0 = servidor).
       if (!this.peerSlots.has(p.id)) this.peerSlots.set(p.id, this.peerSlots.size + 1);
-      sample.peers[p.id] = p.stats?.path?.rttMs ?? null;
+      sample.peers[p.id] = this.sfuWith(p) ? (this.sfuStats?.path?.rttMs ?? null) : (p.stats?.path?.rttMs ?? null);
     }
     this.latency.push(sample);
     if (this.latency.length > LATENCY_SAMPLES) this.latency.shift();
@@ -1643,6 +2303,7 @@ export class VoiceClient {
   videoStats(stream, peerId) {
     const trackId = stream?.getVideoTracks()[0]?.id;
     if (!trackId) return null;
+    if (this.sfuStats?.video[trackId]) return this.sfuStats.video[trackId];
     if (peerId) return this.peers.get(peerId)?.stats?.video[trackId] || null;
     for (const p of this.peers.values()) if (p.stats?.video[trackId]) return p.stats.video[trackId];
     return null;
@@ -1659,6 +2320,7 @@ export class VoiceClient {
       `local: mudo=${this.state.muted} surdo=${this.state.deafened} silenciado-pelo-mod=${Boolean(this.state.serverMuted)} microfone-ativo=${Boolean(this.mic?.getAudioTracks()[0]?.enabled)} saída=${this.devices.output || 'padrão'}`,
       `local: câmera=${Boolean(this.camera)} tela=${Boolean(this.screen)} preset=${this.state.screenPreset}${this.screenAudio ? ` som-da-tela=${this.screenAudio.mode}${this.screenAudio.source ? `(${this.screenAudio.source})` : ''}` : ''}`,
       `local: microfone-parado=${Boolean(this.state.micStalled)} som-bloqueado=${Boolean(this.state.audioBlocked)} codec-da-placa=${this.videoCodec || 'nenhum'} senha-do-relay-até=${this.iceExpiresAt ? new Date(this.iceExpiresAt).toISOString() : '?'}`,
+      `nó de mídia: sala=${this.room?.node || 'malha'} eu=${this.myRoute} cifragem=${Boolean(this.crypt)} ligação=${this.sfu ? `${this.sfu.state}${this.sfu.isReady() ? '/pronta' : ''}` : '-'} caminho=${this.sfuStats?.route || '-'} ${JSON.stringify(this.sfuStats?.path || null)} banda-de-envio=${this.sfuStats?.upKbps ?? '?'}kbps assistindo-pelo-sfu: câmera=${this.sfuViewers.camera} tela=${this.sfuViewers.screen}`,
     ];
     const limit = (sender) => {
       const e = sender?.track && sender.getParameters().encodings?.[0];
@@ -1667,7 +2329,8 @@ export class VoiceClient {
     for (const p of this.peers.values()) {
       lines.push(
         '',
-        `par ${p.info.user?.username || p.id}: conexão=${p.pc.connectionState} ice=${p.pc.iceConnectionState} sinalização=${p.pc.signalingState}`,
+        `par ${p.info.user?.username || p.id}: conexão=${p.pc?.connectionState || 'sem malha'} ice=${p.pc?.iceConnectionState || '-'} sinalização=${p.pc?.signalingState || '-'}`,
+        `  nó de mídia: rota dele=${p.info.route || 'mesh'} troca comigo=${this.sfuWith(p) ? 'SFU' : 'malha'} tocando=${p.playing || 'mesh'} mando-pela-malha=${this.sendsMesh(p)}`,
       );
       lines.push(`  caminho: ${p.stats?.route || 'nenhum'} ${JSON.stringify(p.stats?.path || null)} · conexões refeitas: ${p.resets}`);
       if (p.senders.camera || p.senders.screenVideo)
@@ -1725,38 +2388,48 @@ export class VoiceClient {
       localScreen: this.screen,
       localCameraStats: this.videoStats(this.camera),
       localScreenStats: this.videoStats(this.screen),
-      // Quantas pessoas estão recebendo sua câmera/tela agora.
-      cameraViewers: [...this.peers.values()].filter((p) => p.senders.camera).length,
-      screenViewers: [...this.peers.values()].filter((p) => p.senders.screenVideo).length,
-      linked: Boolean(this.linked),
+      // Quantas pessoas estão recebendo sua câmera/tela agora (pela malha e pelo SFU).
+      cameraViewers: [...this.peers.values()].filter((p) => p.senders.camera).length + (this.sfu ? this.sfuViewers.camera : 0),
+      screenViewers: [...this.peers.values()].filter((p) => p.senders.screenVideo).length + (this.sfu ? this.sfuViewers.screen : 0),
+      linked: Boolean(this.linked || this.sfu?.everConnected),
       // Sem conexão com o servidor, esperando para voltar (o áudio continua).
       resuming: Boolean(this.suspended),
       speaking: { ...this.speaking },
-      peers: [...this.peers.values()].map((p) => ({
-        peerId: p.id,
-        key: p.key,
-        user: p.info.user,
-        muted: Boolean(p.info.muted),
-        deafened: Boolean(p.info.deafened),
-        serverMuted: Boolean(p.info.serverMuted),
-        localMuted: this.localMutes.has(p.info.user?.id),
-        volume: p.volume,
-        streamVolume: p.streamVolume,
-        streamMuted: p.streamMuted,
-        screenHasAudio: Boolean(p.streams.get(p.info.screenStreamId)?.getAudioTracks().length),
-        connectionState: p.connectionState,
-        // Sem conexão de mídia com esta pessoa há alguns segundos (você não a ouve, ela não te ouve).
-        trouble: Boolean(p.badSince && Date.now() - p.badSince > TROUBLE_AFTER_MS),
-        route: p.stats?.route || null,
-        cameraStats: p.info.video ? this.videoStats(p.streams.get(p.info.cameraStreamId), p.id) : null,
-        screenStats: p.info.screen ? this.videoStats(p.streams.get(p.info.screenStreamId), p.id) : null,
-        cameraStream: p.info.video ? p.streams.get(p.info.cameraStreamId) || null : null,
-        screenStream: p.info.screen ? p.streams.get(p.info.screenStreamId) || null : null,
-        screenAnnounced: Boolean(p.info.screen),
-        cameraAnnounced: Boolean(p.info.video),
-        watchingCamera: p.watching.camera,
-        watchingScreen: p.watching.screen,
-      })),
+      peers: [...this.peers.values()].map((p) => {
+        // O vídeo vem pelo caminho em que a pessoa está comigo (sem trocar a imagem a cada oscilação da voz).
+        const viaSfu = Boolean(this.sfuWith(p));
+        const [first, second] = viaSfu ? [p.sfu.streams, p.streams] : [p.streams, p.sfu.streams];
+        const pick = (id) => (id ? first.get(id) || second.get(id) || null : null);
+        const camera = p.info.video ? pick(p.info.cameraStreamId) : null;
+        const screen = p.info.screen ? pick(p.info.screenStreamId) : null;
+        // Sem a malha com ela (sala grande no SFU), a ligação com o nó é a conexão com ela.
+        const sfuBad = Boolean(this.sfu?.badSince && Date.now() - this.sfu.badSince > TROUBLE_AFTER_MS);
+        return {
+          peerId: p.id,
+          key: p.key,
+          user: p.info.user,
+          muted: Boolean(p.info.muted),
+          deafened: Boolean(p.info.deafened),
+          serverMuted: Boolean(p.info.serverMuted),
+          localMuted: this.localMutes.has(p.info.user?.id),
+          volume: p.volume,
+          streamVolume: p.streamVolume,
+          streamMuted: p.streamMuted,
+          screenHasAudio: Boolean(pick(p.info.screenStreamId)?.getAudioTracks().length),
+          connectionState: viaSfu ? 'connected' : p.pc ? p.connectionState : this.sfu?.state === 'connected' ? 'connected' : 'connecting',
+          // Sem conexão de mídia com esta pessoa há alguns segundos (você não a ouve, ela não te ouve).
+          trouble: viaSfu ? false : p.pc ? Boolean(p.badSince && Date.now() - p.badSince > TROUBLE_AFTER_MS) : sfuBad,
+          route: viaSfu ? this.sfuStats?.route || null : p.stats?.route || null,
+          cameraStats: camera ? this.videoStats(camera, p.id) : null,
+          screenStats: screen ? this.videoStats(screen, p.id) : null,
+          cameraStream: camera,
+          screenStream: screen,
+          screenAnnounced: Boolean(p.info.screen),
+          cameraAnnounced: Boolean(p.info.video),
+          watchingCamera: p.watching.camera,
+          watchingScreen: p.watching.screen,
+        };
+      }),
     };
   }
 }

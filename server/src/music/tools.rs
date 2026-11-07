@@ -47,7 +47,7 @@ const VARIANTS: [(Option<&str>, Option<&str>); 4] = [
 ];
 
 /// Erros que indicam bloqueio do YouTube (vale tentar outra variante), e não vídeo indisponível.
-fn is_blocked(stderr: &str) -> bool {
+pub(crate) fn is_blocked(stderr: &str) -> bool {
     ["not a bot", "Sign in to confirm", "page needs to be reloaded", "Requested format is not available", "HTTP Error 429"]
         .iter()
         .any(|m| stderr.contains(m))
@@ -75,6 +75,8 @@ impl Tools {
         if let Some(js) = &self.js_runtime {
             cmd.args(["--js-runtimes", js]);
         }
+        // Token do YouTube pelo nó de mídia (ou pelo provedor deste nó), quando houver um.
+        cmd.args(super::pot::ytdlp_args());
         cmd
     }
 
@@ -113,6 +115,8 @@ impl Tools {
             if !is_blocked(&stderr) {
                 return Err(last);
             }
+            // A próxima tentativa pede um token novo ao nó (sem o guardado).
+            super::pot::mark_blocked();
         }
         if self.cookies.is_empty() {
             Err("o YouTube bloqueou temporariamente este servidor (verificação anti-robô). O host pode configurar cookies em Hostear → Música.".into())
@@ -140,6 +144,7 @@ impl Tools {
             if !is_blocked(&stderr) {
                 break;
             }
+            super::pot::mark_blocked();
         }
         Err(last)
     }
@@ -313,6 +318,23 @@ async fn find_js_runtime(http: &reqwest::Client, bin: &Path, logs: &Logs) -> Opt
     if which("node").is_some() {
         return Some("node".into());
     }
+    let local = local_deno(http, bin, logs).await?;
+    Some(format!("deno:{}", local.display()))
+}
+
+/// O Deno (do PATH, ou baixado para `<data>/bin`): o provedor de token do nó de mídia roda nele.
+pub async fn deno(http: &reqwest::Client, data_dir: &Path, logs: &Logs) -> Option<PathBuf> {
+    if let Some(v) = env("YTDLP_JS_RUNTIME").and_then(|v| v.strip_prefix("deno:").map(PathBuf::from)) {
+        return Some(v);
+    }
+    if let Some(p) = which("deno") {
+        return Some(p);
+    }
+    local_deno(http, &data_dir.join("bin"), logs).await
+}
+
+/// `<bin>/deno`, baixado do npm na primeira vez.
+async fn local_deno(http: &reqwest::Client, bin: &Path, logs: &Logs) -> Option<PathBuf> {
     let local = bin.join(format!("deno{EXE}"));
     if !local.is_file() {
         let pkg = deno_npm_package()?;
@@ -352,7 +374,17 @@ async fn find_js_runtime(http: &reqwest::Client, bin: &Path, logs: &Logs) -> Opt
             return None;
         }
     }
-    Some(format!("deno:{}", local.display()))
+    Some(local)
+}
+
+/// Baixa um arquivo fixo (versão e SHA-256 conhecidos): o que vier diferente é recusado.
+pub(crate) async fn download_pinned(http: &reqwest::Client, url: &str, sha256: &str) -> Result<Vec<u8>, String> {
+    let bytes = download(http, url).await?;
+    let got: String = ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref().iter().map(|b| format!("{b:02x}")).collect();
+    if got != sha256 {
+        return Err(format!("{url}: o arquivo baixado não confere (SHA-256 {got})"));
+    }
+    Ok(bytes)
 }
 
 /// Garante as ferramentas (pode baixar dezenas de MB na primeira vez).

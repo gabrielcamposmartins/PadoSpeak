@@ -41,6 +41,10 @@ pub struct App {
     pub google: Option<crate::account::Google>,
     /// "Esconder meu perfil de" (veja `crate::privacy`).
     pub privacy: Arc<crate::privacy::Privacy>,
+    /// A própria API, para o assistente chamar por dentro com o login de quem pediu (`crate::agent`).
+    pub router: std::sync::OnceLock<Router>,
+    /// Nós de mídia: SFU das chamadas e token/busca da música (veja `crate::media`).
+    pub media: Arc<crate::media::registry::Registry>,
 }
 
 struct Running {
@@ -187,6 +191,11 @@ impl HostManager {
             (cfg.music_cookies_file.clone(), cfg.music_cookies_browser.clone()),
             voice_empty,
         );
+        let media = crate::media::registry::Registry::new(Default::default());
+        if !self.local_node {
+            hub.set_media(media.clone());
+            music.set_media(media.clone());
+        }
         music.warm_up();
         music.restore_after_restart();
         let lan = if self.local_node {
@@ -221,7 +230,9 @@ impl HostManager {
         }
         let privacy = Arc::new(crate::privacy::Privacy::load(&self.db).await);
         let app = Arc::new(App {
+            media,
             privacy,
+            router: std::sync::OnceLock::new(),
             mail,
             google,
             audit: audit_tx,
@@ -261,12 +272,18 @@ impl HostManager {
             .merge(crate::pins::router())
             .merge(crate::search::router())
             .merge(crate::backgrounds::router())
+            .merge(crate::agent::router())
+            .merge(crate::media::router())
             .route("/ws", get(crate::hub::ws_handler))
             .route("/api/music/stream/{id}", get(crate::music::stream::handler))
             .fallback(crate::assets::static_handler)
             .layer(axum::middleware::from_fn_with_state(app.clone(), crate::privacy::layer))
             .layer(CorsLayer::permissive())
             .with_state(app.clone());
+        let _ = app.router.set(router.clone());
+        if !self.local_node {
+            crate::media::start(&app).await;
+        }
 
         let handle = Handle::new();
         let logs = self.logs.clone();

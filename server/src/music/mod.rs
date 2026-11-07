@@ -3,7 +3,12 @@
 //! O servidor é o "DJ": guarda a fila, resolve links do YouTube/Spotify com o yt-dlp e serve o
 //! áudio por proxy (`/api/music/stream/{id}`). Quem está no canal toca o mesmo stream em sincronia,
 //! a partir do relógio da faixa (`startedAt`) definido aqui.
+//!
+//! Com um nó de mídia (`crate::media`), cada pedido ao YouTube leva um token novo do nó (`pot`), e, se o
+//! YouTube bloquear este servidor mesmo assim (ou ele estiver sobrecarregado), o próprio nó busca o áudio
+//! e o entrega por aqui (`crate::media::relay`).
 pub mod library;
+pub mod pot;
 pub mod queue;
 pub mod resolve;
 pub mod stream;
@@ -12,10 +17,11 @@ pub mod tools;
 pub use queue::MusicManager;
 
 use crate::models::User;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// De onde vem o áudio de uma faixa.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Source {
     /// URL de vídeo do YouTube.
     Youtube(String),

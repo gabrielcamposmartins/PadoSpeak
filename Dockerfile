@@ -26,6 +26,9 @@ FROM denoland/deno:bin AS deno
 FROM debian:bookworm-slim AS ytdlp
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip  && rm -rf /var/lib/apt/lists/*
 RUN set -eu; base=https://github.com/yt-dlp/yt-dlp/releases/latest/download;     curl -fsSL -o /tmp/yt-dlp_linux.zip "$base/yt-dlp_linux.zip";     curl -fsSL -o /tmp/SHA2-256SUMS "$base/SHA2-256SUMS";     cd /tmp && grep ' yt-dlp_linux.zip$' SHA2-256SUMS | sha256sum -c -;     unzip -q /tmp/yt-dlp_linux.zip -d /opt/yt-dlp; chmod 755 /opt/yt-dlp/yt-dlp_linux
+# Plugin do token do YouTube (bgutil, versão fixa; precisa ser a mesma do provedor do nó de mídia, veja
+# server/src/music/pot.rs). Só é usado quando há um nó de mídia com token.
+RUN set -eu; mkdir -p /opt/yt-dlp/plugins;     curl -fsSL -o /opt/yt-dlp/plugins/bgutil-ytdlp-pot-provider.zip https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/download/2.0.2/bgutil-ytdlp-pot-provider.zip;     echo "a26b980bf6d8e8400d8f21445daa4d8381bf6183d20f0be309391f86b31e27ef  /opt/yt-dlp/plugins/bgutil-ytdlp-pot-provider.zip" | sha256sum -c -
 
 # ---------- 5) Imagem final ----------
 FROM debian:bookworm-slim
@@ -39,6 +42,8 @@ USER padospeak
 ENV DATA_DIR=/data
 # O servidor também consegue baixar um yt-dlp sozinho para DATA_DIR/bin se este faltar.
 ENV YTDLP_PATH=/opt/yt-dlp/yt-dlp_linux
+ENV YTDLP_PLUGIN_DIRS=/opt/yt-dlp/plugins
 VOLUME /data
 EXPOSE 3000 3001
+# A mesma imagem roda o nó de mídia: `padospeak-server media` (veja deploy/media).
 CMD ["padospeak-server", "--headless"]

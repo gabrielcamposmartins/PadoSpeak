@@ -4,6 +4,7 @@
 //! (Tauri), onde o botão "Hostear" chama [`HostManager::start`].
 pub mod account;
 pub mod admin;
+pub mod agent;
 pub mod api;
 pub mod audit;
 pub mod backgrounds;
@@ -17,6 +18,7 @@ pub mod host;
 pub mod hub;
 pub mod lan;
 pub mod logs;
+pub mod media;
 pub mod models;
 pub mod social;
 pub mod stickers;

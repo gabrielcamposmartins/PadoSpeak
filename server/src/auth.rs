@@ -62,10 +62,17 @@ pub async fn create_session(db: &Db, user_id: &str) -> DbResult<String> {
     Ok(token)
 }
 
-pub async fn user_from_token(db: &Db, token: &str) -> Option<User> {
+/// Dono da sessão, ou `None` se ela não existe. Banco fora do ar é erro, não sessão inválida: o app
+/// apaga o token ao receber 401, e uma falha no banco tiraria todo mundo da conta.
+pub async fn session_user(db: &Db, token: &str) -> DbResult<Option<User>> {
     if token.is_empty() {
-        return None;
+        return Ok(None);
     }
     let sql = format!("SELECT {USER_COLS} FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?1");
-    db.query_one(&sql, [token], user_from_row).await.ok().flatten()
+    db.query_one(&sql, [token], user_from_row).await
+}
+
+/// `session_user` para quem não responde 401 ao app (imagens, áudio): erro no banco conta como sem sessão.
+pub async fn user_from_token(db: &Db, token: &str) -> Option<User> {
+    session_user(db, token).await.ok().flatten()
 }

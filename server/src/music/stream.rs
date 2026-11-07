@@ -2,13 +2,83 @@
 use super::tools::Tools;
 use super::Source;
 use crate::host::App;
+use crate::logs::Logs;
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+use futures_util::StreamExt;
 use serde::Deserialize;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+/// Clientes HTTP do áudio: um geral e dois presos a IPv4/IPv6, para buscar o googlevideo pela mesma
+/// família de IP com que a URL foi gerada.
+#[derive(Clone)]
+pub struct Clients {
+    pub any: reqwest::Client,
+    pub v4: reqwest::Client,
+    pub v6: reqwest::Client,
+}
+
+impl Default for Clients {
+    fn default() -> Self {
+        let client = |local: Option<IpAddr>| {
+            reqwest::Client::builder().local_address(local).connect_timeout(Duration::from_secs(15)).build().expect("cliente HTTP")
+        };
+        Self {
+            any: client(None),
+            v4: client(Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED))),
+            v6: client(Some(IpAddr::V6(Ipv6Addr::UNSPECIFIED))),
+        }
+    }
+}
+
+impl Clients {
+    /// O cliente adequado à URL do áudio (mesma família de IP com que ela foi gerada).
+    pub fn for_url(&self, url: &str) -> &reqwest::Client {
+        match locked_ip_is_v6(url) {
+            Some(true) => &self.v6,
+            Some(false) => &self.v4,
+            None => &self.any,
+        }
+    }
+}
+
+/// O erro do yt-dlp é bloqueio do YouTube (anti-robô), e não um vídeo indisponível.
+pub fn is_block_error(e: &str) -> bool {
+    e.contains("bloqueou temporariamente") || e.contains("recusou mesmo com cookies") || super::tools::is_blocked(e)
+}
+
+/// Resolve o áudio testando a URL antes: se o YouTube recusar o meio do arquivo (a música "tocaria" sem
+/// som) ou entregar devagar demais, tenta o próximo cliente. Sem nenhum perfeito, fica com o primeiro que
+/// resolveu. Serve ao servidor principal e ao nó de mídia (que busca do IP dele).
+pub async fn resolve_playable(tools: &Tools, clients: &Clients, logs: &Logs, source: &Source) -> Result<Audio, String> {
+    let mut fallback = None;
+    let mut error = None;
+    for client in CLIENTS {
+        match resolve_audio(tools, source, client).await {
+            Ok(audio) => {
+                if probe_audio(clients.for_url(&audio.url), &audio.url).await {
+                    return Ok(audio);
+                }
+                logs.warn(format!("Música: o YouTube recusou ou atrasou o áudio (cliente {}); tentando outro", client.unwrap_or("padrão")));
+                fallback.get_or_insert(audio);
+            }
+            // Ao vivo ou sem resultado: os outros clientes dariam o mesmo.
+            Err(e) if fallback.is_none() && error.is_none() && (e.contains("ao vivo") || e.contains("nenhum resultado")) => return Err(e),
+            // O primeiro erro de bloqueio fica (é ele que diz que vale buscar pelo nó).
+            Err(e) => {
+                if error.as_deref().is_none_or(|old| !is_block_error(old)) {
+                    error = Some(e);
+                }
+            }
+        }
+    }
+    fallback.ok_or_else(|| error.unwrap_or_else(|| "nenhum resultado no YouTube".into()))
+}
 
 /// As URLs do googlevideo expiram em ~6 h; renovamos antes.
 pub const AUDIO_TTL: Duration = Duration::from_secs(5 * 3600);
@@ -108,6 +178,11 @@ pub async fn handler(
             Ok(u) => u,
             Err(e) => return (StatusCode::NOT_FOUND, e).into_response(),
         };
+        // Faixa buscada pelo nó de mídia (a URL do googlevideo é presa ao IP dele): o nó manda o áudio.
+        if let Some((node, key)) = crate::media::relay::node_url(&url) {
+            let Some(source) = app.music.source_of(&track_id) else { return StatusCode::NOT_FOUND.into_response() };
+            return crate::media::relay::serve(&app, node, key, &source, range).await;
+        }
         let mut req = app.music.http_for(&url).get(&url);
         if let Some(r) = &range {
             req = req.header(header::RANGE, r.clone());
@@ -128,7 +203,13 @@ pub async fn handler(
             }
         }
         out = out.header(header::CACHE_CONTROL, "no-store");
-        return out.body(Body::from_stream(res.bytes_stream())).unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response());
+        // Conta o que sai (carga do servidor, veja `crate::media::load`).
+        let body = res.bytes_stream().inspect(|chunk| {
+            if let Ok(b) = chunk {
+                crate::media::load::MUSIC_BYTES.fetch_add(b.len() as u64, Ordering::Relaxed);
+            }
+        });
+        return out.body(Body::from_stream(body)).unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response());
     }
     (StatusCode::BAD_GATEWAY, "o YouTube recusou o áudio").into_response()
 }

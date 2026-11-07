@@ -48,6 +48,9 @@ impl IntoResponse for ApiError {
 impl From<libsql::Error> for ApiError {
     fn from(e: libsql::Error) -> Self {
         eprintln!("erro de banco: {e}");
+        if crate::db::timed_out(&e) {
+            return ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "O servidor não conseguiu responder agora. Tente de novo em instantes.");
+        }
         ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "Erro interno")
     }
 }
@@ -159,7 +162,7 @@ impl FromRequestParts<Arc<App>> for AuthUser {
             .and_then(|v| v.strip_prefix("Bearer "))
             .unwrap_or_default()
             .to_string();
-        match auth::user_from_token(&app.db, &token).await {
+        match auth::session_user(&app.db, &token).await? {
             Some(user) => Ok(AuthUser(user, token)),
             None => Err(ApiError::new(StatusCode::UNAUTHORIZED, "Não autenticado")),
         }
@@ -419,6 +422,8 @@ async fn get_config(State(app): AppState) -> Json<Value> {
         "addresses": app.urls.iter().filter(|u| !u.contains("://localhost")).collect::<Vec<_>>(),
         // Limites dos arquivos (o app avisa antes de mandar um arquivo grande).
         "files": crate::files::limits(&app).await,
+        // Assistente ligado pelo dono do app (veja `crate::agent`).
+        "agent": crate::agent::enabled(&app).await,
     }))
 }
 
@@ -716,37 +721,40 @@ async fn create_guild(
     let now = crate::now_ms();
     // Validade dos arquivos e das mensagens de voz: o padrão escolhido no painel do administrador do app.
     let policy = crate::files::Policy::load(&app).await;
-    let conn = app.db.conn().await?;
-    let tx = conn.transaction().await?;
-    tx.execute(
-        "INSERT INTO guilds (id, name, icon_color, owner_id, invite_code, created_at, default_perms, file_ttl_ms, voice_ttl_ms) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        libsql::params![
-            id.as_str(),
-            name,
-            random_color(),
-            user.id.as_str(),
-            invite_code(),
-            now,
-            perm::DEFAULT,
-            policy.guild.file_ttl_ms,
-            policy.guild.voice_ttl_ms
-        ],
-    )
-    .await?;
-    tx.execute(
-        "INSERT INTO guild_members (guild_id, user_id, joined_at) VALUES (?1, ?2, ?3)",
-        libsql::params![id.as_str(), user.id.as_str(), now],
-    )
-    .await?;
-    for (name, kind) in [("geral", "text"), ("Geral", "voice")] {
+    crate::db::limited("criar servidor", async {
+        let conn = app.db.conn().await?;
+        let tx = conn.transaction().await?;
         tx.execute(
-            "INSERT INTO channels (id, guild_id, name, type, position, created_at) VALUES (?1, ?2, ?3, ?4, 0, ?5)",
-            libsql::params![new_id(), id.as_str(), name, kind, now],
+            "INSERT INTO guilds (id, name, icon_color, owner_id, invite_code, created_at, default_perms, file_ttl_ms, voice_ttl_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            libsql::params![
+                id.as_str(),
+                name,
+                random_color(),
+                user.id.as_str(),
+                invite_code(),
+                now,
+                perm::DEFAULT,
+                policy.guild.file_ttl_ms,
+                policy.guild.voice_ttl_ms
+            ],
         )
         .await?;
-    }
-    tx.commit().await?;
+        tx.execute(
+            "INSERT INTO guild_members (guild_id, user_id, joined_at) VALUES (?1, ?2, ?3)",
+            libsql::params![id.as_str(), user.id.as_str(), now],
+        )
+        .await?;
+        for (name, kind) in [("geral", "text"), ("Geral", "voice")] {
+            tx.execute(
+                "INSERT INTO channels (id, guild_id, name, type, position, created_at) VALUES (?1, ?2, ?3, ?4, 0, ?5)",
+                libsql::params![new_id(), id.as_str(), name, kind, now],
+            )
+            .await?;
+        }
+        tx.commit().await
+    })
+    .await?;
     app.hub.join_guild(&user.id, &id);
     let full = guild_full(&app, &id, &user.id).await?.ok_or_else(|| not_found("Servidor não encontrado"))?;
     Ok((StatusCode::CREATED, Json(full)))
@@ -809,14 +817,17 @@ async fn delete_guild(State(app): AppState, AuthUser(user, _): AuthUser, Path(id
     crate::files::delete_files(&app, "SELECT id FROM files WHERE guild_id = ?1", &id).await?;
     app.db.execute("DELETE FROM guild_icons WHERE guild_id = ?1", [id.as_str()]).await?;
     // Exclusão explícita (não depende de ON DELETE CASCADE, que exige PRAGMA por conexão em modo remoto).
-    let conn = app.db.conn().await?;
-    let tx = conn.transaction().await?;
-    tx.execute("DELETE FROM pins WHERE channel_id IN (SELECT id FROM channels WHERE guild_id = ?1)", [id.as_str()]).await?;
-    tx.execute("DELETE FROM messages WHERE channel_id IN (SELECT id FROM channels WHERE guild_id = ?1)", [id.as_str()]).await?;
-    tx.execute("DELETE FROM channels WHERE guild_id = ?1", [id.as_str()]).await?;
-    tx.execute("DELETE FROM guild_members WHERE guild_id = ?1", [id.as_str()]).await?;
-    tx.execute("DELETE FROM guilds WHERE id = ?1", [id.as_str()]).await?;
-    tx.commit().await?;
+    crate::db::limited("excluir servidor", async {
+        let conn = app.db.conn().await?;
+        let tx = conn.transaction().await?;
+        tx.execute("DELETE FROM pins WHERE channel_id IN (SELECT id FROM channels WHERE guild_id = ?1)", [id.as_str()]).await?;
+        tx.execute("DELETE FROM messages WHERE channel_id IN (SELECT id FROM channels WHERE guild_id = ?1)", [id.as_str()]).await?;
+        tx.execute("DELETE FROM channels WHERE guild_id = ?1", [id.as_str()]).await?;
+        tx.execute("DELETE FROM guild_members WHERE guild_id = ?1", [id.as_str()]).await?;
+        tx.execute("DELETE FROM guilds WHERE id = ?1", [id.as_str()]).await?;
+        tx.commit().await
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1256,24 +1267,27 @@ async fn create_channel(
         private: body.private,
         announce_join: true,
     };
-    let conn = app.db.conn().await?;
-    let tx = conn.transaction().await?;
-    tx.execute(
-        "INSERT INTO channels (id, guild_id, name, type, position, private, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        libsql::params![channel.id.as_str(), id.as_str(), channel.name.as_str(), kind, channel.position, body.private as i64, crate::now_ms()],
-    )
-    .await?;
-    if body.private {
-        for u in body.users.iter().take(500) {
-            // Só membros do servidor entram na lista.
-            tx.execute(
-                "INSERT OR IGNORE INTO channel_access (channel_id, user_id)                  SELECT ?1, user_id FROM guild_members WHERE guild_id = ?2 AND user_id = ?3",
-                [channel.id.as_str(), id.as_str(), u.as_str()],
-            )
-            .await?;
+    crate::db::limited("criar canal", async {
+        let conn = app.db.conn().await?;
+        let tx = conn.transaction().await?;
+        tx.execute(
+            "INSERT INTO channels (id, guild_id, name, type, position, private, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            libsql::params![channel.id.as_str(), id.as_str(), channel.name.as_str(), kind, channel.position, body.private as i64, crate::now_ms()],
+        )
+        .await?;
+        if body.private {
+            for u in body.users.iter().take(500) {
+                // Só membros do servidor entram na lista.
+                tx.execute(
+                    "INSERT OR IGNORE INTO channel_access (channel_id, user_id)                  SELECT ?1, user_id FROM guild_members WHERE guild_id = ?2 AND user_id = ?3",
+                    [channel.id.as_str(), id.as_str(), u.as_str()],
+                )
+                .await?;
+            }
         }
-    }
-    tx.commit().await?;
+        tx.commit().await
+    })
+    .await?;
     app.audit(
         crate::audit::Entry::new(&id, "settings.channel_create", &user.id)
             .channel(&channel.id)
@@ -1306,16 +1320,19 @@ async fn order_channels(
 ) -> ApiResult<StatusCode> {
     require_perm(&app, &id, &user.id, perm::CHANNELS, "Você não tem permissão para reordenar canais").await?;
     let kind = if body.kind == "voice" { "voice" } else { "text" };
-    let conn = app.db.conn().await?;
-    let tx = conn.transaction().await?;
-    for (pos, channel_id) in body.ids.iter().take(500).enumerate() {
-        tx.execute(
-            "UPDATE channels SET position = ?1 WHERE id = ?2 AND guild_id = ?3 AND type = ?4",
-            libsql::params![pos as i64, channel_id.as_str(), id.as_str(), kind],
-        )
-        .await?;
-    }
-    tx.commit().await?;
+    crate::db::limited("reordenar canais", async {
+        let conn = app.db.conn().await?;
+        let tx = conn.transaction().await?;
+        for (pos, channel_id) in body.ids.iter().take(500).enumerate() {
+            tx.execute(
+                "UPDATE channels SET position = ?1 WHERE id = ?2 AND guild_id = ?3 AND type = ?4",
+                libsql::params![pos as i64, channel_id.as_str(), id.as_str(), kind],
+            )
+            .await?;
+        }
+        tx.commit().await
+    })
+    .await?;
     app.audit(crate::audit::Entry::new(&id, "settings.channel_order", &user.id).detail(json!({ "type": kind })));
     app.hub.to_guild(&id, "guild:refresh", json!({ "guildId": id }));
     Ok(StatusCode::NO_CONTENT)
@@ -1326,13 +1343,16 @@ async fn delete_channel(State(app): AppState, AuthUser(user, _): AuthUser, Path(
     require_perm(&app, &ch.guild_id, &user.id, perm::CHANNELS, "Você não tem permissão para excluir canais").await?;
     app.hub.close_voice_channel(&ch.id);
     crate::files::delete_files(&app, "SELECT id FROM files WHERE channel_id = ?1", &id).await?;
-    let conn = app.db.conn().await?;
-    let tx = conn.transaction().await?;
-    tx.execute("DELETE FROM pins WHERE channel_id = ?1", [id.as_str()]).await?;
-    tx.execute("DELETE FROM messages WHERE channel_id = ?1", [id.as_str()]).await?;
-    tx.execute("DELETE FROM channels WHERE id = ?1", [id.as_str()]).await?;
-    tx.execute("DELETE FROM channel_access WHERE channel_id = ?1", [id.as_str()]).await?;
-    tx.commit().await?;
+    crate::db::limited("excluir canal", async {
+        let conn = app.db.conn().await?;
+        let tx = conn.transaction().await?;
+        tx.execute("DELETE FROM pins WHERE channel_id = ?1", [id.as_str()]).await?;
+        tx.execute("DELETE FROM messages WHERE channel_id = ?1", [id.as_str()]).await?;
+        tx.execute("DELETE FROM channels WHERE id = ?1", [id.as_str()]).await?;
+        tx.execute("DELETE FROM channel_access WHERE channel_id = ?1", [id.as_str()]).await?;
+        tx.commit().await
+    })
+    .await?;
     app.hub.to_guild(&ch.guild_id, "channel:deleted", json!({ "guildId": ch.guild_id, "channelId": ch.id }));
     app.audit(crate::audit::Entry::new(&ch.guild_id, "settings.channel_delete", &user.id).channel(&ch.id).detail(json!({ "name": ch.name, "type": ch.kind })));
     refresh_audiences(&app, Some(&ch.guild_id)).await?;
@@ -1396,22 +1416,25 @@ async fn set_channel_access(
 ) -> ApiResult<Json<Value>> {
     let ch = channel_with_access(&app, &id, &user.id).await.ok_or_else(|| not_found("Canal não encontrado"))?;
     require_perm(&app, &ch.guild_id, &user.id, perm::ADMIN, "Apenas administradores escolhem quem vê um canal").await?;
-    let conn = app.db.conn().await?;
-    let tx = conn.transaction().await?;
-    tx.execute("UPDATE channels SET private = ?1 WHERE id = ?2", libsql::params![body.private as i64, id.as_str()]).await?;
-    tx.execute("DELETE FROM channel_access WHERE channel_id = ?1", [id.as_str()]).await?;
-    if body.private {
-        for u in body.users.iter().take(500) {
-            // Só membros do servidor entram na lista.
-            tx.execute(
-                "INSERT OR IGNORE INTO channel_access (channel_id, user_id) \
-                 SELECT ?1, user_id FROM guild_members WHERE guild_id = ?2 AND user_id = ?3",
-                [id.as_str(), ch.guild_id.as_str(), u.as_str()],
-            )
-            .await?;
+    crate::db::limited("escolher quem vê o canal", async {
+        let conn = app.db.conn().await?;
+        let tx = conn.transaction().await?;
+        tx.execute("UPDATE channels SET private = ?1 WHERE id = ?2", libsql::params![body.private as i64, id.as_str()]).await?;
+        tx.execute("DELETE FROM channel_access WHERE channel_id = ?1", [id.as_str()]).await?;
+        if body.private {
+            for u in body.users.iter().take(500) {
+                // Só membros do servidor entram na lista.
+                tx.execute(
+                    "INSERT OR IGNORE INTO channel_access (channel_id, user_id) \
+                     SELECT ?1, user_id FROM guild_members WHERE guild_id = ?2 AND user_id = ?3",
+                    [id.as_str(), ch.guild_id.as_str(), u.as_str()],
+                )
+                .await?;
+            }
         }
-    }
-    tx.commit().await?;
+        tx.commit().await
+    })
+    .await?;
     app.audit(
         crate::audit::Entry::new(&ch.guild_id, "settings.channel_access", &user.id)
             .channel(&ch.id)

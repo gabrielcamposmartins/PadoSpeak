@@ -235,16 +235,19 @@ async fn upload_avatar(State(app): AppState, AuthUser(me, _): AuthUser, body: By
     if body.len() > if animated { MAX_AVATAR_ANIMATED } else { MAX_AVATAR } {
         return Err(bad(if animated { "A foto animada deve ter até 2 MB" } else { "A imagem deve ter até 1 MB" }));
     }
-    let conn = app.db.conn().await?;
-    let tx = conn.transaction().await?;
-    tx.execute(
-        "INSERT INTO avatars (user_id, mime, data) VALUES (?1, ?2, ?3) \
-         ON CONFLICT(user_id) DO UPDATE SET mime = excluded.mime, data = excluded.data",
-        libsql::params![me.id.as_str(), mime, body.to_vec()],
-    )
+    crate::db::limited("trocar a foto", async {
+        let conn = app.db.conn().await?;
+        let tx = conn.transaction().await?;
+        tx.execute(
+            "INSERT INTO avatars (user_id, mime, data) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(user_id) DO UPDATE SET mime = excluded.mime, data = excluded.data",
+            libsql::params![me.id.as_str(), mime, body.to_vec()],
+        )
+        .await?;
+        tx.execute("UPDATE users SET avatar_at = ?1 WHERE id = ?2", libsql::params![crate::now_ms(), me.id.as_str()]).await?;
+        tx.commit().await
+    })
     .await?;
-    tx.execute("UPDATE users SET avatar_at = ?1 WHERE id = ?2", libsql::params![crate::now_ms(), me.id.as_str()]).await?;
-    tx.commit().await?;
     Ok(Json(broadcast_user(&app, &me.id).await?))
 }
 

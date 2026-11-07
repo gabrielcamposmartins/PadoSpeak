@@ -31,3 +31,12 @@ export const host = {
   stop: () => (isTauri ? tauri('host_stop') : panel('POST', 'stop')),
   logs: (after = 0) => (isTauri ? tauri('host_logs', { after }) : panel('GET', `logs?after=${after}`)),
 };
+
+/** Nó de mídia deste PC (só no app do Windows): SFU das chamadas e token da música de um servidor. */
+export const mediaNode = {
+  status: () => tauri('media_node_status'),
+  start: (code, udpPort) => tauri('media_node_start', { code, udpPort: udpPort || null }),
+  stop: () => tauri('media_node_stop'),
+  forget: () => tauri('media_node_forget'),
+  logs: (after = 0) => tauri('media_node_logs', { after }),
+};

@@ -1,18 +1,24 @@
 //! Fila por canal de voz e o relógio de cada faixa.
-use super::stream::{probe_audio, resolve_audio, Audio, AUDIO_TTL, CLIENTS};
+use super::stream::{is_block_error, Audio, Clients, AUDIO_TTL};
 use super::tools::{self, Tools};
 use super::{Source, Track};
 use crate::hub::Hub;
 use crate::logs::Logs;
+use crate::media::registry::Registry;
 use crate::models::User;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedReceiver;
+
+/// Depois de o YouTube bloquear este servidor (mesmo com token novo), as músicas vêm pelo nó de mídia
+/// por este tempo (no modo automático).
+const RELAY_AFTER_BLOCK: Duration = Duration::from_secs(30 * 60);
+/// O nó resolve com o yt-dlp dele, que pode levar o mesmo que aqui (várias tentativas).
+const NODE_RESOLVE_TIMEOUT: Duration = Duration::from_secs(150);
 
 /// Tamanho máximo da fila de um canal.
 pub const MAX_QUEUE: usize = 500;
@@ -203,9 +209,12 @@ pub struct MusicManager {
     data_dir: PathBuf,
     /// Cliente HTTP geral (Spotify, downloads de ferramentas).
     pub http: reqwest::Client,
-    /// Clientes presos a IPv4/IPv6, para o proxy sair pela mesma família da URL do áudio.
-    http_v4: reqwest::Client,
-    http_v6: reqwest::Client,
+    /// Clientes do áudio (o geral e os presos a IPv4/IPv6, para o proxy sair pela família da URL).
+    clients: Clients,
+    /// Nós de mídia: token do YouTube e busca da música pelo nó (veja `crate::media`).
+    media: OnceLock<Arc<Registry>>,
+    /// Quando o YouTube bloqueou este servidor pela última vez.
+    blocked_at: Mutex<Option<Instant>>,
     cookies: (String, String),
     tools: tokio::sync::Mutex<Option<Tools>>,
     channels: Mutex<HashMap<String, ChannelMusic>>,
@@ -224,17 +233,16 @@ impl MusicManager {
         cookies: (String, String),
         voice_empty: UnboundedReceiver<String>,
     ) -> Arc<Self> {
-        let client = |local: Option<IpAddr>| {
-            reqwest::Client::builder().local_address(local).connect_timeout(Duration::from_secs(15)).build().expect("cliente HTTP")
-        };
+        let clients = Clients::default();
         let me = Arc::new(Self {
             hub,
             db,
             logs,
             data_dir,
-            http: client(None),
-            http_v4: client(Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED))),
-            http_v6: client(Some(IpAddr::V6(Ipv6Addr::UNSPECIFIED))),
+            http: clients.any.clone(),
+            clients,
+            media: OnceLock::new(),
+            blocked_at: Mutex::new(None),
             cookies,
             tools: tokio::sync::Mutex::new(None),
             channels: Mutex::new(HashMap::new()),
@@ -255,11 +263,20 @@ impl MusicManager {
 
     /// Cliente HTTP adequado à URL do áudio (mesma família de IP com que ela foi gerada).
     pub fn http_for(&self, url: &str) -> &reqwest::Client {
-        match super::stream::locked_ip_is_v6(url) {
-            Some(true) => &self.http_v6,
-            Some(false) => &self.http_v4,
-            None => &self.http,
-        }
+        self.clients.for_url(url)
+    }
+
+    /// Liga os nós de mídia (token e busca pelo nó).
+    pub fn set_media(&self, media: Arc<Registry>) {
+        let _ = self.media.set(media);
+    }
+
+    /// De onde vem o áudio de uma faixa que está em alguma fila.
+    pub fn source_of(&self, track_id: &str) -> Option<Source> {
+        let channels = self.channels.lock().unwrap();
+        channels.values().find_map(|c| {
+            c.current.iter().map(|p| &p.track).chain(c.queue.iter()).chain(c.history.iter()).find(|t| t.id == track_id).map(|t| t.source.clone())
+        })
     }
 
     async fn tools(&self) -> Result<Tools, String> {
@@ -454,7 +471,7 @@ impl MusicManager {
         if let Some(a) = cached().filter(|a| !force || a.fetched.elapsed() < Duration::from_secs(30)) {
             return Ok(a);
         }
-        let result = self.resolve_playable(tools, source).await;
+        let result = self.resolve_playable(tools, track_id, source).await;
         self.resolving.lock().unwrap().retain(|_, l| Arc::strong_count(l) > 1);
         let audio = result?;
         let mut cache = self.audio.lock().unwrap();
@@ -463,44 +480,52 @@ impl MusicManager {
         Ok(audio)
     }
 
-    /// Resolve o áudio testando a URL antes: se o YouTube recusar o meio do arquivo (a música
-    /// "tocaria" sem som) ou entregar devagar demais, tenta o próximo cliente. Sem nenhum perfeito,
-    /// fica com o primeiro que resolveu.
-    async fn resolve_playable(&self, tools: &Tools, source: &Source) -> Result<Audio, String> {
-        let mut fallback = None;
-        let mut error = None;
-        for client in CLIENTS {
-            match resolve_audio(tools, source, client).await {
-                Ok(audio) => {
-                    if probe_audio(self.http_for(&audio.url), &audio.url).await {
-                        return Ok(audio);
-                    }
-                    self.logs.warn(format!("Música: o YouTube recusou ou atrasou o áudio (cliente {}); tentando outro", client.unwrap_or("padrão")));
-                    fallback.get_or_insert(audio);
-                }
-                // Ao vivo ou sem resultado: os outros clientes dariam o mesmo.
-                Err(e) if fallback.is_none() && error.is_none() && (e.contains("ao vivo") || e.contains("nenhum resultado")) => return Err(e),
-                Err(e) => error = Some(e),
+    /// Resolve o áudio aqui (`stream::resolve_playable`) ou pelo nó de mídia, que busca do IP dele:
+    /// - painel em "sempre": pelo nó;
+    /// - em "automático": pelo nó se o YouTube bloqueou este servidor há pouco (mesmo com token novo)
+    ///   ou se ele está sobrecarregado; senão aqui, e pelo nó se aqui bloquear.
+    async fn resolve_playable(&self, tools: &Tools, track_id: &str, source: &Source) -> Result<Audio, String> {
+        let relay = self.media.get().and_then(|m| m.music_node().map(|n| (m.clone(), n)));
+        if let Some((media, node)) = &relay {
+            let mode = media.settings().music_relay;
+            let blocked = self.blocked_at.lock().unwrap().is_some_and(|t| t.elapsed() < RELAY_AFTER_BLOCK);
+            if mode == "always" || (mode == "auto" && (blocked || media.overloaded())) {
+                return self.resolve_on_node(media, node, track_id, source).await;
             }
         }
-        fallback.ok_or_else(|| error.unwrap_or_else(|| "nenhum resultado no YouTube".into()))
+        match super::stream::resolve_playable(tools, &self.clients, &self.logs, source).await {
+            Err(e) if is_block_error(&e) => {
+                *self.blocked_at.lock().unwrap() = Some(Instant::now());
+                match &relay {
+                    Some((media, node)) if media.settings().music_relay != "off" => {
+                        self.logs.warn("Música: o YouTube bloqueou este servidor; buscando pelo nó de mídia");
+                        self.resolve_on_node(media, node, track_id, source).await
+                    }
+                    _ => Err(e),
+                }
+            }
+            other => other,
+        }
+    }
+
+    /// O nó resolve com o yt-dlp dele e guarda a URL; aqui fica só `node:<nó>:<faixa>` (o proxy pede o
+    /// áudio ao nó, veja `crate::media::relay`).
+    async fn resolve_on_node(&self, media: &Arc<Registry>, node: &str, track_id: &str, source: &Source) -> Result<Audio, String> {
+        let d = json!({ "key": track_id, "source": source });
+        let res = media.request_for(node, "music.resolve", d, NODE_RESOLVE_TIMEOUT).await?;
+        if let Some(e) = res.get("error").and_then(Value::as_str) {
+            return Err(e.to_string());
+        }
+        Ok(Audio {
+            url: crate::media::relay::make_node_url(node, track_id),
+            duration_ms: res.get("durationMs").and_then(Value::as_u64),
+            fetched: Instant::now(),
+        })
     }
 
     /// URL direta do áudio de uma faixa que está na fila (usada pelo proxy).
     pub async fn audio_url(&self, track_id: &str, force: bool) -> Result<String, String> {
-        let source = {
-            let channels = self.channels.lock().unwrap();
-            channels.values().find_map(|c| {
-                c.current
-                    .iter()
-                    .map(|p| &p.track)
-                    .chain(c.queue.iter())
-                    .chain(c.history.iter())
-                    .find(|t| t.id == track_id)
-                    .map(|t| t.source.clone())
-            })
-        };
-        let source = source.ok_or("faixa não está em nenhuma fila")?;
+        let source = self.source_of(track_id).ok_or("faixa não está em nenhuma fila")?;
         let tools = self.tools().await?;
         Ok(self.cached_or_resolve(&tools, track_id, &source, force).await?.url)
     }

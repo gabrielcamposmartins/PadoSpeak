@@ -6,6 +6,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod activity;
+mod media_node;
 mod overlay;
 mod share_bar;
 mod screen_audio;
@@ -431,6 +432,10 @@ fn main() {
             }
             app.manage(host);
             app.manage(Local(local));
+            // Nó de mídia deste PC (Hostear → Nó de mídia): volta sozinho se estava ligado.
+            let media = media_node::MediaNodeSlot::new(&data_dir);
+            tauri::async_runtime::block_on(async { media.resume() });
+            app.manage(media);
             app.manage(TrayHint(data_dir.join("aviso-bandeja")));
             let autostart = Autostart {
                 choice: data_dir.join("iniciar-com-windows"),
@@ -461,7 +466,7 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, local_node, notify_windows, autostart_get, autostart_set, open_url, activity_get, activity_custom_set, activity_programs, solo_keys_set, share_dock_open, share_dock_close, share_bar_hide, overlay_set, overlay_block_set, launched_hidden, screen_audio::screen_audio_start, screen_audio::screen_audio_stop])
+        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, media_node::media_node_status, media_node::media_node_start, media_node::media_node_stop, media_node::media_node_forget, media_node::media_node_logs, local_node, notify_windows, autostart_get, autostart_set, open_url, activity_get, activity_custom_set, activity_programs, solo_keys_set, share_dock_open, share_dock_close, share_bar_hide, overlay_set, overlay_block_set, launched_hidden, screen_audio::screen_audio_start, screen_audio::screen_audio_stop])
         .build(tauri::generate_context!())
         .expect("erro ao iniciar o PadoSpeak");
 

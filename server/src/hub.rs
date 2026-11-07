@@ -1,4 +1,5 @@
-//! Tempo real via WebSocket: chat, presença, estado de voz e sinalização WebRTC (malha P2P).
+//! Tempo real via WebSocket: chat, presença, estado de voz e sinalização WebRTC (malha P2P, ou o SFU de
+//! um nó de mídia, veja `crate::media`).
 //!
 //! Protocolo (JSON):
 //! - cliente → servidor: `{ "op": "...", "d": {...}, "id": 1 }` (`id` opcional; se presente há resposta)
@@ -6,6 +7,7 @@
 //! - evento:             `{ "ev": "...", "d": {...} }`
 use crate::api::{channel_with_access, guild_ids_of};
 use crate::host::App;
+use crate::media::registry::{Backend, Registry};
 use crate::models::{group_reactions, plain_text, reply_preview, user_from_row, Message, Reaction, ReplyRef, User, USER_COLS};
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Query, State};
@@ -116,7 +118,31 @@ pub struct Participant {
     /// A conexão caiu sem a pessoa sair: o lugar fica guardado por `VOICE_RESUME_GRACE`.
     #[serde(skip)]
     away: bool,
+    /// Por onde a mídia desta pessoa anda agora: o id do nó de mídia (o da sala, ou o de antes durante uma
+    /// troca) ou `mesh` (malha). Cada app escolhe por onde manda e toca a voz de cada par com isso (veja
+    /// `client/src/lib/voice.js`).
+    route: String,
+    /// Chave pública (ECDH P-256) desta pessoa nesta chamada: a mídia que passa pelo nó vai cifrada com
+    /// chaves trocadas por ela, e o nó só repassa.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    e2e: Option<String>,
+    /// O app sabe usar o SFU com cifragem (versão nova, navegador com transformação de quadros).
+    #[serde(skip)]
+    sfu_ok: bool,
 }
+
+/// Onde a mídia de uma sala anda: o SFU de um nó (`crate::media::registry`). Sala sem rota: malha.
+#[derive(Clone, Debug)]
+struct Route {
+    node: String,
+    /// Vez da troca (cada mudança soma um): o app ignora avisos atrasados.
+    epoch: u64,
+    /// O nó de antes, ainda de pé, enquanto os apps passam para o novo sem cortar a voz.
+    prev: Option<(String, std::time::Instant)>,
+}
+
+/// Depois de trocar a sala de nó, o de antes continua aceitando os comandos por este tempo.
+const ROUTE_HANDOVER: std::time::Duration = std::time::Duration::from_secs(15);
 
 #[derive(Default)]
 struct HubState {
@@ -155,7 +181,18 @@ struct HubState {
     online_notify: HashMap<String, i64>,
     /// Quando este servidor subiu (logo depois de reiniciar, todos reconectam: ninguém "ficou online").
     started_at: i64,
+    /// Nós de mídia (SFU), se o servidor tem algum (veja `crate::media`).
+    media: Option<Arc<Registry>>,
+    /// canal de voz → rota da mídia (fora daqui, malha).
+    voice_route: HashMap<String, Route>,
+    route_epoch: u64,
+    /// Chamada de uma conversa privada → quem foi chamado para ela sem ser da conversa (`call:invite`). Entra
+    /// só na chamada (não vê a conversa) e some daqui quando a chamada acaba.
+    call_guests: HashMap<String, HashSet<String>>,
 }
+
+/// Quantas pessoas cabem numa chamada de conversa privada (os dois da conversa e os convidados).
+pub const CALL_MAX: usize = 10;
 
 pub const STATUSES: [&str; 4] = ["online", "away", "busy", "invisible"];
 /// A volta para a chamada (depois de cair) foi recusada: a pessoa já está nela por outro aparelho.
@@ -193,6 +230,10 @@ pub struct Hub {
     /// Desligando para reiniciar (atualização): as chamadas não acabam, o app volta para elas sozinho.
     restarting: AtomicBool,
 }
+
+/// Teto de um pedido pela conexão: ele faz várias consultas, cada uma com seu tempo limite no banco, e a
+/// conexão só atende o próximo pedido quando este termina.
+const OP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 fn event(ev: &str, d: impl Serialize) -> String {
     json!({ "ev": ev, "d": d }).to_string()
@@ -235,6 +276,161 @@ impl Hub {
     /// Liga o registro dos servidores (entradas e saídas da voz, com o tempo).
     pub fn set_audit(&self, tx: crate::audit::Sender) {
         self.state.lock().unwrap().audit_tx = Some(tx);
+    }
+
+    /// Liga os nós de mídia: os canais de voz passam a poder usar o SFU (veja `media_changed`).
+    pub fn set_media(&self, media: Arc<Registry>) {
+        self.state.lock().unwrap().media = Some(media);
+    }
+
+    pub fn boot_id(&self) -> &str {
+        &self.boot_id
+    }
+
+    /// Manda um evento já pronto para uma conexão (o SFU responde por aqui).
+    pub fn send_raw(&self, conn_id: &str, msg: String) {
+        Self::send_to(&self.state.lock().unwrap(), conn_id, msg);
+    }
+
+    /// Algo mudou nos nós de mídia (um caiu, outro ligou, a carga, o painel): revê onde cada sala fica.
+    /// Também roda de tempos em tempos (`crate::media::start`).
+    pub fn media_changed(&self) {
+        let mut s = self.state.lock().unwrap();
+        let Some(reg) = s.media.clone() else { return };
+        let now = std::time::Instant::now();
+        // O nó de antes de uma troca: passado o tempo de passagem, quem ainda estava nele sai.
+        let done: Vec<(String, String)> = s
+            .voice_route
+            .iter()
+            .filter_map(|(ch, r)| r.prev.as_ref().filter(|(_, at)| now - *at > ROUTE_HANDOVER).map(|(n, _)| (ch.clone(), n.clone())))
+            .collect();
+        for (ch, node) in done {
+            if let Some(b) = reg.backend(&node) {
+                for p in s.voice.get(&ch).into_iter().flatten() {
+                    b.cmd("leave", json!({ "conn": p.peer_id }));
+                }
+            }
+            if let Some(r) = s.voice_route.get_mut(&ch) {
+                r.prev = None;
+            }
+        }
+        let channels: Vec<String> = s.voice.keys().cloned().collect();
+        for ch in channels {
+            Self::rebalance(&mut s, &reg, &ch);
+        }
+    }
+
+    /// As salas que estão num nó de mídia agora (para o painel).
+    pub fn media_rooms(&self) -> Vec<Value> {
+        let s = self.state.lock().unwrap();
+        s.voice_route
+            .iter()
+            .map(|(ch, r)| {
+                let list = s.voice.get(ch);
+                let people = list.map_or(0, Vec::len);
+                let sfu = list.map_or(0, |l| l.iter().filter(|p| p.route != "mesh").count());
+                json!({ "channelId": ch, "node": r.node, "people": people, "onSfu": sfu })
+            })
+            .collect()
+    }
+
+    /// Onde a mídia da sala deve ficar e, se mudou, avisa quem está nela (`voice:mode`).
+    ///
+    /// - Canal de servidor com pelo menos `min_people` pessoas que sabem usar o SFU, e um nó de pé → SFU.
+    /// - Já no SFU: fica (mesmo que esvazie um pouco), a não ser que o nó caia, ou que seja o embutido
+    ///   com o servidor sobrecarregado e houver um nó remoto para receber a sala.
+    /// - Chamada privada: sempre malha.
+    fn rebalance(s: &mut HubState, reg: &Arc<Registry>, channel_id: &str) {
+        let Some(list) = s.voice.get(channel_id) else {
+            s.voice_route.remove(channel_id);
+            return;
+        };
+        if list.first().is_some_and(|p| p.dm_users.is_some()) {
+            return;
+        }
+        let capable = list.iter().filter(|p| p.sfu_ok).count();
+        let current = s.voice_route.get(channel_id).map(|r| r.node.clone());
+        let target = match current.clone().filter(|n| reg.alive(n)) {
+            Some(n) if n == crate::media::registry::LOCAL && reg.overloaded() && reg.has_remote_sfu() => reg.pick_sfu(),
+            Some(n) => Some(n),
+            None if capable >= reg.min_people() => reg.pick_sfu(),
+            None => None,
+        };
+        if target == current {
+            return;
+        }
+        s.route_epoch += 1;
+        let epoch = s.route_epoch;
+        let conns: Vec<ConnId> = list.iter().map(|p| p.peer_id.clone()).collect();
+        match &target {
+            Some(node) => {
+                // Quem voltou com outra conexão (o servidor reiniciou antes de o nó religar): a sessão que
+                // o nó guardou com a conexão de antes passa para a nova, e a mídia continua sem refazer nada.
+                if let Some(b) = reg.backend(node) {
+                    for p in list.iter() {
+                        if let Some(was) = &p.was {
+                            b.cmd("rekey", json!({ "old": was, "new": p.peer_id }));
+                        }
+                    }
+                }
+                // O de antes, se ainda está de pé, segura a voz enquanto os apps passam para o novo.
+                let prev = current.filter(|c| reg.alive(c)).map(|c| (c, std::time::Instant::now()));
+                s.voice_route.insert(channel_id.to_string(), Route { node: node.clone(), epoch, prev });
+            }
+            None => {
+                if let Some(b) = current.as_deref().and_then(|n| reg.backend(n)) {
+                    for c in &conns {
+                        b.cmd("leave", json!({ "conn": c }));
+                    }
+                }
+                s.voice_route.remove(channel_id);
+                // Sala em malha: ninguém está no SFU (os apps já sabem pelo `voice:mode`).
+                for p in s.voice.get_mut(channel_id).into_iter().flatten() {
+                    p.route = "mesh".into();
+                }
+            }
+        }
+        let msg = event("voice:mode", json!({ "channelId": channel_id, "node": target, "epoch": epoch }));
+        for c in &conns {
+            Self::send_to(s, c, msg.clone());
+        }
+    }
+
+    /// A rota da sala para a resposta do `voice:join` (`{ node, epoch }` ou nula).
+    fn route_json(s: &HubState, channel_id: &str) -> Value {
+        s.voice_route.get(channel_id).map_or(Value::Null, |r| json!({ "node": r.node, "epoch": r.epoch }))
+    }
+
+    /// O SFU do nó `node`, se a sala de quem pede está nele (ou estava, durante a passagem).
+    fn sfu_backend(&self, conn_id: &str, node: &str) -> Option<(Backend, String)> {
+        let s = self.state.lock().unwrap();
+        let ch = s.conn_voice.get(conn_id)?;
+        let r = s.voice_route.get(ch)?;
+        let ok = r.node == node || r.prev.as_ref().is_some_and(|(p, _)| p == node);
+        if !ok {
+            return None;
+        }
+        Some((s.media.as_ref()?.backend(node)?, ch.clone()))
+    }
+
+    /// A conexão saiu do SFU da sala (e do de antes, se houver).
+    fn leave_sfu(s: &HubState, channel_id: &str, conn_id: &str) {
+        let (Some(reg), Some(r)) = (s.media.as_ref(), s.voice_route.get(channel_id)) else { return };
+        for node in std::iter::once(&r.node).chain(r.prev.as_ref().map(|(n, _)| n)) {
+            if let Some(b) = reg.backend(node) {
+                b.cmd("leave", json!({ "conn": conn_id }));
+            }
+        }
+    }
+
+    /// A mesma pessoa voltou com outra conexão: a mídia pelo SFU segue sem refazer nada.
+    fn rekey_sfu(s: &HubState, channel_id: &str, old: &str, new: &str) {
+        let (Some(reg), Some(r)) = (s.media.as_ref(), s.voice_route.get(channel_id)) else { return };
+        for node in std::iter::once(&r.node).chain(r.prev.as_ref().map(|(n, _)| n)) {
+            if let Some(b) = reg.backend(node) {
+                b.cmd("rekey", json!({ "old": old, "new": new }));
+            }
+        }
     }
 
     /// Alguém está no canal de voz agora?
@@ -546,7 +742,13 @@ impl Hub {
             }),
         );
         match &scope.dm_users {
-            Some(users) => users.iter().for_each(|u| Self::send_to_user(s, u, &msg)),
+            Some(users) => {
+                users.iter().for_each(|u| Self::send_to_user(s, u, &msg));
+                // Quem foi chamado para a chamada também acompanha quem está nela.
+                for u in s.call_guests.get(channel_id).into_iter().flatten().filter(|u| !users.contains(u)) {
+                    Self::send_to_user(s, u, &msg);
+                }
+            }
             None => Self::send_to_channel(s, &scope.guild_id, channel_id, &msg, None),
         }
     }
@@ -604,6 +806,7 @@ impl Hub {
 
     fn leave_voice_locked(s: &mut HubState, conn_id: &str) {
         let Some(channel_id) = s.conn_voice.remove(conn_id) else { return };
+        Self::leave_sfu(s, &channel_id, conn_id);
         let Some(list) = s.voice.get_mut(&channel_id) else { return };
         let Some(pos) = list.iter().position(|p| p.peer_id == conn_id) else { return };
         let me = list.remove(pos);
@@ -619,6 +822,15 @@ impl Hub {
         if list.is_empty() {
             s.voice.remove(&channel_id);
             s.voice_since.remove(&channel_id);
+            s.voice_route.remove(&channel_id);
+            // A chamada acabou: os convites para ela também (o aviso de que esvaziou ainda chega a eles).
+            let guests = s.call_guests.remove(&channel_id);
+            if let Some(guests) = guests.filter(|_| me.dm_users.is_some()) {
+                let msg = event("voice:channel", json!({ "guildId": "", "channelId": channel_id, "dm": true, "participants": [], "since": null }));
+                for u in guests.iter().filter(|u| !me.dm_users.as_ref().is_some_and(|d| d.contains(u))) {
+                    Self::send_to_user(s, u, &msg);
+                }
+            }
             if let Some(tx) = &s.voice_empty_tx {
                 let _ = tx.send(channel_id.clone());
             }
@@ -855,7 +1067,9 @@ impl Hub {
                 _ = tick.tick() => {
                     let session = self.state.lock().unwrap().conns.get(&conn_id).and_then(|c| c.session);
                     if let Some(id) = session {
-                        crate::admin::touch_session(&app, id).await;
+                        // Fora do laço: com o banco lento, a conexão continua atendendo a pessoa.
+                        let app = app.clone();
+                        tokio::spawn(async move { crate::admin::touch_session(&app, id).await });
                     }
                 }
                 msg = stream.next() => {
@@ -868,7 +1082,11 @@ impl Hub {
                                     self.spawn_music_add(&app, &conn_id, &user, req.d, req.id, tx.clone());
                                     continue;
                                 }
-                                let reply = self.handle(&app, &conn_id, &user, req.op.as_str(), req.d).await;
+                                let work = self.handle(&app, &conn_id, &user, req.op.as_str(), req.d);
+                                let reply = tokio::time::timeout(OP_TIMEOUT, work).await.unwrap_or_else(|_| {
+                                    app.logs.error(format!("{}: passou do tempo limite", req.op));
+                                    Some(json!({ "error": "O servidor não conseguiu responder agora. Tente de novo em instantes." }))
+                                });
                                 if let (Some(id), Some(d)) = (req.id, reply) {
                                     let _ = tx.send(json!({ "re": id, "d": d }).to_string());
                                 }
@@ -983,6 +1201,36 @@ impl Hub {
         s.left_mobile.remove(user_id);
         s.online_notify.remove(user_id);
         s.users.remove(user_id);
+    }
+
+    /// Uma operação do WebSocket em nome de `user`, como se viesse de um aparelho dele (o assistente usa, veja
+    /// `crate::agent`). Vale a conexão dele que está numa chamada (música) ou qualquer outra aberta; as
+    /// permissões são conferidas como sempre.
+    pub async fn act_as(&self, app: &Arc<App>, user: &User, op: &str, d: Value) -> Value {
+        let conn = {
+            let s = self.state.lock().unwrap();
+            let ids = s.user_conns.get(&user.id);
+            ids.and_then(|ids| ids.iter().find(|c| s.conn_voice.contains_key(*c)).or_else(|| ids.iter().next()).cloned()).unwrap_or_default()
+        };
+        if op == "music:add" {
+            let Some((channel_id, guild_id)) = self.voice_channel_of(&conn) else {
+                return json!({ "error": "Entre em um canal de voz para tocar música" });
+            };
+            let allowed = crate::api::member_perms(app, &guild_id, &user.id)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|p| crate::api::perm::has(p, crate::api::perm::MUSIC_ADD));
+            if !allowed {
+                return json!({ "error": "Você não tem permissão para pôr músicas neste servidor" });
+            }
+            let url = d.get("url").and_then(Value::as_str).unwrap_or_default().to_string();
+            return app.music.add(&channel_id, &guild_id, user, &url).await.unwrap_or_else(|e| json!({ "error": e }));
+        }
+        match tokio::time::timeout(OP_TIMEOUT, self.handle(app, &conn, user, op, d)).await {
+            Ok(r) => r.unwrap_or_else(|| json!({ "ok": true })),
+            Err(_) => json!({ "error": "O servidor demorou demais para responder. Tente de novo." }),
+        }
     }
 
     /// `music:add`: resolve o link e enfileira no canal de voz de quem enviou.
@@ -1424,10 +1672,96 @@ impl Hub {
             }
 
             "call:decline" => {
-                if let Some(dm) = crate::social::dm_with_access(app, &str_field("dmId"), &user.id).await {
+                let dm_id = str_field("dmId");
+                if let Some(dm) = crate::social::dm_with_access(app, &dm_id, &user.id).await {
                     self.to_user(dm.other(&user.id), "call:declined", json!({ "dmId": dm.id, "by": user }));
+                } else {
+                    // Convidado que recusou: sai da lista e quem está na chamada fica sabendo.
+                    let mut s = self.state.lock().unwrap();
+                    if s.call_guests.get_mut(&dm_id).is_some_and(|g| g.remove(&user.id)) {
+                        let msg = event("call:declined", json!({ "dmId": dm_id, "by": user, "guest": true }));
+                        for p in s.voice.get(&dm_id).into_iter().flatten() {
+                            Self::send_to(&s, &p.peer_id, msg.clone());
+                        }
+                    }
                 }
                 None
+            }
+
+            // Chama mais gente para a chamada de uma conversa privada. Quem está na chamada chama os amigos dele
+            // (ou o outro da conversa, que ainda não entrou); quem não é da conversa entra só na chamada.
+            "call:invite" => {
+                let dm_id = str_field("dmId");
+                let wanted: Vec<String> = d
+                    .get("userIds")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).take(CALL_MAX).collect())
+                    .unwrap_or_default();
+                let (in_call, people) = {
+                    let s = self.state.lock().unwrap();
+                    let list = s.voice.get(&dm_id);
+                    let people: HashSet<String> = list.into_iter().flatten().map(|p| p.user.id.clone()).collect();
+                    let dm_call = list.and_then(|l| l.first()).is_some_and(|p| p.dm_users.is_some());
+                    (dm_call && s.conn_voice.get(conn_id) == Some(&dm_id), people)
+                };
+                if !in_call {
+                    return err("Entre na chamada para chamar mais gente");
+                }
+                let Some(dm) = crate::social::dm_by_id(app, &dm_id).await else { return err("Chamada não encontrada") };
+                let friends: HashSet<String> = crate::social::friend_ids(app, &user.id).await.into_iter().collect();
+                let mut ring = Vec::new();
+                for id in wanted {
+                    if id == user.id || people.contains(&id) || ring.contains(&id) {
+                        continue;
+                    }
+                    // O outro da conversa sempre pode ser chamado de novo; os demais, só amigos sem bloqueio.
+                    let member = dm.users().contains(&id);
+                    if !member && (!friends.contains(&id) || crate::social::block_between(app, &user.id, &id).await.ok().flatten().is_some()) {
+                        continue;
+                    }
+                    ring.push(id);
+                }
+                if ring.is_empty() {
+                    return err("Ninguém para chamar (só amigos que ainda não estão na chamada)");
+                }
+                let members: Vec<User> = {
+                    let mut s = self.state.lock().unwrap();
+                    let guests = s.call_guests.entry(dm_id.clone()).or_default();
+                    if people.len() + guests.len() + ring.len() > CALL_MAX {
+                        return err(&format!("Cabem até {CALL_MAX} pessoas numa chamada"));
+                    }
+                    for id in &ring {
+                        if !dm.users().contains(id) {
+                            guests.insert(id.clone());
+                        }
+                    }
+                    let members: Vec<User> = s.voice.get(&dm_id).into_iter().flatten().map(|p| p.user.clone()).collect();
+                    let msg = event("call:ring", json!({ "dmId": dm_id, "from": user, "group": true, "members": members }));
+                    for id in &ring {
+                        Self::send_to_user(&s, id, &msg);
+                    }
+                    members
+                };
+                let names = members.iter().filter(|m| m.id != user.id).map(|m| plain_text(&m.display_name)).collect::<Vec<_>>();
+                let body = if names.is_empty() {
+                    "chamou você para uma chamada".to_string()
+                } else {
+                    format!("chamou você para uma chamada com {}", names.join(", "))
+                };
+                for id in &ring {
+                    app.push_to(
+                        id,
+                        crate::push::Note {
+                            title: plain_text(&user.display_name),
+                            body: body.clone(),
+                            tag: format!("call:{dm_id}"),
+                            url: format!("/?dm={dm_id}"),
+                            kind: "call",
+                            from: crate::push::Sender::of(user),
+                        },
+                    );
+                }
+                Some(json!({ "invited": ring.len() }))
             }
 
             "voice:join" => {
@@ -1436,7 +1770,14 @@ impl Hub {
                     Some(ch) if ch.kind == "voice" => (ch.id, ch.guild_id, None),
                     _ => match crate::social::dm_with_access(app, &channel_id, &user.id).await {
                         Some(dm) => (dm.id.clone(), String::new(), Some(dm.users())),
-                        None => return err("Canal de voz não encontrado"),
+                        None => {
+                            // Chamado para a chamada desta conversa (`call:invite`): entra só na chamada.
+                            let invited = self.state.lock().unwrap().call_guests.get(&channel_id).is_some_and(|g| g.contains(&user.id));
+                            match crate::social::dm_by_id(app, &channel_id).await {
+                                Some(dm) if invited => (dm.id.clone(), String::new(), Some(dm.users())),
+                                _ => return err("Canal de voz não encontrado"),
+                            }
+                        }
                     },
                 };
                 let muted = d.get("muted").and_then(Value::as_bool).unwrap_or(false);
@@ -1450,6 +1791,12 @@ impl Hub {
                     .and_then(Value::as_str)
                     .filter(|w| !w.is_empty() && w.len() <= 64 && *w != conn_id)
                     .map(str::to_string);
+                // SFU com cifragem (`crate::media`): a chave pública da chamada e se o app sabe usar.
+                let e2e = d.get("e2e").and_then(Value::as_str).filter(|k| !k.is_empty() && k.len() <= 200).map(str::to_string);
+                let sfu_ok = e2e.is_some() && d.get("sfu").and_then(Value::as_bool).unwrap_or(false);
+                // O nó em que a sala estava antes de a conexão cair (ou de o servidor reiniciar).
+                let media_hint =
+                    resume.and_then(|r| r.get("media")).and_then(Value::as_str).filter(|n| !n.is_empty() && n.len() <= 64).map(str::to_string);
                 let mut s = self.state.lock().unwrap();
                 Self::leave_voice_locked(&mut s, conn_id);
                 // O lugar de quando a conexão caiu (mesmo servidor). Não precisa estar marcado como caído: a
@@ -1463,12 +1810,16 @@ impl Hub {
                     p.muted = muted;
                     p.deafened = deafened;
                     p.user = user.clone();
+                    p.e2e = e2e.clone();
+                    p.sfu_ok = sfu_ok;
                     Some(p.clone())
                 });
                 if let Some(me) = claimed {
                     let old = me.was.clone().unwrap_or_default();
                     s.conn_voice.remove(&old);
                     s.conn_voice.insert(conn_id.to_string(), ch_id.clone());
+                    Self::rekey_sfu(&s, &ch_id, &old, conn_id);
+                    let media = Self::route_json(&s, &ch_id);
                     let peers: Vec<Participant> =
                         s.voice.get(&ch_id).into_iter().flatten().filter(|p| p.peer_id != conn_id).cloned().collect();
                     let joined = event("voice:peer-joined", &me);
@@ -1479,7 +1830,7 @@ impl Hub {
                     let since = s.voice_since.get(&ch_id).copied();
                     return Some(json!({
                         "ok": true, "channelId": ch_id, "guildId": guild_id, "dm": dm_users.is_some(), "peers": peers,
-                        "bootId": self.boot_id, "resumed": "kept", "since": since, "iceServers": ice
+                        "bootId": self.boot_id, "resumed": "kept", "since": since, "iceServers": ice, "media": media
                     }));
                 }
                 // Uma chamada por conta: dois aparelhos da mesma pessoa na voz dobram o envio de áudio e
@@ -1522,6 +1873,9 @@ impl Hub {
                         .unwrap_or(now),
                     was: was.clone(),
                     away: false,
+                    route: "mesh".into(),
+                    e2e: e2e.clone(),
+                    sfu_ok,
                 };
                 if dm_users.is_none() && was.is_none() {
                     app.audit(crate::audit::Entry::new(&guild_id, "voice.join", &user.id).channel(&ch_id));
@@ -1546,16 +1900,38 @@ impl Hub {
                     Self::send_to(&s, &p.peer_id, joined.clone());
                 }
                 Self::broadcast_voice_channel(&s, &me, &ch_id);
+                if let Some(reg) = s.media.clone() {
+                    // Voltando depois de o servidor reiniciar: a sala continua no nó em que estava (a mídia
+                    // pelo nó não parou), e a sessão de antes passa para esta conexão.
+                    if let (Some(hint), Some(w)) = (&media_hint, &was) {
+                        if dm_users.is_none() && !s.voice_route.contains_key(&ch_id) && reg.alive(hint) {
+                            s.route_epoch += 1;
+                            let epoch = s.route_epoch;
+                            s.voice_route.insert(ch_id.clone(), Route { node: hint.clone(), epoch, prev: None });
+                            // Quem voltou antes (sem a sala no nó ainda) fica sabendo.
+                            let msg = event("voice:mode", json!({ "channelId": ch_id, "node": hint, "epoch": epoch }));
+                            for p in s.voice.get(&ch_id).into_iter().flatten().filter(|p| p.peer_id != conn_id) {
+                                Self::send_to(&s, &p.peer_id, msg.clone());
+                            }
+                        }
+                        if s.voice_route.get(&ch_id).is_some_and(|r| &r.node == hint) {
+                            Self::rekey_sfu(&s, &ch_id, w, conn_id);
+                        }
+                    }
+                    Self::rebalance(&mut s, &reg, &ch_id);
+                }
+                let media = Self::route_json(&s, &ch_id);
                 // Quem está voltando não toca para ninguém nem gera aviso de "entrou".
                 if was.is_some() {
                     return Some(json!({
                         "ok": true, "channelId": ch_id, "guildId": guild_id, "dm": dm_users.is_some(), "peers": peers,
-                        "bootId": self.boot_id, "resumed": "new", "since": since, "iceServers": ice
+                        "bootId": self.boot_id, "resumed": "new", "since": since, "iceServers": ice, "media": media
                     }));
                 }
-                // Chamada 1 a 1: toca para o outro lado se ele ainda não estiver na chamada.
+                // Chamada 1 a 1: toca para o outro lado se ele ainda não estiver na chamada (quem entra como
+                // convidado não faz tocar para ninguém).
                 let mut ringing = None;
-                if let Some(users) = &dm_users {
+                if let Some(users) = dm_users.as_ref().filter(|u| u.contains(&user.id)) {
                     let other = users.iter().find(|u| **u != user.id).cloned().unwrap_or_default();
                     if !peers.iter().any(|p| p.user.id == other) {
                         Self::send_to_user(&s, &other, &event("call:ring", json!({ "dmId": ch_id, "from": user })));
@@ -1590,8 +1966,80 @@ impl Hub {
                 }
                 Some(json!({
                     "ok": true, "channelId": ch_id, "guildId": guild_id, "dm": dm_users.is_some(), "peers": peers,
-                    "bootId": self.boot_id, "since": since, "iceServers": ice
+                    "bootId": self.boot_id, "since": since, "iceServers": ice, "media": media
                 }))
+            }
+
+            // Por onde a minha mídia anda agora (`sfu` ou `mesh`): os outros escolhem por onde me mandar e
+            // por onde me ouvir (veja `client/src/lib/voice.js`). Só o app que sabe usar o SFU passa a `sfu`.
+            "voice:route" => {
+                let mut s = self.state.lock().unwrap();
+                let Some(channel_id) = s.conn_voice.get(conn_id).cloned() else { return None };
+                // Só o nó da sala (ou o de antes, durante a troca) vale; qualquer outra coisa é malha.
+                let want = str_field("route");
+                let known = s
+                    .voice_route
+                    .get(&channel_id)
+                    .is_some_and(|r| r.node == want || r.prev.as_ref().is_some_and(|(p, _)| *p == want));
+                let Some(me) = s.voice.get_mut(&channel_id).and_then(|l| l.iter_mut().find(|p| p.peer_id == conn_id)) else {
+                    return None;
+                };
+                let route = if known && me.sfu_ok { want } else { "mesh".to_string() };
+                // A resposta diz a rota aceita: o app só se considera no nó depois disso.
+                let reply = Some(json!({ "route": route }));
+                if me.route == route {
+                    return reply;
+                }
+                me.route = route;
+                let me = me.clone();
+                let msg = event("voice:peer-state", &me);
+                for p in s.voice.get(&channel_id).into_iter().flatten().filter(|p| p.peer_id != conn_id) {
+                    Self::send_to(&s, &p.peer_id, msg.clone());
+                }
+                reply
+            }
+
+            // ---- SFU de um nó de mídia (veja `crate::media`): só para quem está numa sala que anda por ele.
+            // `node` diz de qual nó (durante a troca de nó, o de antes ainda vale).
+            "sfu:join" | "sfu:publish" | "sfu:answer" | "sfu:want" | "sfu:leave" | "sfu:keyframe" => {
+                let Some((backend, room)) = self.sfu_backend(conn_id, &str_field("node")) else {
+                    return matches!(op, "sfu:join" | "sfu:publish").then(|| json!({ "error": "A chamada não está neste nó de mídia" }));
+                };
+                match op {
+                    "sfu:join" => {
+                        backend.cmd("join", json!({ "conn": conn_id, "room": room }));
+                        Some(json!({ "ok": true }))
+                    }
+                    "sfu:publish" => {
+                        let tracks = d.get("tracks").cloned().unwrap_or(Value::Null);
+                        let sdp = d.get("sdp").cloned().unwrap_or(Value::Null);
+                        Some(backend.publish(json!({ "conn": conn_id, "sdp": sdp, "tracks": tracks })).await)
+                    }
+                    "sfu:answer" => {
+                        backend.cmd("answer", json!({ "conn": conn_id, "sdp": d.get("sdp").cloned().unwrap_or(Value::Null) }));
+                        None
+                    }
+                    "sfu:want" => {
+                        backend.cmd("want", json!({ "conn": conn_id, "peers": d.get("peers").cloned().unwrap_or(Value::Null) }));
+                        None
+                    }
+                    "sfu:leave" => {
+                        backend.cmd("leave", json!({ "conn": conn_id }));
+                        None
+                    }
+                    _ => {
+                        // Só de quem está na mesma sala.
+                        let from = str_field("from");
+                        let same = {
+                            let s = self.state.lock().unwrap();
+                            s.conn_voice.get(&from).is_some_and(|ch| ch == &room)
+                        };
+                        if same {
+                            backend.cmd("keyframe", json!({ "conn": conn_id, "from": from }));
+                        }
+                        None
+                    }
+                }
             }
 
             "voice:leave" => {
@@ -1985,8 +2433,10 @@ pub async fn ws_handler(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
-    let Some(user) = crate::auth::user_from_token(&app.db, &q.token).await else {
-        return (StatusCode::UNAUTHORIZED, "unauthorized").into_response();
+    let user = match crate::auth::session_user(&app.db, &q.token).await {
+        Ok(Some(user)) => user,
+        Ok(None) => return (StatusCode::UNAUTHORIZED, "unauthorized").into_response(),
+        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
     let hub = app.hub.clone();
     let net = Net::from_ip(client_ip(addr, &headers));
@@ -2194,6 +2644,9 @@ mod tests {
             joined_at: 1,
             was: None,
             away,
+            route: "mesh".into(),
+            e2e: None,
+            sfu_ok: false,
         };
         let (tx, mut pc) = unbounded_channel();
         let mut s = hub.state.lock().unwrap();
@@ -2229,6 +2682,115 @@ mod tests {
         assert_eq!(msg["d"]["channelId"], "geral");
         assert!(!s.conn_voice.contains_key("pc"));
         assert_eq!(s.voice["geral"].len(), 1, "a Bia continua");
+    }
+
+    #[tokio::test]
+    async fn salas_vao_para_o_no_de_midia_e_voltam_para_a_malha() {
+        let (hub, _rx) = Hub::new();
+        let reg = Registry::new(Default::default());
+        hub.set_media(reg.clone());
+        let user = |id: &str| -> User {
+            serde_json::from_value(json!({
+                "id": id, "username": id, "displayName": id, "avatarColor": "#000000", "avatarUrl": null, "bio": "",
+                "nameColor": null, "bioColor": null, "bannerColor": null
+            }))
+            .unwrap()
+        };
+        let seat = |peer: &str, sfu_ok: bool, dm: bool| Participant {
+            peer_id: peer.into(),
+            user: user(peer),
+            guild_id: if dm { String::new() } else { "g".into() },
+            dm_users: dm.then(|| [peer.to_string(), "x".to_string()]),
+            muted: false,
+            deafened: false,
+            video: false,
+            screen: false,
+            camera_stream_id: None,
+            screen_stream_id: None,
+            server_muted: false,
+            joined_at: 1,
+            was: None,
+            away: false,
+            route: if sfu_ok { "n1".into() } else { "mesh".into() },
+            e2e: sfu_ok.then(|| "chave".to_string()),
+            sfu_ok,
+        };
+        let mut inbox = HashMap::new();
+        {
+            let mut s = hub.state.lock().unwrap();
+            for (conn, ch) in [("a", "voz"), ("b", "voz"), ("c", "velhos"), ("d", "velhos"), ("e", "dm"), ("f", "dm")] {
+                let (tx, rx) = unbounded_channel();
+                s.conns.insert(
+                    conn.into(),
+                    Conn {
+                        tx,
+                        user_id: conn.into(),
+                        guilds: HashSet::new(),
+                        friends: HashSet::new(),
+                        visible: true,
+                        net: Net::default(),
+                        nearby: false,
+                        device: String::new(),
+                        mobile: false,
+                        session: None,
+                    },
+                );
+                s.conn_voice.insert(conn.into(), ch.into());
+                inbox.insert(conn, rx);
+            }
+            s.voice.insert("voz".into(), vec![seat("a", true, false), seat("b", true, false)]);
+            // Apps antigos (sem cifragem): a sala fica na malha.
+            s.voice.insert("velhos".into(), vec![seat("c", false, false), seat("d", false, false)]);
+            s.voice.insert("dm".into(), vec![seat("e", true, true), seat("f", true, true)]);
+        }
+        let modes = |rx: &mut UnboundedReceiver<String>| -> Vec<Value> {
+            std::iter::from_fn(|| rx.try_recv().ok())
+                .filter_map(|m| serde_json::from_str::<Value>(&m).ok())
+                .filter(|m| m["ev"] == "voice:mode")
+                .collect()
+        };
+        // Sem nó de pé: tudo em malha.
+        hub.media_changed();
+        assert!(hub.state.lock().unwrap().voice_route.is_empty());
+        let (ntx, _nrx) = unbounded_channel();
+        let hello = crate::media::control::Hello {
+            id: "n1".into(),
+            ts: 0,
+            nonce: String::new(),
+            mac: String::new(),
+            version: "t".into(),
+            caps: vec!["sfu".into()],
+            udp_port: 3479,
+            lan: vec![],
+        };
+        let session = reg.attach(&hello, "N1", "1.2.3.4", ntx);
+        reg.make_ready();
+        hub.media_changed();
+        {
+            let s = hub.state.lock().unwrap();
+            assert_eq!(s.voice_route.get("voz").map(|r| r.node.as_str()), Some("n1"));
+            assert!(!s.voice_route.contains_key("velhos"), "app antigo fica na malha");
+            assert!(!s.voice_route.contains_key("dm"), "chamada privada fica na malha");
+        }
+        let m = modes(inbox.get_mut("a").unwrap());
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0]["d"]["node"], "n1");
+        let epoch = m[0]["d"]["epoch"].as_u64().unwrap();
+        assert_eq!(modes(inbox.get_mut("b").unwrap()).len(), 1, "todos da sala sabem");
+        assert!(modes(inbox.get_mut("c").unwrap()).is_empty());
+        // Revisar de novo sem mudança nenhuma não avisa ninguém.
+        hub.media_changed();
+        assert!(modes(inbox.get_mut("b").unwrap()).is_empty());
+        // O nó caiu: a sala volta para a malha, numa vez nova.
+        assert!(reg.detach("n1", session));
+        hub.media_changed();
+        let m = modes(inbox.get_mut("b").unwrap());
+        assert_eq!(m.len(), 1);
+        assert!(m[0]["d"]["node"].is_null());
+        assert!(m[0]["d"]["epoch"].as_u64().unwrap() > epoch);
+        let s = hub.state.lock().unwrap();
+        assert!(s.voice_route.is_empty());
+        assert!(s.voice["voz"].iter().all(|p| p.route == "mesh"));
     }
 
     #[test]

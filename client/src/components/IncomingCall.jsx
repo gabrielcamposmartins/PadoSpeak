@@ -6,7 +6,15 @@ import { plain } from '../lib/text.js';
 import { ConnProvider, useConn } from './conn.jsx';
 import { useLayout } from '../lib/layout.js';
 
-/** Janela de chamada 1 a 1 recebida numa conexão (o toque e a vibração são controlados pelo store). */
+/** "com Ana e Bia": quem já está na chamada para a qual você foi chamado (sem quem chamou). */
+function groupText(call, short = false) {
+  const names = (call.members || []).filter((m) => m.id !== call.from?.id).map((m) => plain(m.displayName));
+  const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} e ${names.at(-1)}` : names[0];
+  if (short) return list ? `Chamada com ${list}` : 'Chamada em grupo';
+  return list ? `chamou você para uma chamada com ${list}` : 'chamou você para uma chamada';
+}
+
+/** Janela de chamada recebida numa conexão (o toque e a vibração são controlados pelo store). */
 function IncomingCall() {
   const useC = useConn();
   const call = useC((s) => s.incomingCall);
@@ -30,7 +38,7 @@ function IncomingCall() {
           <b>
             <FormattedText text={from.displayName} />
           </b>
-          <span>está chamando você…</span>
+          <span>{call.group ? groupText(call) : 'está chamando você…'}</span>
         </div>
         <div className="if-actions">
           <button type="button" className="if-btn decline" onClick={() => declineCall()}>
@@ -46,7 +54,7 @@ function IncomingCall() {
             Atender
           </button>
         </div>
-        <button
+        {!call.group && <button
           type="button"
           className="if-reply"
           onClick={() => {
@@ -56,7 +64,7 @@ function IncomingCall() {
           }}
         >
           <MessageCircle size={15} /> Responder com mensagem
-        </button>
+        </button>}
       </div>
     );
   }
@@ -74,9 +82,9 @@ function IncomingCall() {
           <Avatar user={from} size={64} />
         </div>
         <b>
-          <FormattedText text={from.displayName} /> está chamando você
+          <FormattedText text={from.displayName} /> {call.group ? 'chamou você para uma chamada' : 'está chamando você'}
         </b>
-        <span>Chamada 1 a 1</span>
+        <span>{call.group ? groupText(call, true) : 'Chamada 1 a 1'}</span>
         <div className="incoming-actions">
           <button className="go" title="Atender" onClick={() => answerCall()}>
             <Phone size={16} /> Aceitar

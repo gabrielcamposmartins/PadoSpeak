@@ -10,11 +10,35 @@
 use crate::crypto::Cipher;
 use libsql::{params::IntoParams, Builder, Connection, Database, Row};
 use serde::Serialize;
+use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 pub type DbResult<T> = Result<T, libsql::Error>;
+
+/// Tempo máximo de uma consulta ou transação: com o banco travado, o pedido falha em vez de ficar
+/// pendurado (e de prender quem o fez, como a conexão de uma pessoa).
+const DB_TIMEOUT: Duration = Duration::from_secs(15);
+const DB_TIMEOUT_MESSAGE: &str = "o banco de dados não respondeu a tempo";
+
+/// Limita `work` a `DB_TIMEOUT`; `what` diz o que era no log (o SQL não traz os valores).
+pub async fn limited<T>(what: &str, work: impl Future<Output = DbResult<T>>) -> DbResult<T> {
+    limited_for(DB_TIMEOUT, what, work).await
+}
+
+async fn limited_for<T>(limit: Duration, what: &str, work: impl Future<Output = DbResult<T>>) -> DbResult<T> {
+    tokio::time::timeout(limit, work).await.unwrap_or_else(|_| {
+        let what: String = what.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(80).collect();
+        eprintln!("banco: desistiu depois de {} s: {what}", limit.as_secs());
+        Err(libsql::Error::ConnectionFailed(DB_TIMEOUT_MESSAGE.into()))
+    })
+}
+
+/// O erro veio do tempo limite (`limited`)?
+pub fn timed_out(e: &libsql::Error) -> bool {
+    matches!(e, libsql::Error::ConnectionFailed(m) if m == DB_TIMEOUT_MESSAGE)
+}
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,6 +109,42 @@ CREATE TABLE IF NOT EXISTS messages (
   edited_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel_id, created_at);
+-- Assistente (`crate::agent`): a conversa de cada pessoa com o agente, turno a turno, com os blocos da API
+-- como vieram (selados), para reenviar o histórico sem mudar nada.
+CREATE TABLE IF NOT EXISTS agent_turns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_turns_user ON agent_turns(user_id, id);
+-- Chaveiro do assistente: chaves da API (seladas) do app (`user_id` vazio) e de cada pessoa.
+CREATE TABLE IF NOT EXISTS agent_keys (
+  id TEXT PRIMARY KEY,
+  user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+  label TEXT NOT NULL,
+  secret TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_keys_user ON agent_keys(user_id);
+-- A escolha de cada pessoa: a chave dela (vazio = a do app) e o modelo (vazio = o do app).
+CREATE TABLE IF NOT EXISTS agent_prefs (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  key_id TEXT,
+  model TEXT
+);
+-- Nós de mídia (`crate::media`): SFU das chamadas e token da música em outra máquina. O segredo do
+-- pareamento fica selado; `priority` menor recebe as salas primeiro.
+CREATE TABLE IF NOT EXISTS media_nodes (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  secret TEXT NOT NULL,
+  priority INTEGER NOT NULL DEFAULT 0,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  last_seen INTEGER
+);
 "#;
 
 /// Cada item leva o banco para a versão indicada.
@@ -632,13 +692,16 @@ impl Db {
         params: impl IntoParams,
         map: impl Fn(&Row) -> DbResult<T>,
     ) -> DbResult<Vec<T>> {
-        let conn = self.conn().await?;
-        let mut rows = conn.query(sql, params).await?;
-        let mut out = Vec::new();
-        while let Some(row) = rows.next().await? {
-            out.push(map(&row)?);
-        }
-        Ok(out)
+        limited(sql, async {
+            let conn = self.conn().await?;
+            let mut rows = conn.query(sql, params).await?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await? {
+                out.push(map(&row)?);
+            }
+            Ok(out)
+        })
+        .await
     }
 
     pub async fn query_one<T>(
@@ -647,16 +710,19 @@ impl Db {
         params: impl IntoParams,
         map: impl Fn(&Row) -> DbResult<T>,
     ) -> DbResult<Option<T>> {
-        let conn = self.conn().await?;
-        let mut rows = conn.query(sql, params).await?;
-        match rows.next().await? {
-            Some(row) => Ok(Some(map(&row)?)),
-            None => Ok(None),
-        }
+        limited(sql, async {
+            let conn = self.conn().await?;
+            let mut rows = conn.query(sql, params).await?;
+            match rows.next().await? {
+                Some(row) => Ok(Some(map(&row)?)),
+                None => Ok(None),
+            }
+        })
+        .await
     }
 
     pub async fn execute(&self, sql: &str, params: impl IntoParams) -> DbResult<u64> {
-        self.conn().await?.execute(sql, params).await
+        limited(sql, async { self.conn().await?.execute(sql, params).await }).await
     }
 
     pub async fn get_setting(&self, key: &str) -> DbResult<Option<String>> {
@@ -670,5 +736,24 @@ impl Db {
         )
         .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn consulta_travada_desiste_no_tempo_limite() {
+        let work = std::future::pending::<DbResult<()>>();
+        let err = limited_for(Duration::from_millis(20), "SELECT 1", work).await.unwrap_err();
+        assert!(timed_out(&err));
+    }
+
+    #[tokio::test]
+    async fn outros_erros_e_respostas_passam_direto() {
+        assert_eq!(limited("SELECT 1", async { Ok(7) }).await.unwrap(), 7);
+        let err = limited("SELECT 1", async { Err::<(), _>(libsql::Error::NullValue) }).await.unwrap_err();
+        assert!(!timed_out(&err));
     }
 }

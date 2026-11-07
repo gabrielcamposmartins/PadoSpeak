@@ -1,0 +1,40 @@
+# Nó de mídia do PadoSpeak numa máquina Linux com Docker: o SFU das chamadas e o token da música de um
+# servidor (veja server/src/media). Prepare com `sudo ./setup.sh` nesta pasta.
+#
+# - media: a mesma imagem do servidor, no modo `media`. Liga para o servidor principal (nenhuma porta TCP
+#   aberta aqui) e recebe as chamadas na porta UDP 3479. Rede do host: o SFU recebe os pacotes no IP da
+#   máquina, sem o NAT do Docker no meio.
+# - pot: o provedor de token do YouTube (bgutil, a mesma versão do plugin do servidor). Ele não tem
+#   autenticação: fica preso ao laço local da máquina, e só o nó fala com ele.
+#
+# O código do nó (Painel → Mídia → Adicionar nó) fica em /etc/padospeak-media/media.env (MEDIA_JOIN=...).
+name: padospeak-media
+
+services:
+  media:
+    image: ${PADOSPEAK_IMAGE:-us-central1-docker.pkg.dev/gen-lang-client-0425635607/padospeak/server:latest}
+    container_name: padospeak-media
+    command: ["padospeak-server", "media"]
+    restart: unless-stopped
+    network_mode: host
+    env_file: /etc/padospeak-media/media.env
+    environment:
+      DATA_DIR: /data
+      SFU_UDP_PORT: "3479"
+      POT_PROVIDER_URL: http://127.0.0.1:4416
+    volumes:
+      - media-data:/data
+    mem_limit: 256m
+    depends_on:
+      - pot
+
+  pot:
+    image: brainicism/bgutil-ytdlp-pot-provider:2.0.2-deno
+    container_name: padospeak-media-pot
+    restart: unless-stopped
+    network_mode: host
+    command: ["--host", "127.0.0.1", "--port", "4416"]
+    mem_limit: 384m
+
+volumes:
+  media-data:

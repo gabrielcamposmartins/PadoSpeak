@@ -31,6 +31,7 @@ import { useServerPing } from './hooks.js';
 import { enterFullscreen } from '../lib/fullscreen.js';
 import { useLayout, isTouch } from '../lib/layout.js';
 import { MobileBack } from './Mobile.jsx';
+import { InviteButton } from './CallInvite.jsx';
 import VolumeSlider from './Volume.jsx';
 import { VoiceMemberMenu } from './VoiceMenus.jsx';
 
@@ -499,6 +500,13 @@ export default function VoiceView({ channel, variant }) {
     }
   });
 
+  const autoId = (tiles.find((t) => t.kind === 'screen') || tiles.find((t) => !t.self))?.id;
+  const focusedId = inCall ? (focusId === 'auto' ? autoId : focusId) : null;
+  // A miniatura da chamada (fora desta tela, veja MiniCall) mostra o mesmo foco.
+  useEffect(() => {
+    if (inCall) useStore.setState({ callFocus: focusedId || null });
+  }, [inCall, focusedId]);
+
   if (!inCall) {
     return (
       <div className="voice-view stage">
@@ -513,8 +521,7 @@ export default function VoiceView({ channel, variant }) {
     );
   }
 
-  const autoId = (tiles.find((t) => t.kind === 'screen') || tiles.find((t) => !t.self))?.id;
-  const focused = tiles.find((t) => t.id === (focusId === 'auto' ? autoId : focusId));
+  const focused = tiles.find((t) => t.id === focusedId);
   const others = tiles.filter((t) => t !== focused);
   const pickFocus = () =>
     setFocusId((tiles.find((t) => t.kind === 'screen') || tiles.find((t) => !t.self) || tiles[0]).id);
@@ -692,6 +699,7 @@ export default function VoiceView({ channel, variant }) {
           >
             <Settings />
           </button>
+          {channel.dm && useC === useStore && <InviteButton />}
           <button className="ball red hangup" onClick={store.leaveVoice} title="Desconectar" aria-label="Desconectar">
             <PhoneOff />
           </button>

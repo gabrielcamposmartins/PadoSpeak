@@ -57,6 +57,7 @@ import {
   Plus,
   Music2,
   KeyRound,
+  Sparkles,
 } from 'lucide-react';
 import {
   useStore,
@@ -74,7 +75,10 @@ import {
   setMyActivity,
   FONT_SCALES,
   fontScaleOf,
+  agentOn,
 } from '../store.js';
+import AgentKeys from './AgentKeys.jsx';
+import { CallInviteModal } from './CallInvite.jsx';
 import { currentActivity, listPrograms, setCustomPrograms } from '../lib/activity.js';
 import { setGameOverlay, setOverlayBlocked } from '../lib/gameOverlay.js';
 import { SoundsModal, UserSoundsModal, SoundSettings } from './SoundLibrary.jsx';
@@ -123,6 +127,7 @@ const TITLES = {
   share: 'Compartilhar',
   sounds: 'Sons rápidos',
   userSounds: 'Sons',
+  callInvite: 'Chamar para a chamada',
 };
 
 /** Fundo do banner do perfil (acima da foto) a partir de uma cor. */
@@ -538,6 +543,7 @@ const SETTINGS_TABS = [
   ['sons', 'Sons', Music2],
   ['apps', 'Apps', Download],
   ['conta', 'Conta', KeyRound],
+  ['assistente', 'Assistente', Sparkles],
 ];
 
 /**
@@ -1294,6 +1300,8 @@ function CustomPrograms() {
 /** `focus: 'devices'`: abre em Funcionalidade, já na parte de microfone, saída e câmera (atalho da chamada). */
 function SettingsModal({ close, tab: startTab, focus }) {
   const prim = primaryConn();
+  // a aba da chave e do modelo de cada pessoa, com o assistente ligado no servidor
+  const agentMod = useStore(agentOn);
   const me = prim((s) => s.me);
   const serverUrl = prim((s) => s.baseUrl);
   const accent = useStore((s) => s.prefs.accent || null);
@@ -1696,7 +1704,7 @@ function SettingsModal({ close, tab: startTab, focus }) {
     <>
       <div className="modal-body settings-body">
         <div className="gs-tabs settings-tabs" role="tablist">
-          {SETTINGS_TABS.map(([id, label, Icon]) => (
+          {SETTINGS_TABS.filter(([id]) => agentMod || id !== 'assistente').map(([id, label, Icon]) => (
             <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? 'on' : ''} onClick={() => setTab(id)}>
               <Icon size={15} /> {label}
             </button>
@@ -1722,6 +1730,11 @@ function SettingsModal({ close, tab: startTab, focus }) {
             </section>
           )}
           {tab === 'apps' && <AppsTab />}
+          {tab === 'assistente' && agentMod && (
+            <section className="settings-col">
+              <AgentKeys scope="me" />
+            </section>
+          )}
         </div>
       </div>
       <div className="modal-foot">
@@ -3789,6 +3802,7 @@ const MODALS = {
   share: ShareModal,
   sounds: SoundsModal,
   userSounds: UserSoundsModal,
+  callInvite: CallInviteModal,
 };
 
 export default function Modals() {

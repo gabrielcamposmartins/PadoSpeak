@@ -3,6 +3,7 @@
 //! - `padospeak-server`             abre o painel em http://127.0.0.1:3001 (botão "Hostear")
 //! - `padospeak-server --host`      painel + servidor já no ar
 //! - `padospeak-server --headless`  só o servidor (VM/Docker); painel só se `PANEL=true`
+//! - `padospeak-server media`       nó de mídia (SFU das chamadas e token da música) de um servidor
 use padospeak_server::HostManager;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -48,13 +49,41 @@ async fn main() {
         }
         return;
     }
+    // Nó de mídia de um servidor (outra máquina ou a mesma): `MEDIA_JOIN` traz o código do Painel → Mídia.
+    if args.get(1).map(String::as_str) == Some("media") {
+        let data_dir = env("DATA_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("data-media"));
+        let logs = padospeak_server::logs::Logs::default();
+        let cfg = match padospeak_server::media::node::NodeConfig::from_env(data_dir) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(2);
+            }
+        };
+        let node = match padospeak_server::media::node::MediaNode::start(cfg, logs) {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("O nó de mídia não subiu: {e}");
+                std::process::exit(1);
+            }
+        };
+        tokio::select! {
+            _ = shutdown_signal() => node.stop(),
+            _ = node.stopped() => {}
+        }
+        // Tempo para o SFU e o provedor de token fecharem.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        return;
+    }
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
             "padospeak-server [--host] [--headless] [--no-panel]\n\
-             padospeak-server reset-password <usuário>\n\n\
+             padospeak-server reset-password <usuário>\n\
+             padospeak-server media           (nó de mídia: MEDIA_JOIN, SFU_UDP_PORT, SFU_PUBLIC_IP, POT, POT_PROVIDER_URL)\n\n\
              Variáveis: DATA_DIR, DATABASE_URL, TURSO_AUTH_TOKEN, TURSO_SYNC_URL, PORT, HOST, SERVER_NAME,\n\
              HTTPS (off|self-signed|custom), TLS_CERT, TLS_KEY, ICE_SERVERS (JSON), ALLOW_REGISTRATION,\n\
-             AUTO_HOST, PANEL, PANEL_HOST, PANEL_PORT, PANEL_PASSWORD, LOCAL_NODE (nó local do app desktop)"
+             AUTO_HOST, PANEL, PANEL_HOST, PANEL_PORT, PANEL_PASSWORD, LOCAL_NODE (nó local do app desktop),\n\
+             SFU_EMBEDDED (SFU neste servidor), SFU_UDP_PORT, SFU_PUBLIC_IP, POT_PROVIDER_URL"
         );
         return;
     }
