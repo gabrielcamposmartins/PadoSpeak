@@ -32,6 +32,9 @@ import {
   Gamepad2,
   WifiOff,
   Sparkles,
+  Tags,
+  ListFilter,
+  Check,
 } from 'lucide-react';
 import { useStore, primaryConn, setStatusEverywhere, connRegistry, usePerms, openMyProfile, agentOn } from '../store.js';
 import { isDesktop, DOWNLOAD_URL } from '../lib/env.js';
@@ -39,9 +42,12 @@ import { useUpdate, installAvailable } from '../lib/update.js';
 import { offerWindowsApp } from './AuthPage.jsx';
 import { ConnProvider, useAcross, useVoiceConn } from './conn.jsx';
 import { canHost } from '../lib/host.js';
-import { Suspense, lazy, useEffect, useRef, useState } from 'react';
+import { voiceOn, musicOn, rolesOn } from '../modules.js';
+import { RolePills, useRoles } from './Roles.jsx';
+import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useLayout, useNarrow, isTouch } from '../lib/layout.js';
+import { formatHotkey, hotkeysOf } from '../lib/hotkeys.js';
 import MobileShell, { MobileBack } from './Mobile.jsx';
 import GuestCall from './GuestCall.jsx';
 import MiniCall, { useOnCallPage } from './MiniCall.jsx';
@@ -61,7 +67,6 @@ import { useVoicePerson, voiceDropProps } from './VoiceMenus.jsx';
 import { GroupHeader, useCollapsed } from './Group.jsx';
 
 // A conversa com o assistente só é baixada quando alguém a abre.
-const AgentView = lazy(() => import('./Agent.jsx'));
 
 const NO_PERMS = {};
 const openProfile = (userId) => useStore.getState().openModal({ type: 'profile', userId });
@@ -324,12 +329,18 @@ export function GuildRail() {
   const guildAlerts = JSON.parse(alertsJson);
   const [tip, setTip] = useState(null); // { guild, anchor }
   const [menu, setMenu] = useState(null); // { guild, x, y }: notificações do servidor (botão direito)
-  // Assistente (ligado pelo dono do app): um ícone como o de um servidor, logo abaixo do Início
-  const agent = useStore(agentOn);
-  const agentView = useStore((s) => s.view?.type === 'agent');
+  // Assistente: um ícone no pé do trilho; abre o balão por cima da tela (Agent.jsx). Flutuante (escolha nas
+  // Configurações → Assistente), o ícone vai para o canto inferior direito (AgentFab, no App); no celular ele
+  // continua aqui.
+  const agentHere = useStore((s) => s.prefs?.agentPlace !== 'float');
+  const railPhone = useLayout() === 'phone';
+  const agentModule = useStore(agentOn);
+  const agent = agentModule && (agentHere || railPhone);
+  const agentKey = useStore((s) => hotkeysOf(s.prefs).agent);
+  const agentOpen = useStore((s) => s.agentOpen);
   return (
     <nav className="guild-rail glass" aria-label="Servidores">
-      <div className={`gel-slot${current == null && !agentView ? ' active' : ''}`}>
+      <div className={`gel-slot${current == null ? ' active' : ''}`}>
         <button
           className="gel home guild-icon"
           title="Início — amigos e conversas"
@@ -340,18 +351,6 @@ export function GuildRail() {
         </button>
         {badge > 0 && <span className="badge guild-badge">{badge > 99 ? '99+' : badge}</span>}
       </div>
-      {agent && (
-        <div className={`gel-slot${agentView ? ' active' : ''}`}>
-          <button
-            className="gel guild guild-icon agent-gel"
-            title="Assistente: peça o que precisar"
-            aria-label="Assistente"
-            onClick={() => useStore.getState().openAgent()}
-          >
-            <Sparkles size={22} />
-          </button>
-        </div>
-      )}
       <div className="rail-sep" />
       {guilds.map((g) => (
         <div key={g.id} className={`gel-slot${g.id === current ? ' active' : ''}`}>
@@ -399,6 +398,20 @@ export function GuildRail() {
         <Plus size={22} strokeWidth={2.6} />
       </button>
       <span className="rail-fill" />
+      {agent && (
+        <div className={`gel-slot${agentOpen ? ' active' : ''}`}>
+          <button
+            className="gel guild guild-icon agent-gel"
+            title={`Assistente: peça o que precisar sobre o que está na tela${agentKey ? ` (${formatHotkey(agentKey)})` : ''}`}
+            aria-label="Assistente"
+            aria-expanded={agentOpen}
+            data-agent-toggle=""
+            onClick={() => useStore.getState().toggleAgent()}
+          >
+            <Sparkles size={22} />
+          </button>
+        </div>
+      )}
       {adminAccess && (
         <button className="gel admin" title="Painel do administrador" aria-label="Painel do administrador" onClick={() => useStore.getState().goAdmin()}>
           <ChartColumn size={20} />
@@ -683,6 +696,9 @@ export function ChannelSidebar() {
   const phone = useLayout() === 'phone';
   const { openModal, toggleMusicPanel } = useStore.getState();
   const perms = usePerms(useStore, guildId);
+  const voiceMod = useStore(voiceOn);
+  const musicMod = useStore(musicOn);
+  const rolesMod = useStore(rolesOn);
 
   // Sons rápidos: sempre abaixo da lista (no celular, ficam na tela da chamada).
   const sounds = !phone && <SoundPanel />;
@@ -697,7 +713,7 @@ export function ChannelSidebar() {
     );
   }
 
-  if (sidebarView === 'music') {
+  if (sidebarView === 'music' && musicMod) {
     return (
       <aside className="sidebar glass music-side" aria-label="Fila de música">
         <MusicPanel />
@@ -715,14 +731,21 @@ export function ChannelSidebar() {
       <div className="side-head">
         <div className="side-title">{guild.name}</div>
         <div className="side-actions">
-          <button className="go" onClick={toggleMusicPanel} title="Fila de música">
-            <Music size={14} />
-            Música
-          </button>
+          {musicMod && (
+            <button className="go" onClick={toggleMusicPanel} title="Fila de música">
+              <Music size={14} />
+              Música
+            </button>
+          )}
           {perms.invite && (
             <button className="gloss" onClick={() => openModal({ type: 'invite', guild })} title="Convidar pessoas">
               <UserPlus size={14} />
               Convidar
+            </button>
+          )}
+          {rolesMod && perms.roles && (
+            <button className="gloss" title="Cargos do servidor" aria-label="Cargos do servidor" onClick={() => openModal({ type: 'roles', guildId: guild.id })}>
+              <Tags size={14} />
             </button>
           )}
           <button
@@ -744,14 +767,16 @@ export function ChannelSidebar() {
           guildId={guildId}
           activeId={view?.channelId}
         />
-        <ChannelGroup
-          title="Canais de voz"
-          type="voice"
-          list={voiceChannels}
-          canManage={perms.channels}
-          guildId={guildId}
-          activeId={view?.channelId}
-        />
+        {voiceMod && (
+          <ChannelGroup
+            title="Canais de voz"
+            type="voice"
+            list={voiceChannels}
+            canManage={perms.channels}
+            guildId={guildId}
+            activeId={view?.channelId}
+          />
+        )}
       </div>
       {sounds}
       <VoiceStatus />
@@ -889,8 +914,108 @@ function MemberRow({ m, isOn, ownerId, admin, guildId }) {
             <FormattedText text={game || fresh.bio || activity} size={14} />
           </span>
         )}
+        {/* os cargos vêm embaixo, sem tomar o lugar da mensagem pessoal */}
+        <RolePills guildId={guildId} userId={m.id} />
       </span>
     </button>
+    </>
+  );
+}
+
+/** Como a lista de membros se agrupa (guardado neste aparelho): por status ou por cargo. */
+const GROUP_KEY = 'padospeak.membersGroup';
+function useMembersGroup() {
+  const [mode, setMode] = useState(() => {
+    try {
+      return localStorage.getItem(GROUP_KEY) === 'roles' ? 'roles' : 'status';
+    } catch {
+      return 'status';
+    }
+  });
+  const pick = (m) => {
+    setMode(m);
+    try {
+      localStorage.setItem(GROUP_KEY, m);
+    } catch {
+      /* sem armazenamento: vale só agora */
+    }
+  };
+  return [mode, pick];
+}
+
+/** O botão de filtro da lista de membros: agrupar por online/offline ou por cargo. */
+function MembersFilter({ mode, onPick }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const away = (e) => !ref.current?.contains(e.target) && setOpen(false);
+    document.addEventListener('pointerdown', away);
+    return () => document.removeEventListener('pointerdown', away);
+  }, [open]);
+  const opts = [
+    ['status', 'Online e offline'],
+    ['roles', 'Cargos'],
+  ];
+  return (
+    <span className="members-filter" ref={ref}>
+      <button
+        type="button"
+        className={`gloss mini${mode === 'roles' ? ' pressed' : ''}`}
+        onClick={() => setOpen((v) => !v)}
+        title="Agrupar membros"
+        aria-label="Agrupar membros"
+        aria-expanded={open}
+      >
+        <ListFilter size={14} />
+      </button>
+      {open && (
+        <div className="members-filter-menu glass" role="menu" aria-label="Agrupar por">
+          <small>Agrupar por</small>
+          {opts.map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              role="menuitemradio"
+              aria-checked={mode === id}
+              onClick={() => {
+                onPick(id);
+                setOpen(false);
+              }}
+            >
+              <Check size={14} style={{ visibility: mode === id ? 'visible' : 'hidden' }} aria-hidden="true" />
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+    </span>
+  );
+}
+
+/** Um grupo que encolhe na lista de membros (um cargo, ou quem está sem cargo). */
+function MemberGroup({ id, title, list, guild, memberPerms, online, dot }) {
+  const [collapsed, toggle] = useCollapsed(id);
+  return (
+    <>
+      <GroupHeader
+        title={
+          dot ? (
+            <span className="role-group-title" style={{ '--role': dot }}>
+              <span className="role-dot" aria-hidden="true" />
+              {title}
+            </span>
+          ) : (
+            title
+          )
+        }
+        collapsed={collapsed}
+        onToggle={toggle}
+      />
+      {!collapsed &&
+        list.map((m) => (
+          <MemberRow key={m.id} m={m} isOn={Boolean(online[m.id])} ownerId={guild?.ownerId} admin={(memberPerms[m.id] & 1) !== 0} guildId={guild?.id} />
+        ))}
     </>
   );
 }
@@ -900,30 +1025,67 @@ function MemberList({ onClose, overlay = true }) {
   const members = useStore((s) => s.guildData[s.currentGuildId]?.members) || [];
   const memberPerms = useStore((s) => s.guildData[s.currentGuildId]?.perms) || NO_PERMS;
   const online = useStore((s) => s.online);
+  const roles = useRoles(guild?.id);
+  const [mode, setMode] = useMembersGroup();
   const on = members.filter((m) => online[m.id]);
   const off = members.filter((m) => !online[m.id]);
   const [onCollapsed, toggleOn] = useCollapsed('members:online');
   const [offCollapsed, toggleOff] = useCollapsed('members:offline');
+  const byRoles = mode === 'roles' && roles.length > 0;
+  // por cargo: quem está online primeiro em cada cargo; quem não tem cargo fica num grupo no fim
+  const onFirst = (list) => [...list.filter((m) => online[m.id]), ...list.filter((m) => !online[m.id])];
+  const loose = byRoles ? members.filter((m) => !roles.some((r) => r.members.includes(m.id))) : [];
   return (
     <aside className={`members glass${onClose && overlay ? ' members-over' : ''}${onClose && !overlay ? ' members-side' : ''}`} aria-label="Membros">
       <div className="panel-head">
         <span>Membros de {guild?.name}</span>
+        {roles.length > 0 && <MembersFilter mode={mode} onPick={setMode} />}
         {onClose && (
           <button className="gloss mini" onClick={onClose} title={overlay ? 'Fechar' : 'Recolher'} aria-label={overlay ? 'Fechar membros' : 'Recolher membros'}>
             <X size={14} />
           </button>
         )}
       </div>
-      <div className="members-list">
-        <GroupHeader title={`Online (${on.length})`} collapsed={onCollapsed} onToggle={toggleOn} />
-        {!onCollapsed && on.map((m) => (
-          <MemberRow key={m.id} m={m} isOn ownerId={guild?.ownerId} admin={(memberPerms[m.id] & 1) !== 0} guildId={guild?.id} />
-        ))}
-        {off.length > 0 && <GroupHeader title={`Offline (${off.length})`} collapsed={offCollapsed} onToggle={toggleOff} />}
-        {!offCollapsed && off.map((m) => (
-          <MemberRow key={m.id} m={m} isOn={false} ownerId={guild?.ownerId} admin={(memberPerms[m.id] & 1) !== 0} guildId={guild?.id} />
-        ))}
-      </div>
+      {byRoles ? (
+        <div className="members-list">
+          {roles.map((r) => {
+            const list = onFirst(members.filter((m) => r.members.includes(m.id)));
+            return (
+              <MemberGroup
+                key={r.id}
+                id={`members-role:${r.id}`}
+                title={`${r.name} (${list.filter((m) => online[m.id]).length}/${list.length})`}
+                dot={r.color}
+                list={list}
+                guild={guild}
+                memberPerms={memberPerms}
+                online={online}
+              />
+            );
+          })}
+          {loose.length > 0 && (
+            <MemberGroup
+              id={`members-role:none:${guild?.id}`}
+              title={`Sem cargo (${loose.filter((m) => online[m.id]).length}/${loose.length})`}
+              list={onFirst(loose)}
+              guild={guild}
+              memberPerms={memberPerms}
+              online={online}
+            />
+          )}
+        </div>
+      ) : (
+        <div className="members-list">
+          <GroupHeader title={`Online (${on.length})`} collapsed={onCollapsed} onToggle={toggleOn} />
+          {!onCollapsed && on.map((m) => (
+            <MemberRow key={m.id} m={m} isOn ownerId={guild?.ownerId} admin={(memberPerms[m.id] & 1) !== 0} guildId={guild?.id} />
+          ))}
+          {off.length > 0 && <GroupHeader title={`Offline (${off.length})`} collapsed={offCollapsed} onToggle={toggleOff} />}
+          {!offCollapsed && off.map((m) => (
+            <MemberRow key={m.id} m={m} isOn={false} ownerId={guild?.ownerId} admin={(memberPerms[m.id] & 1) !== 0} guildId={guild?.id} />
+          ))}
+        </div>
+      )}
     </aside>
   );
 }
@@ -944,7 +1106,6 @@ export function Main() {
   const membersOpen = useStore((s) => s.membersOpen);
   const voiceMembersOpen = useStore((s) => s.voiceMembersOpen);
   const home = useStore((s) => s.currentGuildId == null);
-  const agentChat = useStore(agentOn);
   const { openModal } = useStore.getState();
   const layout = useLayout();
   // Em telas estreitas (celular, tablet, janela pequena) a lista de membros abre por cima da conversa.
@@ -954,14 +1115,6 @@ export function Main() {
     useStore.setState(narrow ? { membersOpen: !membersOpen } : { showMembers: !desktopMembers });
 
   if (home) {
-    if (view?.type === 'agent' && agentChat)
-      return (
-        <main className="main glass agent-main">
-          <Suspense fallback={<div className="empty">Abrindo o assistente…</div>}>
-            <AgentView />
-          </Suspense>
-        </main>
-      );
     if (view?.type === 'dm') return <DmView key={`${view.conn}:${view.channelId}`} dmId={view.channelId} conn={view.conn} />;
     // Chamada de uma conversa que não é minha (fui chamado para ela).
     if (view?.type === 'call') return <GuestCall channelId={view.channelId} />;

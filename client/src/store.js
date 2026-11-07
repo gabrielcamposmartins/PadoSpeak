@@ -16,6 +16,7 @@ import { plain, mentionsUser } from './lib/text.js';
 import { syncPush, disablePush } from './lib/pwa.js';
 import { applyHotkeys, hotkeysOf } from './lib/hotkeys.js';
 import { NearbyProbe, deviceLabel } from './lib/nearby.js';
+import { voiceOn, musicOn, rolesOn } from './modules.js';
 
 /*
  * Conexões
@@ -143,6 +144,8 @@ export function channelNotifyLevel(n, channelId) {
 export const connRegistry = new Map();
 /** O jogo em foco no app do Windows ({ type, name, since } ou null), contado a todas as conexões. */
 let myActivity = null;
+/** Servidores cujos cargos estão sendo buscados (um pedido por vez). */
+const rolesLoading = new Set();
 /** Jogos já detectados que ficam guardados (para escolher nas listas sem digitar o nome). */
 const SEEN_GAMES_MAX = 40;
 export function setMyActivity(activity) {
@@ -315,6 +318,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
 
     guilds: [],
     guildData: {}, // id -> { channels, members }
+    guildRoles: {}, // guildId -> [{ id, name, color, perms, members: [userId] }] (veja roles.rs)
     currentGuildId: null,
     view: null, // { type: 'text' | 'voice' | 'dm' | 'friends', channelId, conn? }
     lastChannel: {},
@@ -366,7 +370,9 @@ export function createConnStore({ key, kind, base, primary = false }) {
     callInvites: [],
     sidebarView: 'channels', // channels | music
     agentStatus: null, // o que o assistente está fazendo agora (texto), ou null
-    agentFrom: null, // { guildId, channelId }: de onde a pessoa abriu o assistente ("aqui", "neste servidor")
+    agentAllowed: null, // o assistente está liberado para mim (o dono pode liberar só para algumas pessoas)
+    agentOpen: false, // o balão do assistente aberto por cima da tela
+    agentFocus: 0, // muda para o balão pôr o cursor na caixa de mensagem (atalho do assistente)
     music: {}, // canal de voz -> estado da fila (music:state)
     serverOffset: 0, // relógio do servidor − relógio local (ms)
     musicLibrary: { guildId: null, favorites: [], top: [] }, // favoritas e mais tocadas
@@ -419,6 +425,9 @@ export function createConnStore({ key, kind, base, primary = false }) {
     /** Regras dos arquivos (tamanhos e validades) e como está o disco. */
     adminFilePolicy: () => api.get('/api/admin/files'),
     saveFilePolicy: (policy, applyToGuilds = false) => api.put('/api/admin/files', { policy, applyToGuilds }),
+    /** Módulos do app (painel → Módulos); a resposta já vem com as dependências aplicadas. */
+    adminModules: () => api.get('/api/admin/modules'),
+    saveModules: (modules) => api.put('/api/admin/modules', modules),
     grantAdmin: (username) => api.put('/api/admin/viewers', { username }),
     revokeAdmin: (userId) => api.del(`/api/admin/viewers/${userId}`),
     /** Nós de mídia (SFU das chamadas e token da música, veja server/src/media). */
@@ -510,6 +519,9 @@ export function createConnStore({ key, kind, base, primary = false }) {
         me: null,
         guilds: [],
         guildData: {},
+        guildRoles: {},
+        agentOpen: false,
+        agentAllowed: null,
         messages: {},
         loadFailed: {},
         hasMore: {},
@@ -656,6 +668,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
           iceServers: d.iceServers || null,
         });
         get()._sendActivity();
+        get().loadAgentAccess();
         get().loadMarks();
         get().loadSounds();
         // O que mudou entre o carregamento inicial e a conexão (ou durante uma queda) não chegou por evento.
@@ -879,7 +892,26 @@ export function createConnStore({ key, kind, base, primary = false }) {
       // mudou e as notificações que alguém mandou por ele.
       rt.on('app:agent', ({ enabled }) => {
         set((s) => (s.config ? { config: { ...s.config, agent: Boolean(enabled) } } : {}));
-        if (!enabled && primary && ui().getState().view?.type === 'agent') get().goHome();
+        get().loadAgentAccess();
+        if (!enabled && primary && ui().getState().agentOpen) ui().setState({ agentOpen: false });
+      });
+      // O dono do app ligou ou desligou módulos (veja `modules.js`): o que saiu some da tela.
+      rt.on('app:modules', (modules) => {
+        const before = get();
+        set((st) => (st.config ? { config: { ...st.config, modules, agent: modules.agent === true } } : {}));
+        get().loadAgentAccess();
+        const now = get();
+        if (!primary) return;
+        if (!musicOn(now) && ui().getState().sidebarView === 'music') get().toggleMusicPanel();
+        if (!now.config?.agent && ui().getState().agentOpen) ui().setState({ agentOpen: false });
+        // os cargos dão permissões: some com eles (ou voltam a ser buscados quando alguém pedir)
+        if (rolesOn(before) !== rolesOn(now)) set({ guildRoles: {} });
+        if (!voiceOn(now) && now.voice) get().leaveVoice?.();
+      });
+      rt.on('agent:access', () => {
+        if (!primary) return;
+        ui().setState((st) => ({ agentAccess: (st.agentAccess || 0) + 1 }));
+        get().loadAgentAccess();
       });
       rt.on('agent:status', (d) => primary && ui().setState({ agentStatus: d.busy ? d.label || 'Pensando…' : null }));
       rt.on('agent:action', (a) => {
@@ -1011,6 +1043,8 @@ export function createConnStore({ key, kind, base, primary = false }) {
           return { guildData: { ...st.guildData, [guildId]: { ...g, members: [...g.members, user] } } };
         });
       });
+      // Cargos (veja roles.rs): a lista inteira do servidor a cada mudança.
+      rt.on('roles:update', ({ guildId, roles }) => set((st) => ({ guildRoles: { ...st.guildRoles, [guildId]: roles || [] } })));
       rt.on('member:left', ({ guildId, userId }) =>
         set((s) => {
           const g = s.guildData[guildId];
@@ -1049,7 +1083,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
       get().loadFriends();
       get().loadDms();
       if (kind === 'local') api.get('/api/lan/peers').then((lanPeers) => set({ lanPeers }), () => {});
-      set({ guilds, guildData: {}, messages: {}, hasMore: {} });
+      set({ guilds, guildData: {}, guildRoles: {}, messages: {}, hasMore: {} });
       const { currentGuildId } = get();
       const view = ui().getState().view;
       if (primary && currentGuildId && guilds.some((g) => g.id === currentGuildId)) {
@@ -1063,13 +1097,34 @@ export function createConnStore({ key, kind, base, primary = false }) {
     goHome() {
       ui().setState({ currentGuildId: null, view: { type: 'friends' }, sidebarView: 'channels', mobilePane: 'list' });
     },
-    /** Abre a conversa com o assistente, como uma conversa do Início (só no servidor principal). */
-    openAgent() {
+    /** Pergunta ao servidor se o assistente está liberado para mim (sem ele, o assistente nem aparece). */
+    async loadAgentAccess() {
+      if (!primary) return;
+      if (!get().config?.agent || !get().me) return set({ agentAllowed: false });
+      let allowed = false;
+      try {
+        allowed = (await api.get('/api/agent/access')).allowed === true;
+      } catch {
+        allowed = false;
+      }
+      set({ agentAllowed: allowed });
+      if (!allowed && ui().getState().agentOpen) ui().setState({ agentOpen: false });
+    },
+    /**
+     * Abre (ou fecha) o balão do assistente por cima da tela aberta, sem sair dela: o que está na tela vai
+     * junto de cada pedido (veja `lib/agentContext.js`). Só no servidor principal.
+     */
+    openAgent(on = true) {
+      if (!primary || (on && !agentOn(get()))) return;
+      ui().setState({ agentOpen: Boolean(on) });
+    },
+    toggleAgent() {
+      get().openAgent(!ui().getState().agentOpen);
+    },
+    /** Abre o balão (se não estiver aberto) com o cursor na caixa de mensagem, para já digitar. */
+    focusAgent() {
       if (!primary || !agentOn(get())) return;
-      const prev = ui().getState();
-      // de onde a pessoa veio: "aqui" e "neste servidor" no pedido são esse servidor e esse canal
-      const agentFrom = prev.view?.type === 'agent' ? prev.agentFrom : { guildId: prev.currentGuildId, channelId: prev.view?.channelId || null };
-      ui().setState({ currentGuildId: null, view: { type: 'agent' }, agentFrom, sidebarView: 'channels', mobilePane: 'detail' });
+      ui().setState((st) => ({ agentOpen: true, agentFocus: (st.agentFocus || 0) + 1 }));
     },
 
     async loadFriends() {
@@ -1463,6 +1518,8 @@ export function createConnStore({ key, kind, base, primary = false }) {
     async loadGuild(guildId) {
       const full = await api.get(`/api/guilds/${guildId}`);
       const { guild, data } = splitGuild(full);
+      // os cargos dão permissões: chegam junto com o servidor
+      if (get().guildRoles[guildId] === undefined) get().loadRoles(guildId);
       set((s) => ({
         guildData: { ...s.guildData, [guildId]: data },
         guilds: s.guilds.some((g) => g.id === guildId)
@@ -1579,6 +1636,34 @@ export function createConnStore({ key, kind, base, primary = false }) {
     },
 
     /** Cria um canal; `privateUsers` (lista de ids) cria já privado, só para essas pessoas (e admins). */
+    /* ---- cargos (veja roles.rs) ---- */
+    /** Os cargos do servidor (uma vez; depois chegam por `roles:update`). */
+    async loadRoles(guildId) {
+      if (!guildId || rolesLoading.has(guildId)) return;
+      // módulo Cargos desligado: o servidor não tem cargos (nem as permissões deles)
+      if (!rolesOn(get())) return set((st) => ({ guildRoles: { ...st.guildRoles, [guildId]: [] } }));
+      rolesLoading.add(guildId);
+      try {
+        const roles = await api.get(`/api/guilds/${guildId}/roles`);
+        set((st) => ({ guildRoles: { ...st.guildRoles, [guildId]: roles } }));
+      } catch {
+        /* sem acesso ou sem conexão: tenta de novo na próxima vez que alguém pedir */
+      } finally {
+        rolesLoading.delete(guildId);
+      }
+    },
+    async createRole(guildId, role) {
+      const roles = await api.post(`/api/guilds/${guildId}/roles`, role);
+      set((st) => ({ guildRoles: { ...st.guildRoles, [guildId]: roles } }));
+    },
+    async updateRole(guildId, roleId, patch) {
+      const roles = await api.patch(`/api/roles/${roleId}`, patch);
+      set((st) => ({ guildRoles: { ...st.guildRoles, [guildId]: roles } }));
+    },
+    async deleteRole(guildId, roleId) {
+      const roles = await api.del(`/api/roles/${roleId}`);
+      set((st) => ({ guildRoles: { ...st.guildRoles, [guildId]: roles } }));
+    },
     async createChannel(guildId, name, type, privateUsers = null) {
       const ch = await api.post(`/api/guilds/${guildId}/channels`, { name, type, ...(privateUsers ? { private: true, users: privateUsers } : {}) });
       set((s) => {
@@ -1955,6 +2040,10 @@ export function createConnStore({ key, kind, base, primary = false }) {
     },
     setScreenPreset: (preset) => voiceClient?.setScreenPreset(preset),
     setPeerVolume: (peerId, v) => voiceClient?.setPeerVolume(peerId, v),
+    /** Vídeo de alguém preso na tela: vai para o histórico do diagnóstico (veja `VoiceView`). */
+    noteVideo: (peerId, text) => voiceClient?.noteVideo(peerId, text),
+    /** A qualidade da chamada medida neste aparelho (o assistente manda junto do pedido). */
+    callQuality: () => voiceClient?.qualityReport() || null,
     /** Assistir (ou parar de assistir) a câmera ou a transmissão de alguém da chamada. */
     watchPeer: (peerId, kind, on) => voiceClient?.watch(peerId, kind, on),
     setStreamAudio: (peerId, opts) => voiceClient?.setStreamAudio(peerId, opts),
@@ -2427,12 +2516,28 @@ export function dropConn(key) {
 
 /** O servidor de comunidade (e a interface). */
 /** O assistente está ligado no servidor (o dono liga no painel do administrador). */
-export const agentOn = (s) => s.config?.agent === true && Boolean(s.me);
+/** O assistente aparece para mim: ligado no app, e liberado para mim pelo dono (veja `loadAgentAccess`). */
+export const agentOn = (s) => s.config?.agent === true && Boolean(s.me) && s.agentAllowed === true;
 
 export const useStore = createConnStore({ key: 'server', kind: 'server', base: savedServerUrl(), primary: true });
 syncConnKeys();
 
-// Atalhos de silenciar/ensurdecer (globais no app do Windows), refeitos quando a pessoa muda nas Configurações.
+/** App do Windows: traz a janela para a frente (minimizada, na bandeja ou atrás de outra). */
+async function bringAppToFront() {
+  if (!isTauri) return;
+  try {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    const w = getCurrentWindow();
+    await w.unminimize();
+    await w.show();
+    await w.setFocus();
+  } catch (e) {
+    console.warn('[atalhos] trazer a janela', e);
+  }
+}
+
+// Atalhos de silenciar/ensurdecer e do assistente (globais no app do Windows), refeitos quando a pessoa muda
+// nas Configurações (o do assistente só vale com ele ligado).
 if (!isPanel) {
   const hotkeyActions = {
     mute: () => {
@@ -2443,10 +2548,25 @@ if (!isPanel) {
       useStore.getState().toggleDeafen();
       playSound(useStore.getState().selfDeafened ? 'muteOn' : 'muteOff');
     },
+    // Abre o assistente pronto para digitar; com ele aberto e o cursor já na caixa, fecha.
+    agent: () => {
+      const s = useStore.getState();
+      if (!agentOn(s)) return;
+      bringAppToFront();
+      if (s.phase === 'admin') s.leaveAdmin();
+      const input = document.querySelector('.agent-pop textarea');
+      if (s.agentOpen && input && document.activeElement === input && document.hasFocus()) return s.openAgent(false);
+      s.focusAgent();
+    },
   };
-  applyHotkeys(hotkeysOf(useStore.getState().prefs), hotkeyActions);
+  const hotkeyMap = (s) => {
+    const map = hotkeysOf(s.prefs);
+    if (!agentOn(s)) delete map.agent;
+    return map;
+  };
+  applyHotkeys(hotkeyMap(useStore.getState()), hotkeyActions);
   useStore.subscribe((s, prev) => {
-    if (s.prefs.hotkeys !== prev.prefs.hotkeys) applyHotkeys(hotkeysOf(s.prefs), hotkeyActions);
+    if (s.prefs.hotkeys !== prev.prefs.hotkeys || agentOn(s) !== agentOn(prev)) applyHotkeys(hotkeyMap(s), hotkeyActions);
   });
 }
 
@@ -2527,15 +2647,25 @@ export const PERM = {
   SOUNDS: 8192,
   // Fixar e desafixar mensagens nos canais de texto.
   PIN: 16384,
+  // Criar, editar e apagar os cargos do servidor.
+  ROLES: 32768,
 };
-const ALL_PERMS = 32767;
+const ALL_PERMS = 65535;
 
-/** Bits de um membro: os da lista personalizada, ou o padrão do servidor. */
+/** Bits de um membro: os da lista personalizada, ou o padrão do servidor, mais os dos cargos dele. */
 export function memberBits(s, guildId, userId) {
   const guild = s.guilds.find((g) => g.id === guildId);
   if (guild && guild.ownerId === userId) return ALL_PERMS;
   const custom = s.guildData[guildId]?.perms?.[userId];
-  return custom ?? guild?.defaultPerms ?? PERM.INVITE;
+  return (custom ?? guild?.defaultPerms ?? PERM.INVITE) | roleBits(s, guildId, userId);
+}
+
+/** As permissões que os cargos da pessoa dão (nunca administrador; nada com o módulo desligado). */
+export function roleBits(s, guildId, userId) {
+  if (!rolesOn(s)) return 0;
+  let bits = 0;
+  for (const r of s.guildRoles?.[guildId] || []) if (r.perms && r.members.includes(userId)) bits |= r.perms;
+  return bits & ~PERM.ADMIN;
 }
 
 /**
@@ -2577,6 +2707,7 @@ const permFlags = (owner, bits) => {
     musicClear: has(PERM.MUSIC_CLEAR),
     sounds: has(PERM.SOUNDS),
     pin: has(PERM.PIN),
+    roles: has(PERM.ROLES),
   };
 };
 

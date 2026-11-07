@@ -5,6 +5,7 @@ export function plain(text) {
   return String(text ?? '')
     .replace(/\[cor=#[0-9a-fA-F]{6}\]/g, '')
     .replace(/\[\/cor\]/g, '')
+    .replace(/\[\/?[bius]\]/g, '')
     .replace(/\*\*|__|~~/g, '')
     .replace(/\*(?=\S)([^*\n]*?\S)\*/g, '$1');
 }

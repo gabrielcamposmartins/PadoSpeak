@@ -260,9 +260,21 @@ export default function MediaAdmin() {
           <h4>
             <Radio size={15} /> Chamadas e música
           </h4>
+          <label className="checkbox">
+            <input type="checkbox" checked={Boolean(s.sfuAlways)} disabled={ro || busy} onChange={(e) => save({ sfuAlways: e.target.checked })} />
+            <span>
+              Sempre usar o SFU
+              <small className="check-hint">
+                Toda chamada passa pelo nó de mídia, mesmo com 1 ou 2 pessoas e nas conversas privadas. Sem isto, a chamada começa com conexão
+                direta entre os aparelhos e passa para o SFU a partir do número de pessoas abaixo. Ligando, as chamadas em andamento passam
+                para o SFU na hora; desligando, as que já estão nele continuam até esvaziar. Quem não consegue chegar ao nó continua com conexão
+                direta com cada um. Só vale com um nó de pé.
+              </small>
+            </span>
+          </label>
           <label className="field" htmlFor="ma-min">
             <span>Canais de voz passam para o SFU a partir de</span>
-            <select id="ma-min" value={s.sfuMinPeople} disabled={ro || busy} onChange={(e) => save({ sfuMinPeople: Number(e.target.value) })}>
+            <select id="ma-min" value={s.sfuMinPeople} disabled={ro || busy || Boolean(s.sfuAlways)} onChange={(e) => save({ sfuMinPeople: Number(e.target.value) })}>
               {[2, 3, 4, 5, 6, 8, 10].map((n) => (
                 <option key={n} value={n}>
                   {n} pessoas

@@ -58,6 +58,7 @@ import {
   Music2,
   KeyRound,
   Sparkles,
+  Tags,
 } from 'lucide-react';
 import {
   useStore,
@@ -76,6 +77,7 @@ import {
   FONT_SCALES,
   fontScaleOf,
   agentOn,
+  roleBits,
 } from '../store.js';
 import AgentKeys from './AgentKeys.jsx';
 import { CallInviteModal } from './CallInvite.jsx';
@@ -91,13 +93,17 @@ import Avatar, { useUser, UserName, colorClass, colorStyle, Orb } from './Avatar
 import LatencyChart from './LatencyChart.jsx';
 import { TitleBar } from './Aero.jsx';
 import { FormattedText, Floating, TEXT_COLORS } from './Emotes.jsx';
-import FormatTools, { formatKey, usePalette, DEFAULT_PALETTE, SHORTCUTS, MOD } from './FormatTools.jsx';
+import FormatTools, { usePalette, DEFAULT_PALETTE, SHORTCUTS, MOD } from './FormatTools.jsx';
+import RichInput from './RichInput.jsx';
+import { voiceOn, musicOn, soundsOn, rolesOn } from '../modules.js';
+import { RolesManager, RolePills, useUserRoles } from './Roles.jsx';
 import { fmtSize, fmtLeft, useNow, DownloadLink, ttlWords } from './Files.jsx';
 import { plain, visibleLength } from '../lib/text.js';
 import changelogMd from '../changelog.md?raw';
 import { useLoginLock, LoginLock } from './LoginLock.jsx';
 import {
   HOTKEY_ACTIONS,
+  AGENT_HOTKEY,
   DEFAULT_HOTKEYS,
   hotkeysOf,
   formatHotkey,
@@ -128,6 +134,7 @@ const TITLES = {
   sounds: 'Sons rápidos',
   userSounds: 'Sons',
   callInvite: 'Chamar para a chamada',
+  roles: 'Cargos do servidor',
 };
 
 /** Fundo do banner do perfil (acima da foto) a partir de uma cor. */
@@ -311,7 +318,8 @@ function ChannelModal({ close, guildId, channelType, channelId }) {
   const ownerId = useStore((s) => s.guilds.find((g) => g.id === guildId)?.ownerId);
   const perms = usePerms(useStore, guildId);
   const editing = Boolean(channel);
-  const [type, setType] = useState(channel?.type || channelType || 'text');
+  const voiceMod = useStore(voiceOn);
+  const [type, setType] = useState(channel?.type || (voiceMod ? channelType : null) || 'text');
   const [name, setName] = useState(channel?.name || '');
   const [isPrivate, setPrivate] = useState(Boolean(channel?.private));
   const [allowed, setAllowed] = useState(() => new Set(access || []));
@@ -332,7 +340,7 @@ function ChannelModal({ close, guildId, channelType, channelId }) {
       <div className="modal-body">
         <h2>{editing ? `Editar ${type === 'text' ? '#' : ''}${channel.name}` : 'Criar canal'}</h2>
         <p className="sub">&nbsp;</p>
-        {!editing && (
+        {!editing && voiceMod && (
           <>
             <div className={`radio-card${type === 'text' ? ' active' : ''}`} onClick={() => setType('text')}>
               <Hash />
@@ -1131,6 +1139,8 @@ function VoiceHotkeys() {
   const prefs = useStore((s) => s.prefs);
   const map = hotkeysOf(prefs);
   const set = (action) => (value) => useStore.getState().setAppearance({ hotkeys: { ...hotkeysOf(useStore.getState().prefs), [action]: value } });
+  // com o assistente ligado, o atalho dele também conta como já usado
+  const all = useStore(agentOn) ? [...HOTKEY_ACTIONS, AGENT_HOTKEY] : HOTKEY_ACTIONS;
   return (
     <>
       <div className="settings-sec">Atalhos de voz</div>
@@ -1140,7 +1150,7 @@ function VoiceHotkeys() {
           action={a.id}
           label={a.label}
           value={map[a.id]}
-          others={HOTKEY_ACTIONS.filter((o) => o.id !== a.id).map((o) => ({ label: o.label, value: map[o.id] }))}
+          others={all.filter((o) => o.id !== a.id).map((o) => ({ label: o.label, value: map[o.id] }))}
           onChange={set(a.id)}
         />
       ))}
@@ -1154,6 +1164,64 @@ function VoiceHotkeys() {
           : 'Funcionam com o PadoSpeak aberto e em foco (o navegador não deixa usar atalhos com a janela em segundo plano). Para usar em qualquer lugar, use o app para Windows.'}
       </p>
     </>
+  );
+}
+
+/**
+ * Configurações → Assistente: onde o assistente fica (no pé do trilho dos servidores, ou flutuante no canto
+ * inferior direito) e o atalho que abre o balão já com o cursor na caixa de mensagem. Ficam neste aparelho.
+ */
+function AgentPrefs() {
+  const prefs = useStore((s) => s.prefs);
+  const place = prefs?.agentPlace === 'float' ? 'float' : 'rail';
+  const map = hotkeysOf(prefs);
+  const setPlace = (v) => useStore.getState().setAppearance({ agentPlace: v });
+  const setKey = (value) => useStore.getState().setAppearance({ hotkeys: { ...hotkeysOf(useStore.getState().prefs), agent: value } });
+  const phone = currentLayout() === 'phone';
+  return (
+    <div className="agent-prefs">
+      <h3>Assistente</h3>
+      <div className="settings-sec">Onde ele fica</div>
+      <div className="agent-place" role="radiogroup" aria-label="Onde o assistente fica">
+        {[
+          ['rail', 'No trilho dos servidores', 'O ícone fica no pé do trilho, à esquerda, e o balão abre ao lado dele.'],
+          ['float', 'Flutuante, no canto inferior direito', 'Um botão redondo no canto da tela, e o balão abre logo acima dele.'],
+        ].map(([v, name, hint]) => (
+          <label key={v} className={`agent-place-opt${place === v ? ' on' : ''}`}>
+            <input type="radio" name="agent-place" value={v} className="sr-only" checked={place === v} onChange={() => setPlace(v)} />
+            <span className={`agent-place-mini ${v}`} aria-hidden="true">
+              <i className="apm-rail" />
+              <i className="apm-dot" />
+              <i className="apm-pop" />
+            </span>
+            <span className="agent-place-text">
+              <b>{name}</b>
+              <small>{hint}</small>
+            </span>
+          </label>
+        ))}
+      </div>
+      {phone && <p className="kv">No celular o assistente abre como uma folha embaixo da tela, pelo trilho dos servidores ou pela sua conta.</p>}
+      {(isTauri || !touchDevice) && (
+        <>
+          <div className="settings-sec">Atalho</div>
+          <HotkeyField
+            action={AGENT_HOTKEY.id}
+            label={AGENT_HOTKEY.label}
+            value={map.agent}
+            others={HOTKEY_ACTIONS.map((o) => ({ label: o.label, value: map[o.id] }))}
+            onChange={setKey}
+          />
+          <p className="kv">
+            Abre o balão com o cursor na caixa de mensagem, para já começar a digitar. Com ele aberto e o cursor lá, o mesmo
+            atalho fecha.{' '}
+            {isTauri
+              ? 'Funciona em qualquer lugar do Windows: traz o PadoSpeak para a frente com o assistente aberto.'
+              : 'Funciona com o PadoSpeak aberto e em foco (o navegador não deixa usar atalhos com a janela em segundo plano).'}
+          </p>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -1732,6 +1800,7 @@ function SettingsModal({ close, tab: startTab, focus }) {
           {tab === 'apps' && <AppsTab />}
           {tab === 'assistente' && agentMod && (
             <section className="settings-col">
+              <AgentPrefs />
               <AgentKeys scope="me" />
             </section>
           )}
@@ -1961,6 +2030,18 @@ function sinceText(t) {
   return min < 60 ? `${min} min` : `${Math.floor(min / 60)} h${min % 60 ? ` ${min % 60} min` : ''}`;
 }
 
+/** Os cargos da pessoa no servidor aberto (no perfil, junto da mensagem pessoal). */
+function ProfileRoles({ guildId, userId }) {
+  const roles = useUserRoles(guildId, userId);
+  if (!roles.length) return null;
+  return (
+    <section>
+      <h4>Cargos</h4>
+      <RolePills guildId={guildId} userId={userId} />
+    </section>
+  );
+}
+
 function ProfileModal({ close, userId, conn }) {
   return (
     <ConnProvider conn={conn}>
@@ -1984,6 +2065,8 @@ function ProfileCard({ close, userId }) {
   const known = useC((s) => s.users[userId] || s.friends[userId]?.user || (s.me?.id === userId ? s.me : null));
   const user = useUser(profile?.user || known);
   const { openDm, callUser, sendFriendRequest, acceptFriend, removeFriend } = useC.getState();
+  const voiceMod = useC(voiceOn);
+  const roleGuild = useStore((s) => s.currentGuildId || null);
   const { openModal } = useStore.getState();
 
   useEffect(() => {
@@ -2049,6 +2132,7 @@ function ProfileCard({ close, userId }) {
             </p>
           </section>
         )}
+        {useC === useStore && roleGuild && <ProfileRoles guildId={roleGuild} userId={userId} />}
         <section>
           <h4>Membro desde</h4>
           <p>{profile ? fmtDate(profile.createdAt) : '…'}</p>
@@ -2080,9 +2164,11 @@ function ProfileCard({ close, userId }) {
             <button className="btn" onClick={run(async () => (await openDm(userId), close()))}>
               <MessageSquare size={16} /> Mensagem
             </button>
-            <button className="btn green" onClick={run(async () => (close(), await callUser(userId)))}>
-              <Phone size={16} /> Ligar
-            </button>
+            {voiceMod && (
+              <button className="btn green" onClick={run(async () => (close(), await callUser(userId)))}>
+                <Phone size={16} /> Ligar
+              </button>
+            )}
             {isServer && !status && !blocked && (
               <button className="btn secondary" onClick={run(() => sendFriendRequest(user.username))}>
                 <UserPlus size={16} /> Adicionar amigo
@@ -2194,28 +2280,27 @@ async function prepareAvatar(file, { animated = false } = {}) {
  */
 function ProfileField({ id, label, value, setValue, max, maxRaw, multiline, placeholder, required, hint }) {
   const ref = useRef(null);
-  const Input = multiline ? 'textarea' : 'input';
   const set = (next) => {
     if (visibleLength(next) > max) return useStore.getState().notify(`Esse campo aceita até ${max} caracteres`, 'info');
     setValue(next);
   };
   return (
     <div className="field profile-field">
-      <label htmlFor={id}>
+      <label htmlFor={id} onClick={() => ref.current?.focus()}>
         <span>{label}</span>
       </label>
-      <FormatTools inputRef={ref} text={value} setText={set} maxRaw={maxRaw} label={`Formatação: ${label}`} />
-      <Input
+      <FormatTools inputRef={ref} label={`Formatação: ${label}`} />
+      <RichInput
         id={id}
         ref={ref}
+        multiline={multiline}
         rows={multiline ? 3 : undefined}
         value={value}
-        onChange={(e) => set(e.target.value)}
-        onKeyDown={(e) => formatKey(e, ref.current, value, set, maxRaw)}
+        onChange={set}
         maxLength={maxRaw}
         placeholder={placeholder}
-        required={required}
-        style={multiline ? { resize: 'none' } : undefined}
+        aria-label={label}
+        aria-required={required || undefined}
       />
       {hint}
     </div>
@@ -2241,6 +2326,8 @@ function EditProfileModal({ close }) {
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef(null);
   const { busy, error, run } = useAction(async () => {
+    // o campo do nome não é um <input>: o "obrigatório" é conferido aqui
+    if (!plain(name).trim()) throw new Error('Escreva o seu nome');
     await prim.getState().updateProfile({ displayName: name, bio, nameColor: '', bioColor: '', bannerColor: banner || '' });
     syncProfileEverywhere();
   }, close);
@@ -2857,6 +2944,7 @@ const PERM_OPTIONS = [
   { bit: PERM.INVITE, flag: 'invite', label: 'Convidar pessoas', hint: 'Vê e compartilha o convite', icon: UserPlus },
   { bit: PERM.CHANNELS, flag: 'channels', label: 'Criar e editar canais', hint: 'Cria, renomeia e exclui canais', icon: Hash },
   { bit: PERM.PIN, flag: 'pin', label: 'Fixar mensagens', hint: 'Fixa e desafixa mensagens nos canais de texto', icon: Pin },
+  { bit: PERM.ROLES, flag: 'roles', label: 'Gerenciar cargos', hint: 'Cria, edita e apaga os cargos do servidor e escolhe quem tem cada um', icon: Tags },
   { bit: PERM.MUTE, flag: 'mute', label: 'Silenciar na voz', hint: 'Silencia alguém para todos no canal de voz', icon: MicOff },
   { bit: PERM.DISCONNECT, flag: 'disconnect', label: 'Desconectar da voz', hint: 'Tira alguém do canal de voz', icon: PhoneOff },
   { bit: PERM.MOVE, flag: 'move', label: 'Mover entre canais', hint: 'Move alguém para outro canal de voz', icon: ArrowRightLeft },
@@ -2872,7 +2960,7 @@ const PERM_OPTIONS = [
 const opt = (bit) => PERM_OPTIONS.find((o) => o.bit === bit);
 /** As permissões em categorias, para a tela de permissões. */
 const PERM_GROUPS = [
-  { id: 'geral', title: 'Geral', icon: Settings2, perms: [PERM.ADMIN, PERM.INVITE, PERM.CHANNELS, PERM.PIN].map(opt) },
+  { id: 'geral', title: 'Geral', icon: Settings2, perms: [PERM.ADMIN, PERM.INVITE, PERM.CHANNELS, PERM.PIN, PERM.ROLES].map(opt) },
   { id: 'voz', title: 'Voz', icon: Mic, perms: [PERM.MUTE, PERM.DISCONNECT, PERM.MOVE, PERM.SOUNDS].map(opt) },
   {
     id: 'musica',
@@ -2898,32 +2986,41 @@ const countBits = (bits) => PERM_OPTIONS.filter((o) => o.bit !== PERM.ADMIN && (
  * As permissões em categorias (Geral, Voz, Música), uma caixa de marcar por linha com a explicação embaixo.
  * `admin`: mostra "Administrador" (só na lista personalizada); com ele marcado, as outras ficam marcadas.
  */
-function PermGroups({ bits, onToggle, disabled, admin = false, adminLocked = false, who }) {
+function PermGroups({ bits, onToggle, disabled, admin = false, adminLocked = false, who, fromRoles = 0 }) {
   const isAdmin = admin && (bits & PERM.ADMIN) !== 0;
+  const sounds = useStore(soundsOn);
+  const music = useStore(musicOn);
+  const calls = useStore(voiceOn);
+  const roles = useStore(rolesOn);
   return (
     <div className="perm-groups">
-      {PERM_GROUPS.map((g) => (
+      {PERM_GROUPS.filter((g) => (music || g.id !== 'musica') && (calls || g.id !== 'voz')).map((g) => (
         <fieldset key={g.id} className="perm-group">
           <legend>
             <g.icon size={14} aria-hidden="true" /> {g.title}
           </legend>
           {g.perms
-            .filter((o) => admin || o.bit !== PERM.ADMIN)
+            .filter((o) => (admin || o.bit !== PERM.ADMIN) && (sounds || o.bit !== PERM.SOUNDS) && (roles || o.bit !== PERM.ROLES))
             .map((o) => {
               const implied = isAdmin && o.bit !== PERM.ADMIN;
+              // dada por um cargo da pessoa: aparece marcada, mas muda-se no cargo
+              const role = !implied && (bits & o.bit) === 0 && (fromRoles & o.bit) !== 0;
               return (
                 <label key={o.bit} className={`perm-row${o.bit === PERM.ADMIN ? ' admin' : ''}`}>
                   <input
                     type="checkbox"
-                    checked={(bits & o.bit) !== 0 || implied}
-                    disabled={disabled || implied || (o.bit === PERM.ADMIN && adminLocked)}
+                    checked={(bits & o.bit) !== 0 || implied || role}
+                    disabled={disabled || implied || role || (o.bit === PERM.ADMIN && adminLocked)}
                     aria-label={`${o.label}: ${who}`}
                     onChange={(e) => onToggle(o.bit, e.target.checked)}
                   />
                   <o.icon size={15} aria-hidden="true" />
                   <span>
                     {o.label}
-                    <small>{o.hint}</small>
+                    <small>
+                      {o.hint}
+                      {role && ' · vem de um cargo'}
+                    </small>
                   </span>
                 </label>
               );
@@ -2945,6 +3042,10 @@ function GuildMembers({ guildId, perms: mine }) {
   const guild = useStore((s) => s.guilds.find((g) => g.id === guildId));
   const members = useStore((s) => s.guildData[guildId]?.members) || [];
   const custom = useStore((s) => s.guildData[guildId]?.perms) || {};
+  // as permissões que vêm dos cargos de cada um (somadas às dele)
+  const roleList = useStore((s) => s.guildRoles[guildId]);
+  const rolesMod = useStore(rolesOn);
+  const fromRoles = (m) => (roleList && rolesMod ? roleBits({ guildRoles: { [guildId]: roleList }, config: { modules: { roles: true } } }, guildId, m.id) : 0);
   const [busy, setBusy] = useState(null);
   const [sel, setSel] = useState('default');
   const [q, setQ] = useState('');
@@ -2962,9 +3063,10 @@ function GuildMembers({ guildId, perms: mine }) {
   const isCustom = (m) => m.id in custom;
   const summary = (m) => {
     if (m.id === ownerId) return 'Dono · todas';
-    if (!isCustom(m)) return 'Padrão';
+    const plus = fromRoles(m) ? ' + cargos' : '';
+    if (!isCustom(m)) return `Padrão${plus}`;
     const bits = custom[m.id] || 0;
-    return bits & PERM.ADMIN ? 'Administrador' : `Personalizado · ${countBits(bits)}/${PERM_COUNT}`;
+    return bits & PERM.ADMIN ? 'Administrador' : `Personalizado · ${countBits(bits)}/${PERM_COUNT}${plus}`;
   };
 
   const run = async (id, fn) => {
@@ -3066,6 +3168,7 @@ function GuildMembers({ guildId, perms: mine }) {
         admin
         adminLocked={!mine.owner}
         who={name(picked)}
+        fromRoles={isAdmin ? 0 : fromRoles(picked)}
         disabled={busy === picked.id || locked}
         onToggle={(bit, on) => toggle(picked, bit, on)}
       />
@@ -3384,6 +3487,18 @@ function describe(e, channelName) {
           {d.name ? <> (nome: “{d.name}”)</> : null}
         </>
       );
+    case 'settings.role_create':
+      return <>{a} criou o cargo {d.name}</>;
+    case 'settings.role_update':
+      return <>{a} mudou o cargo {d.name}</>;
+    case 'settings.role_perms':
+      return (
+        <>
+          {a} deu ao cargo {d.name}: {d.perms ? permNames(d.perms) : 'nenhuma permissão'}
+        </>
+      );
+    case 'settings.role_delete':
+      return <>{a} apagou o cargo {d.name}</>;
     case 'settings.perms':
       return d.custom === false ? (
         <>
@@ -3784,7 +3899,21 @@ function GuildSettingsModal({ guildId, tab: startTab }) {
   );
 }
 
-const SIZES = { diagnostics: 'wide', settings: 'settings', guildSettings: 'gs-window', changelog: 'wide', sounds: 'wide' };
+const SIZES = { diagnostics: 'wide', settings: 'settings', guildSettings: 'gs-window', changelog: 'wide', sounds: 'wide', roles: 'roles-window' };
+
+/** Cargos do servidor (botão ao lado de Convidar): os cargos, quem tem cada um e as permissões que dão. */
+function RolesModal({ guildId }) {
+  const perms = usePerms(useStore, guildId);
+  return (
+    <div className="modal-body roles-body">
+      <RolesManager
+        guildId={guildId}
+        perms={perms}
+        renderPerms={(bits, onToggle, disabled, who) => <PermGroups bits={bits} onToggle={onToggle} disabled={disabled} who={who} />}
+      />
+    </div>
+  );
+}
 
 const MODALS = {
   serverLogin: ServerLoginModal,
@@ -3803,6 +3932,7 @@ const MODALS = {
   sounds: SoundsModal,
   userSounds: UserSoundsModal,
   callInvite: CallInviteModal,
+  roles: RolesModal,
 };
 
 export default function Modals() {

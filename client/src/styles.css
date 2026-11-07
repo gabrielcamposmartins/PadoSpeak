@@ -691,7 +691,8 @@ button:disabled {
 }
 input:not([type='range']):not([type='checkbox']):not([type='radio']):not([type='file']),
 select,
-textarea {
+textarea,
+.rich-input {
   font: inherit;
   font-size: 14px;
   color: var(--text);
@@ -713,7 +714,8 @@ textarea::placeholder {
 }
 input:focus,
 select:focus,
-textarea:focus {
+textarea:focus,
+.rich-input:focus {
   border-color: var(--input-focus);
 }
 input:disabled,
@@ -733,7 +735,8 @@ input[type='checkbox'] {
 }
 input:focus-visible,
 select:focus-visible,
-textarea:focus-visible {
+textarea:focus-visible,
+.rich-input:focus-visible {
   outline: none;
   box-shadow:
     var(--input-shadow),
@@ -2356,7 +2359,8 @@ html:not([data-touch]) .channel:hover .call-timer:has(~ .ch-del) {
   gap: 8px;
   align-items: stretch;
 }
-.compose-row textarea {
+.compose-row textarea,
+.compose-row .rich-input {
   flex: 1;
   min-width: 0;
   height: 52px;
@@ -2539,7 +2543,8 @@ html:not([data-touch]) .channel:hover .call-timer:has(~ .ch-del) {
 .chat.dm .compose-row {
   padding: 8px 10px;
 }
-.chat.dm .compose-row textarea {
+.chat.dm .compose-row textarea,
+.chat.dm .compose-row .rich-input {
   height: 74px;
   border: 0;
   background: transparent;
@@ -6345,6 +6350,7 @@ html[data-layout='phone'] body {
 }
 html[data-touch] input:not([type='range']):not([type='checkbox']):not([type='radio']):not([type='file']),
 html[data-touch] textarea,
+html[data-touch] .rich-input,
 html[data-touch] select {
   font-size: max(16px, calc(16px * var(--fs, 1)));
 }
@@ -6610,7 +6616,8 @@ html[data-touch] .msg .tools .icon-btn {
 .mobile-app .dm-ringing {
   font-size: 11px;
 }
-.mobile-app .chat.dm .compose-row textarea {
+.mobile-app .chat.dm .compose-row textarea,
+.mobile-app .chat.dm .compose-row .rich-input {
   height: 48px;
 }
 .mobile-app .send-btn {
@@ -12917,4 +12924,616 @@ html[data-kb] .m-tabs {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ---------- Formatação direto no campo (RichInput.jsx) ---------- */
+.rich-input {
+  display: block;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-y: auto;
+  cursor: text;
+  text-align: left;
+}
+.rich-input.single {
+  white-space: pre;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.rich-input.single::-webkit-scrollbar {
+  display: none;
+}
+.rich-input[data-empty]::before {
+  content: attr(data-placeholder);
+  float: left;
+  width: 0;
+  white-space: nowrap;
+  color: var(--faint);
+  pointer-events: none;
+}
+.rich-input .re-emote {
+  width: calc(1.3em);
+  height: calc(1.3em);
+  margin: 0 1px;
+  vertical-align: -0.3em;
+}
+.rich-input b,
+.rich-input strong {
+  font-weight: 700;
+}
+/* as cores ficam um pouco mais claras no tema escuro, como no texto já enviado */
+:root[data-theme='dark'] .rich-input font[color] {
+  filter: brightness(1.45);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .rich-input font[color] {
+    filter: brightness(1.45);
+  }
+}
+.edit-box .rich-input {
+  max-height: 220px;
+}
+.profile-field .rich-input.multi {
+  max-height: 160px;
+}
+
+/* ---------- Painel → Módulos (modules.js) ---------- */
+.adm-modules .checkbox {
+  margin: 10px 0;
+}
+/* módulos que dependem das chamadas: um recuo, logo abaixo dela */
+.adm-modules .adm-module-sub {
+  margin-left: 26px;
+}
+
+/* ---------- Cargos dos servidores (Roles.jsx, vindos dos times do HardLine) ---------- */
+
+/* as cápsulas da pessoa: sempre uma linha; o que não cabe vira "+N" no fim (Roles.jsx mede numa cópia escondida) */
+.role-pills {
+  position: relative;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 3px;
+  margin-top: 2px;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+.role-pills > .role-pill {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.role-pills > .role-pill.more {
+  flex: none;
+}
+.role-pills-measure {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  gap: inherit;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.role-pills-measure > .role-pill {
+  flex: none;
+}
+.role-pill {
+  --role: #1a8fd6;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 140px;
+  height: 18px;
+  padding: 0 8px;
+  border-radius: 9px;
+  border: 1px solid color-mix(in srgb, var(--role) 80%, #000);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--role) 72%, #fff), var(--role));
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.3);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  white-space: nowrap;
+}
+.role-pill-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.friend-text .role-pills .role-pill,
+.member-text .role-pills .role-pill {
+  font-size: 11px;
+  color: #fff;
+}
+.friend-text .role-pills .role-pill-name,
+.member-text .role-pills .role-pill-name {
+  font-size: 11px;
+  color: inherit;
+}
+/* na lista de membros do servidor, as cápsulas têm 3/4 do tamanho */
+.member-text .role-pills {
+  gap: 2px;
+  margin-top: 1px;
+}
+.member-text .role-pills .role-pill {
+  height: 13.5px;
+  max-width: 105px;
+  padding: 0 6px;
+  border-radius: 7px;
+  font-size: 8.25px;
+  text-shadow: none;
+}
+.member-text .role-pills .role-pill-name {
+  font-size: 8.25px;
+}
+.role-pill.more {
+  --role: #8a9bb0;
+}
+.role-pill.pick {
+  height: 24px;
+  padding: 0 11px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.role-pill.pick.off {
+  background: var(--panel);
+  color: var(--role);
+  text-shadow: none;
+  border-color: color-mix(in srgb, var(--role) 55%, transparent);
+}
+.role-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--role, #1a8fd6);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  flex: none;
+}
+.role-dot-lg {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  border: 1px solid color-mix(in srgb, var(--role) 75%, #000);
+}
+.role-group-title {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+/* "+" discreto que abre a busca de pessoas (agenda e cargos) */
+.people-picker {
+  position: relative;
+  display: inline-flex;
+}
+.people-add {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px dashed var(--row-hover-border);
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.people-add:hover,
+.people-add.on {
+  border-style: solid;
+  color: var(--link);
+  background: var(--row-hover);
+}
+.people-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  width: 280px;
+  max-width: calc(100vw - 40px);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--window-border);
+  border-radius: 9px;
+  background: var(--window);
+  box-shadow: 0 12px 30px rgba(5, 50, 100, 0.25);
+}
+.people-found {
+  display: flex;
+  flex-direction: column;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.people-found .kv {
+  margin: 4px;
+}
+.people-opt {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+.people-opt:hover,
+.people-opt:focus-visible {
+  background: var(--row-hover);
+}
+.people-opt small {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+.role-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+.role-search input {
+  flex: 1;
+  min-width: 0;
+}
+/* janela Cargos: os cargos à esquerda, o escolhido à direita (como Membros e permissões) */
+.modal.roles-window {
+  max-width: none;
+  width: min(900px, 100%);
+  height: min(640px, calc(100vh - 32px - var(--frame-h, 0px)));
+}
+.roles-body {
+  flex: 1;
+}
+.roles-split .pm-list {
+  max-height: none;
+}
+.role-new {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 6px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.role-new > input {
+  flex: 1;
+  min-width: 0;
+}
+.role-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.role-detail .field {
+  margin: 0;
+}
+.role-name {
+  flex: 1;
+  min-width: 120px;
+  font-weight: 600;
+}
+.role-name-ro {
+  flex: 1;
+  font-size: 15px;
+}
+.role-colors {
+  flex-wrap: wrap;
+}
+.role-confirm {
+  display: flex;
+  gap: 4px;
+}
+.role-block {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--area);
+}
+.role-block > .kv {
+  margin: 6px 0;
+}
+.role-block-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink);
+  font-size: 13px;
+}
+.role-block-head .people-picker {
+  margin-left: auto;
+}
+.role-people {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 4px;
+  margin-top: 8px;
+}
+.role-person {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px 5px 5px;
+  border: 1px solid var(--line-soft);
+  border-left: 3px solid var(--role);
+  border-radius: 7px;
+  background: var(--panel);
+  font-size: 13px;
+  color: var(--text);
+  min-width: 0;
+}
+.role-person-name {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+}
+.role-person-name > * {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.role-person-name small {
+  font-size: 11px;
+  color: var(--muted);
+}
+.role-block .perm-groups {
+  margin-top: 6px;
+  grid-template-columns: minmax(0, 1fr);
+}
+.role-x {
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 14px;
+  padding: 0 0 0 2px;
+}
+.role-x:hover {
+  color: #d5251a;
+}
+.role-section {
+  margin-bottom: 10px;
+}
+.role-block-head .people-pop {
+  left: auto;
+  right: 0;
+}
+.pm-detail-head .role-dot-lg,
+.pm-item .role-dot-lg {
+  flex: 0 0 14px;
+  width: 14px;
+  min-width: 14px;
+}
+/* o bonequinho do cargo (Roles.jsx) */
+.role-icon {
+  flex: none;
+}
+.role-icon-head {
+  fill: color-mix(in srgb, var(--role) 32%, #fff);
+  stroke: color-mix(in srgb, var(--role) 70%, #000);
+}
+.role-icon-body {
+  fill: var(--role);
+  stroke: color-mix(in srgb, var(--role) 70%, #000);
+}
+.people-opt-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* filtro da lista de membros: agrupar por status ou por cargo */
+/* filtro da lista de membros: agrupar por status ou por time */
+.members-filter {
+  position: relative;
+  margin-left: auto;
+}
+.members-filter + .gloss {
+  margin-left: 0;
+}
+.members-filter-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  min-width: 170px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  border: 1px solid var(--window-border);
+  border-radius: 8px;
+  background: var(--window);
+  box-shadow: 0 10px 26px rgba(5, 50, 100, 0.22);
+}
+.members-filter-menu small {
+  padding: 2px 6px 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.members-filter-menu button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.members-filter-menu button:hover {
+  background: var(--row-hover);
+}
+/* na lista de membros, os cargos vêm numa linha própria embaixo da mensagem pessoal */
+.member-text .role-pills {
+  margin-top: 2px;
+}
+
+
+/* Módulo Assistente, flutuante (AgentFab.jsx): o ícone no canto inferior direito, no lugar do ícone do trilho.
+   Fica abaixo das janelas (.overlay) e do balão. */
+.agent-fab {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 45;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  color: #fff;
+  cursor: pointer;
+  background: radial-gradient(circle at 35% 28%, #c9b8ff, #7b5cf0 55%, #4b2bb8);
+  box-shadow:
+    inset 0 1px 2px rgba(255, 255, 255, 0.6),
+    0 6px 18px rgba(60, 30, 160, 0.38),
+    0 1px 3px rgba(0, 0, 0, 0.25);
+  transition:
+    transform 0.12s,
+    box-shadow 0.12s;
+}
+.agent-fab:hover {
+  transform: translateY(-1px) scale(1.04);
+  box-shadow:
+    inset 0 1px 2px rgba(255, 255, 255, 0.6),
+    0 8px 22px rgba(60, 30, 160, 0.45),
+    0 1px 3px rgba(0, 0, 0, 0.25);
+}
+.agent-fab.on {
+  outline: 3px solid color-mix(in srgb, #7b5cf0 35%, transparent);
+  outline-offset: 2px;
+}
+.agent-fab:focus-visible {
+  outline: 2px solid var(--link);
+  outline-offset: 3px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-fab {
+    transition: none;
+  }
+}
+
+/* Configurações → Assistente (Modals.jsx, AgentPrefs): onde o assistente fica, com um desenho de cada opção */
+.agent-prefs > h3 {
+  margin-bottom: 4px;
+}
+.agent-place {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  max-width: 760px;
+}
+.agent-place-opt {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  cursor: pointer;
+  transition:
+    border-color 0.12s,
+    background 0.12s;
+}
+.agent-place-opt:hover {
+  background: var(--row-hover);
+}
+.agent-place-opt.on {
+  border-color: var(--row-sel-border);
+  background: var(--row-sel);
+}
+.agent-place-opt:has(input:focus-visible) {
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
+.agent-place-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.agent-place-text b {
+  color: var(--ink);
+  font-size: 13.5px;
+}
+.agent-place-text small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+/* o desenho: uma janelinha com o trilho à esquerda, o ícone (bolinha roxa) e o balão */
+.agent-place-mini {
+  flex: none;
+  position: relative;
+  width: 64px;
+  height: 46px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--area, #eef4fb);
+  overflow: hidden;
+}
+.agent-place-mini i {
+  position: absolute;
+  display: block;
+}
+.apm-rail {
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 9px;
+  background: color-mix(in srgb, var(--link) 22%, transparent);
+}
+.apm-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #7b5cf0;
+}
+.apm-pop {
+  width: 22px;
+  height: 20px;
+  border-radius: 3px;
+  background: var(--window, #fff);
+  border: 1px solid color-mix(in srgb, #7b5cf0 55%, transparent);
+}
+.agent-place-mini.rail .apm-dot {
+  left: 1px;
+  bottom: 4px;
+}
+.agent-place-mini.rail .apm-pop {
+  left: 13px;
+  bottom: 3px;
+}
+.agent-place-mini.float .apm-dot {
+  right: 3px;
+  bottom: 3px;
+}
+.agent-place-mini.float .apm-pop {
+  right: 3px;
+  bottom: 13px;
+}
+.agent-place-opt.on .agent-place-mini {
+  border-color: color-mix(in srgb, #7b5cf0 50%, var(--line));
 }

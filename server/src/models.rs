@@ -64,8 +64,14 @@ pub const NAME_RAW_MAX: usize = 128;
 pub const BIO_MAX: usize = 190;
 pub const BIO_RAW_MAX: usize = 600;
 
-/// Quantos caracteres aparecem na tela: tags de cor (`[cor=#rrggbb]`, `[/cor]`) e marcas de
-/// negrito/itálico/sublinhado/riscado não contam.
+/// As tags de negrito, itálico, sublinhado e riscado do campo de formatação (`[b]`, `[/b]`, `[i]`…):
+/// o tamanho da tag, se o texto começa com uma.
+fn format_tag(rest: &str) -> Option<usize> {
+    ["[b]", "[/b]", "[i]", "[/i]", "[u]", "[/u]", "[s]", "[/s]"].iter().find(|t| rest.starts_with(**t)).map(|t| t.len())
+}
+
+/// Quantos caracteres aparecem na tela: tags de cor (`[cor=#rrggbb]`, `[/cor]`), de formatação (`[b]`…)
+/// e marcas de negrito/itálico/sublinhado/riscado não contam.
 pub fn visible_len(text: &str) -> usize {
     let mut rest = text;
     let mut n = 0;
@@ -74,6 +80,8 @@ pub fn visible_len(text: &str) -> usize {
             13
         } else if rest.starts_with("[/cor]") {
             6
+        } else if let Some(n) = format_tag(rest) {
+            n
         } else if rest.starts_with("**") || rest.starts_with("__") || rest.starts_with("~~") {
             2
         } else if ch == '*' {
@@ -96,6 +104,8 @@ pub fn plain_text(text: &str) -> String {
             13
         } else if rest.starts_with("[/cor]") {
             6
+        } else if let Some(n) = format_tag(rest) {
+            n
         } else if rest.starts_with("**") || rest.starts_with("__") || rest.starts_with("~~") {
             2
         } else if ch == '*' {
@@ -469,6 +479,8 @@ texto")), Some(id));
     fn visible_len_ignores_format_tags() {
         assert_eq!(visible_len("Gabi"), 4);
         assert_eq!(visible_len("[cor=#d93f3a]Gabi[/cor]"), 4);
+        assert_eq!(visible_len("[cor=#d93f3a][b]Ga[/b][i]bi[/i][/cor]"), 4);
+        assert_eq!(plain_text("[u]oi[/u] [s]tchau[/s]"), "oi tchau");
         assert_eq!(visible_len("**Ga**__bi__ ~~x~~ *y*"), 8);
         assert_eq!(visible_len("ção [cor=#zzzzzz]"), 17);
         let long = format!("[cor=#1a7fc4]{}[/cor]", "a".repeat(32));

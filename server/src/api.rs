@@ -237,7 +237,9 @@ pub mod perm {
     pub const SOUNDS: i64 = 8192;
     /// Fixar e desafixar mensagens nos canais de texto.
     pub const PIN: i64 = 16384;
-    pub const ALL: i64 = ADMIN | INVITE | CHANNELS | MUTE | DISCONNECT | MOVE | MUSIC | SOUNDS | PIN;
+    /// Criar, editar e apagar os cargos do servidor (veja `crate::roles`).
+    pub const ROLES: i64 = 32768;
+    pub const ALL: i64 = ADMIN | INVITE | CHANNELS | MUTE | DISCONNECT | MOVE | MUSIC | SOUNDS | PIN | ROLES;
     /// Padrão de um servidor novo: convidar, a música, os efeitos sonoros e fixar liberados para todos.
     pub const DEFAULT: i64 = INVITE | MUSIC | SOUNDS | PIN;
     /// Admin vale por todas.
@@ -245,9 +247,10 @@ pub mod perm {
         perms & ADMIN != 0 || perms & flag != 0
     }
     /// Permissões de um membro (`m`, de `guild_members`) no servidor `g`: o dono tem todas; quem está
-    /// na lista personalizada tem as dela; o resto, o padrão do servidor.
-    pub const EFFECTIVE_SQL: &str =
-        "CASE WHEN g.owner_id = m.user_id THEN 32767 WHEN m.custom = 1 THEN m.perms ELSE g.default_perms END";
+    /// na lista personalizada tem as dela; o resto, o padrão do servidor. Somam-se as dos cargos que a pessoa
+    /// tem, com o módulo ligado (o SQLite não tem OU de bits como agregação: um `MAX` por bit; administrador
+    /// não vem de cargo).
+    pub const EFFECTIVE_SQL: &str = "CASE WHEN g.owner_id = m.user_id THEN 65535          ELSE (CASE WHEN m.custom = 1 THEN m.perms ELSE g.default_perms END) | COALESCE((SELECT            MAX(r.perms & 2) | MAX(r.perms & 4) | MAX(r.perms & 8) | MAX(r.perms & 16) | MAX(r.perms & 32) |            MAX(r.perms & 64) | MAX(r.perms & 128) | MAX(r.perms & 256) | MAX(r.perms & 512) | MAX(r.perms & 1024) |            MAX(r.perms & 2048) | MAX(r.perms & 4096) | MAX(r.perms & 8192) | MAX(r.perms & 16384) | MAX(r.perms & 32768)            FROM role_members rm JOIN roles r ON r.id = rm.role_id            WHERE rm.user_id = m.user_id AND r.guild_id = m.guild_id AND r.perms <> 0              AND COALESCE((SELECT value FROM settings WHERE key = 'module_roles'), '1') <> '0'), 0) END";
 }
 
 /// Permissões de um membro (o dono tem todas); `None` se não for membro.
@@ -423,7 +426,9 @@ async fn get_config(State(app): AppState) -> Json<Value> {
         // Limites dos arquivos (o app avisa antes de mandar um arquivo grande).
         "files": crate::files::limits(&app).await,
         // Assistente ligado pelo dono do app (veja `crate::agent`).
-        "agent": crate::agent::enabled(&app).await,
+        "agent": app.hub.modules().agent,
+        // Módulos ligados (veja `crate::modules`): o app esconde o que estiver desligado.
+        "modules": app.hub.modules(),
     }))
 }
 
@@ -816,6 +821,7 @@ async fn delete_guild(State(app): AppState, AuthUser(user, _): AuthUser, Path(id
     app.hub.drop_guild(&id);
     crate::files::delete_files(&app, "SELECT id FROM files WHERE guild_id = ?1", &id).await?;
     app.db.execute("DELETE FROM guild_icons WHERE guild_id = ?1", [id.as_str()]).await?;
+    crate::roles::forget_guild(&app, &id).await?;
     // Exclusão explícita (não depende de ON DELETE CASCADE, que exige PRAGMA por conexão em modo remoto).
     crate::db::limited("excluir servidor", async {
         let conn = app.db.conn().await?;
@@ -1219,6 +1225,7 @@ async fn leave_guild(State(app): AppState, AuthUser(user, _): AuthUser, Path(id)
             [user.id.as_str(), id.as_str()],
         )
         .await?;
+    crate::roles::forget_member(&app, &id, &user.id).await?;
     app.hub.leave_guild(&user.id, &id);
     app.hub.to_guild(&id, "member:left", json!({ "guildId": id, "userId": user.id }));
     app.audit(crate::audit::Entry::new(&id, "member.leave", &user.id));
@@ -1250,6 +1257,9 @@ async fn create_channel(
     }
     let g = member_guild(&app, &id, &user.id).await?;
     let kind = if body.kind.as_deref() == Some("voice") { "voice" } else { "text" };
+    if kind == "voice" && !app.hub.modules().voice {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "As chamadas estão desligadas neste servidor"));
+    }
     let mut name: String = body.name.trim().chars().take(32).collect();
     if kind == "text" {
         name = name.to_lowercase().split_whitespace().collect::<Vec<_>>().join("-");

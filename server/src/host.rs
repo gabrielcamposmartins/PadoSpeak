@@ -247,6 +247,9 @@ impl HostManager {
             data_dir: self.data_dir.clone(),
             turn,
         });
+        let modules = crate::modules::load(&app).await;
+        app.hub.set_modules(modules);
+        self.logs.info(format!("Módulos: {}{}", modules.describe(), if crate::modules::locked() { " (variável MODULES)" } else { "" }));
         if let Some(lan) = &lan {
             app.hub.set_lan_mode();
             lan.spawn(app.clone());
@@ -274,10 +277,13 @@ impl HostManager {
             .merge(crate::backgrounds::router())
             .merge(crate::agent::router())
             .merge(crate::media::router())
+            .merge(crate::modules::router())
+            .merge(crate::roles::router())
             .route("/ws", get(crate::hub::ws_handler))
             .route("/api/music/stream/{id}", get(crate::music::stream::handler))
             .fallback(crate::assets::static_handler)
             .layer(axum::middleware::from_fn_with_state(app.clone(), crate::privacy::layer))
+            .layer(axum::middleware::from_fn_with_state(app.clone(), crate::modules::layer))
             .layer(CorsLayer::permissive())
             .with_state(app.clone());
         let _ = app.router.set(router.clone());

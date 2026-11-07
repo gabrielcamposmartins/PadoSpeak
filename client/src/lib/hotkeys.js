@@ -13,10 +13,14 @@ export const HOTKEY_ACTIONS = [
   { id: 'deafen', label: 'Ensurdecer / voltar a ouvir' },
 ];
 
-/** Atalhos padrão (os mais comuns em apps de voz). */
+/** O atalho do assistente (módulo Assistente): abre o balão com a caixa de mensagem pronta para digitar. */
+export const AGENT_HOTKEY = { id: 'agent', label: 'Abrir o assistente' };
+
+/** Atalhos padrão (os de voz, os mais comuns em apps de voz; o do assistente, Ctrl + Alt + A). */
 export const DEFAULT_HOTKEYS = {
   mute: { ctrl: true, shift: true, alt: false, meta: false, code: 'KeyM' },
   deafen: { ctrl: true, shift: true, alt: false, meta: false, code: 'KeyD' },
+  agent: { ctrl: true, shift: false, alt: true, meta: false, code: 'KeyA' },
 };
 
 const MODIFIER_CODES = /^(Control|Shift|Alt|Meta|OS)(Left|Right)?$/;

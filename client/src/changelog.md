@@ -1,5 +1,20 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.12.0 — 07/11/2026
+
+### Novidades
+- **Cargos nos servidores**: quem pode gerenciar cargos cria cargos com nome e cor e escolhe quem tem cada um. O cargo aparece numa etiqueta embaixo do nome, na lista de membros e no perfil, sem esconder a mensagem pessoal. Um cargo também pode dar permissões a quem o tem, e a lista de membros pode ser agrupada por cargo.
+- **Formatação direto na caixa de mensagem**: negrito, itálico, sublinhado, riscado, cores e emoticons aparecem já formatados enquanto você escreve, sem códigos. Vale também ao editar uma mensagem e no seu perfil.
+- **Mais gente na chamada privada**: durante uma chamada numa conversa privada, “Chamar mais” convida amigos para a chamada. Quem não é da conversa entra só na chamada, sem ver as mensagens.
+- **Miniatura da chamada**: fora da tela da chamada, uma miniatura com quem está em foco (ou o vídeo) fica no canto inferior esquerdo. Um clique nela volta para a chamada.
+- **Tela automática**: a qualidade padrão do compartilhamento de tela começa em 1080p a 60 fps e se ajusta sozinha quando a internet ou o computador não dão conta. As qualidades fixas mantêm a resolução e o fps escolhidos.
+- **Chamadas mais leves**: em canais de voz com mais gente, cada um envia o próprio áudio, câmera e tela uma vez só, e não uma cópia para cada pessoa. A chamada continua protegida e, se algo falhar, segue sem interrupção.
+- **Músicas bloqueadas menos vezes**: menos músicas do YouTube param no meio ou deixam de tocar.
+
+### Correções
+- **Tela travada em 30 fps**: depois de uma queda da internet, o compartilhamento de tela voltava preso em 30 fps. Agora ele volta à qualidade de antes.
+- **Vídeo abrindo**: enquanto a imagem de alguém abre, aparece “Conectando…”. O aviso de falha só aparece se a conexão ficar caída por um tempo.
+
 ## 1.11.1 — 28/10/2026
 
 ### Correções

@@ -22,11 +22,18 @@ import { MediaCrypt } from './mediaCrypt.js';
 // malha para de mandar (fazer antes de desfazer).
 
 export const SCREEN_PRESETS = {
+  // Começa na melhor e cede quando a rede ou o processador não dão conta. As outras ficam no que foi escolhido.
+  auto: { label: 'Automática', auto: true, width: 1920, height: 1080, fps: 60, bitrate: 9_000_000, hint: 'motion' },
   '1080p60': { label: '1080p · 60 fps', width: 1920, height: 1080, fps: 60, bitrate: 9_000_000, hint: 'motion' },
   '1080p30': { label: '1080p · 30 fps', width: 1920, height: 1080, fps: 30, bitrate: 6_000_000, hint: 'detail' },
   '720p30': { label: '720p · 30 fps', width: 1280, height: 720, fps: 30, bitrate: 2_500_000, hint: 'detail' },
 };
 const CAMERA = { width: 1280, height: 720, fps: 30, bitrate: 1_500_000 };
+/**
+ * Abaixo desta altura a placa de vídeo passa o envio ao processador sozinha: é efeito de a imagem ter
+ * encolhido, e não falta de placa, e ela volta quando a imagem cresce.
+ */
+const HARDWARE_MIN_HEIGHT = 360;
 const SPEAKING_THRESHOLD = 0.02;
 const SPEAKING_HOLD_MS = 300;
 /** Amostras de latência guardadas (uma a cada 2 s → 3 minutos). */
@@ -121,6 +128,12 @@ function hardwareVideoCodec() {
   return videoCodec;
 }
 
+/**
+ * O que o navegador sacrifica quando falta banda ou processador: na automática, o que precisar; numa
+ * qualidade escolhida, nem a resolução nem o fps (sem banda, o codificador é que perde alguns quadros).
+ */
+const degradation = (preset) => (preset.auto ? 'balanced' : 'maintain-framerate-and-resolution');
+
 // Com o RNNoise ligado, o supressor nativo do navegador fica desligado para não processar o áudio duas vezes.
 /** Chave local de cada par (não muda quando ele volta com outro id). */
 let peerSeq = 0;
@@ -157,7 +170,7 @@ export class VoiceClient {
       guildId: null,
       muted: false,
       deafened: false,
-      screenPreset: '1080p30',
+      screenPreset: 'auto',
       micAvailable: true,
       error: null,
     };
@@ -782,6 +795,12 @@ export class VoiceClient {
     if (peer.log.length > PEER_LOG) peer.log.shift();
   }
 
+  /** Vídeo de um par preso, visto na tela (no card é só "Conectando…"): fica no histórico do diagnóstico. */
+  noteVideo(peerId, text) {
+    const peer = this.peers.get(peerId);
+    if (peer) this.peerLog(peer, text);
+  }
+
   /** Reinicia o ICE (só o lado não educado; o educado responde à oferta). `force`: a rede mudou. */
   restartIce(peer, force = false) {
     if (peer.polite || !peer.pc || peer.pc.signalingState === 'closed' || (!force && Date.now() - peer.lastRestart < RESTART_AFTER_MS)) return;
@@ -965,7 +984,7 @@ export class VoiceClient {
       const params = sender.getParameters();
       if (!params.encodings?.length) continue;
       apply(params);
-      if (kind === 'screen') params.degradationPreference = preset.hint === 'motion' ? 'maintain-framerate' : 'maintain-resolution';
+      if (kind === 'screen') params.degradationPreference = degradation(preset);
       sender.setParameters(params).catch(() => {
         // Navegador sem degradationPreference: de novo sem ela (com parâmetros novos, os de antes venceram).
         const again = sender.getParameters();
@@ -1293,7 +1312,7 @@ export class VoiceClient {
           priority: 'high',
           networkPriority: 'high',
         });
-        params.degradationPreference = preset.hint === 'motion' ? 'maintain-framerate' : 'maintain-resolution';
+        params.degradationPreference = degradation(preset);
         scr.setParameters(params).catch(() => {});
       }
     }
@@ -2213,7 +2232,8 @@ export class VoiceClient {
             };
           } else if (s.type === 'outbound-rtp' && s.kind === 'video') {
             const trackId = byId.get(s.mediaSourceId)?.trackIdentifier;
-            if (trackId && trackId === screenTrack && typeof s.powerEfficientEncoder === 'boolean') screenPowerEfficient = s.powerEfficientEncoder;
+            if (trackId && trackId === screenTrack && typeof s.powerEfficientEncoder === 'boolean' && s.frameHeight >= HARDWARE_MIN_HEIGHT)
+              screenPowerEfficient = s.powerEfficientEncoder;
             if (trackId)
               video[trackId] = {
                 dir: 'out',
@@ -2247,8 +2267,10 @@ export class VoiceClient {
         if (screenPowerEfficient === false) peer.softwareSamples = (peer.softwareSamples || 0) + 1;
         else if (screenPowerEfficient === true || !screenTrack) peer.softwareSamples = 0;
         const software = (peer.softwareSamples || 0) >= 2;
-        if (software !== Boolean(peer.softwareScreen))
-          this.peerLog(peer, software ? 'tela codificada pelo processador: indo em 720p' : 'tela codificada pela placa de vídeo');
+        if (software !== Boolean(peer.softwareScreen)) {
+          const reduce = SCREEN_PRESETS[this.state.screenPreset].auto ? ': indo em 720p' : '';
+          this.peerLog(peer, software ? `tela codificada pelo processador${reduce}` : 'tela codificada pela placa de vídeo');
+        }
         const retune = route !== (peer.stats?.route ?? null) || software !== Boolean(peer.softwareScreen);
         peer.softwareScreen = software;
         peer.stats = { connection: peer.pc.connectionState, ice: peer.pc.iceConnectionState, path, route, video, audio };
@@ -2307,6 +2329,28 @@ export class VoiceClient {
     if (peerId) return this.peers.get(peerId)?.stats?.video[trackId] || null;
     for (const p of this.peers.values()) if (p.stats?.video[trackId]) return p.stats.video[trackId];
     return null;
+  }
+
+  /**
+   * A qualidade da chamada medida neste aparelho, em texto (o assistente usa na ferramenta `call_quality`):
+   * a latência até o servidor e até cada pessoa (ou o SFU) nos últimos minutos, mais o diagnóstico.
+   */
+  qualityReport() {
+    const { samples, series } = this.latencyHistory();
+    const summary = (values) => {
+      const nums = values.filter((v) => v != null);
+      if (!nums.length) return 'sem medidas';
+      const avg = Math.round(nums.reduce((a, b) => a + b, 0) / nums.length);
+      const missed = values.length - nums.length;
+      return `atual ${values.at(-1) ?? '—'} ms · média ${avg} ms · máxima ${Math.max(...nums)} ms${missed ? ` · ${missed} de ${values.length} medidas sem resposta` : ''}`;
+    };
+    const span = samples.length > 1 ? Math.round((samples.at(-1).t - samples[0].t) / 1000) : 0;
+    const lines = [`Latência (${samples.length} medidas em ${span} s):`, `  servidor (ida e volta): ${summary(samples.map((x) => x.server))}`];
+    for (const se of series.slice(1)) {
+      const values = samples.filter((x) => se.id in x.peers).map((x) => x.peers[se.id]);
+      lines.push(`  ${se.label} (a conexão com a pessoa, ou com o SFU, ida e volta): ${summary(values)}`);
+    }
+    return `${lines.join('\n')}\n\n${this.diagnostics()}`;
   }
 
   /** Relatório em texto para colar quando algo não funciona. */

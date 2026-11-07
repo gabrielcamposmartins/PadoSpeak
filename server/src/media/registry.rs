@@ -36,11 +36,14 @@ pub struct MediaSettings {
     pub pot: bool,
     /// Buscar a música pelo nó: `auto` (o principal bloqueado ou sobrecarregado), `always` ou `off`.
     pub music_relay: String,
+    /// Toda chamada pelo SFU, mesmo com uma ou duas pessoas e nas conversas privadas (quem não chega ao nó
+    /// continua em malha com cada um, pela regra de cada par).
+    pub sfu_always: bool,
 }
 
 impl Default for MediaSettings {
     fn default() -> Self {
-        Self { sfu_min_people: 2, embedded_sfu: false, pot: true, music_relay: "auto".into() }
+        Self { sfu_min_people: 2, embedded_sfu: false, pot: true, music_relay: "auto".into(), sfu_always: false }
     }
 }
 
@@ -308,6 +311,11 @@ impl Registry {
 
     pub fn min_people(&self) -> usize {
         self.settings().sfu_min_people
+    }
+
+    /// "Sempre usar o SFU" (painel → Mídia).
+    pub fn sfu_always(&self) -> bool {
+        self.settings().sfu_always
     }
 
     pub fn backend(self: &Arc<Self>, id: &str) -> Option<Backend> {

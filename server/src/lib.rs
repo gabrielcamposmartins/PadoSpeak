@@ -20,6 +20,7 @@ pub mod lan;
 pub mod logs;
 pub mod media;
 pub mod models;
+pub mod modules;
 pub mod social;
 pub mod stickers;
 pub mod search;
@@ -30,6 +31,7 @@ pub mod pins;
 pub mod privacy;
 pub mod push;
 pub mod ratelimit;
+pub mod roles;
 pub mod tls;
 pub mod turn;
 

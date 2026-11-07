@@ -15,6 +15,23 @@
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
+/// Abre um WebSocket do nó para o principal (`wss://…` ou `ws://…`). O TLS anuncia ALPN `http/1.1`: no
+/// servidor oficial, a porta 443 manda para o relay das chamadas (TURN) toda conexão sem ALPN HTTP, e o
+/// conector padrão do tokio-tungstenite não anuncia nenhum.
+pub async fn ws_connect(
+    url: &str,
+) -> Result<
+    (tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, tokio_tungstenite::tungstenite::http::Response<Option<Vec<u8>>>),
+    tokio_tungstenite::tungstenite::Error,
+> {
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let mut tls = rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
+    tls.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let connector = tokio_tungstenite::Connector::Rustls(std::sync::Arc::new(tls));
+    tokio_tungstenite::connect_async_tls_with_config(url, None, false, Some(connector)).await
+}
+
 pub const BEAT_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 /// Sem batimento por este tempo, o outro lado caiu.
 pub const DEAD_AFTER: std::time::Duration = std::time::Duration::from_secs(3);

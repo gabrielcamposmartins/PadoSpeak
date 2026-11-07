@@ -30,6 +30,7 @@ import { useLayout } from '../lib/layout.js';
 import { MobileBack } from './Mobile.jsx';
 import { InviteButton, PendingInvites } from './CallInvite.jsx';
 import { plain } from '../lib/text.js';
+import { voiceOn } from '../modules.js';
 import { storage } from '../lib/api.js';
 import { ConnProvider, useConn, useConnKey } from './conn.jsx';
 import { GroupHeader, useCollapsed } from './Group.jsx';
@@ -488,6 +489,7 @@ function FriendRow({ entry }) {
   const status = usePresence(user.id);
   const activity = useActivity(user.id);
   const { openDm, callUser, acceptFriend, removeFriend, openModal } = useStore.getState();
+  const voiceMod = useStore(voiceOn);
   const label = {
     friend: activity || STATUS_INFO[{ on: 'online', away: 'away', busy: 'busy' }[status]]?.label || 'Offline',
     incoming: 'Pedido de amizade recebido',
@@ -517,9 +519,11 @@ function FriendRow({ entry }) {
             <button className="gloss mini" title="Mensagem" aria-label="Mensagem" onClick={act(() => openDm(user.id))}>
               <MessageSquare size={16} />
             </button>
-            <button className="gloss mini" title="Ligar" aria-label="Ligar" onClick={act(() => callUser(user.id))}>
-              <Phone size={16} />
-            </button>
+            {voiceMod && (
+              <button className="gloss mini" title="Ligar" aria-label="Ligar" onClick={act(() => callUser(user.id))}>
+                <Phone size={16} />
+              </button>
+            )}
             <button
               className="gloss mini danger-ico"
               title="Desfazer amizade"
@@ -933,13 +937,14 @@ function DmWindow({ dmId }) {
 
   const channel = { id: dm.id, name: plain(recipient.displayName), guildId: null, dm: true, recipient };
   const { joinVoice, toggleCamera } = useC.getState();
+  const voiceMod = useC(voiceOn);
   const ringing = !inCall && othersInCall.length > 0;
 
   return (
     <main ref={split.mainRef} className={`main glass dm-window${inCall && split.full ? ' call-full' : ''}`}>
       <div className="dm-actions">
         {phone && <MobileBack />}
-        {!inCall && (
+        {!inCall && voiceMod && (
           <>
             <button
               className={`${ringing ? 'go' : 'gloss'} tool`}

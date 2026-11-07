@@ -394,6 +394,20 @@ fn pairing_url(url: &str) -> ApiResult<String> {
     Ok(std::env::var("PUBLIC_URL").ok().map(|u| u.trim().trim_end_matches('/').to_string()).filter(|u| !u.is_empty()).unwrap_or_else(|| url.to_string()))
 }
 
+/// Cadastra um nó e devolve (id, código de pareamento). O código leva o segredo: só aparece uma vez.
+pub async fn create_node(db: &crate::db::Db, name: &str, url: String) -> Result<(String, String), libsql::Error> {
+    let id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
+    let secret = control::new_secret();
+    let next = db.query_one("SELECT COALESCE(MAX(priority), -1) + 1 FROM media_nodes", (), |r| r.get::<i64>(0)).await?.unwrap_or(0);
+    db.execute(
+        "INSERT INTO media_nodes (id, name, secret, priority, enabled, created_at) VALUES (?1, ?2, ?3, ?4, 1, ?5)",
+        libsql::params![id.as_str(), name, db.cipher.seal(&secret), next, crate::now_ms()],
+    )
+    .await?;
+    let code = control::Pairing { url, id: id.clone(), secret }.encode();
+    Ok((id, code))
+}
+
 async fn admin_add(State(app): AppState, AuthUser(me, _): AuthUser, Json(body): Json<NewNode>) -> ApiResult<Json<Value>> {
     if !rights(&app, &me).await? {
         return Err(forbidden());
@@ -403,18 +417,9 @@ async fn admin_add(State(app): AppState, AuthUser(me, _): AuthUser, Json(body): 
         return Err(ApiError(StatusCode::BAD_REQUEST, "Dê um nome ao nó".into()));
     }
     let url = pairing_url(&body.url)?;
-    let id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
-    let secret = control::new_secret();
-    let next = app.db.query_one("SELECT COALESCE(MAX(priority), -1) + 1 FROM media_nodes", (), |r| r.get::<i64>(0)).await?.unwrap_or(0);
-    app.db
-        .execute(
-            "INSERT INTO media_nodes (id, name, secret, priority, enabled, created_at) VALUES (?1, ?2, ?3, ?4, 1, ?5)",
-            libsql::params![id.as_str(), name.as_str(), app.db.cipher.seal(&secret), next, crate::now_ms()],
-        )
-        .await?;
+    let (id, code) = create_node(&app.db, &name, url).await?;
     load_priorities(&app).await;
     app.logs.info(format!("Mídia: nó \"{name}\" criado por {}", me.username));
-    let code = control::Pairing { url, id: id.clone(), secret }.encode();
     Ok(Json(json!({ "id": id, "code": code, "view": view(&app, true).await? })))
 }
 

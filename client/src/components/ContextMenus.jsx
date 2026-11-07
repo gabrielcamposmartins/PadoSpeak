@@ -7,6 +7,7 @@ import { useConn } from './conn.jsx';
 import Avatar, { UserName } from './Avatar.jsx';
 import { PointMenu, Item } from './VoiceMenus.jsx';
 import { plain } from '../lib/text.js';
+import { voiceOn } from '../modules.js';
 
 /** Opção liga/desliga com a caixinha sempre visível (marcada ou não). */
 function CheckItem({ checked, disabled, onClick, children, hint }) {
@@ -34,6 +35,7 @@ export function UserMenu({ x, y, user, onClose }) {
   const nudgeBlocked = useC((s) => Boolean(s.nudgeSettings?.nudgeBlocks.some((u) => u.id === user.id)));
   const blocked = useC((s) => Boolean(s.nudgeSettings?.blocks?.some((u) => u.id === user.id)));
   const st = useC.getState();
+  const voiceMod = useC(voiceOn);
   const { openModal } = useStore.getState();
   const name = plain(user.displayName) || user.username;
   const act = (fn) => async () => {
@@ -75,9 +77,11 @@ export function UserMenu({ x, y, user, onClose }) {
       <Item icon={MessageSquare} onClick={act(() => st.openDm(user.id))}>
         Mensagem
       </Item>
-      <Item icon={Phone} onClick={act(() => st.callUser(user.id))}>
-        Ligar
-      </Item>
+      {voiceMod && (
+        <Item icon={Phone} onClick={act(() => st.callUser(user.id))}>
+          Ligar
+        </Item>
+      )}
       <Sep />
       {isServer && !friend && !blocked && (
         <Item icon={UserPlus} onClick={act(() => st.sendFriendRequest(user.username))}>

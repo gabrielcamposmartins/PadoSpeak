@@ -9,7 +9,9 @@
  * As chaves aparecem escondidas (início e fim); o olho busca a chave inteira no servidor.
  */
 import { useEffect, useState } from 'react';
-import { Eye, EyeOff, Trash2, Copy, Plus, KeyRound, Building2, Server, Cpu } from 'lucide-react';
+import { Eye, EyeOff, Trash2, Copy, Plus, KeyRound, Building2, Server, Cpu, Users, UserPlus, X } from 'lucide-react';
+import Avatar, { UserName } from './Avatar.jsx';
+import { plain } from '../lib/text.js';
 import { useStore } from '../store.js';
 import './agent.css';
 
@@ -121,7 +123,7 @@ export default function AgentKeys({ scope = 'me' }) {
           <span>
             Ligar o assistente
             <small className="check-hint">
-              Aparece para todo mundo, abaixo do Início. Ele faz o que a pessoa pede no app, só com o acesso que ela já tem, e pede
+              Aparece para todo mundo (ou só para quem você escolher, abaixo). Ele faz o que a pessoa pede no app, só com o acesso que ela já tem, e pede
               confirmação antes de mandar mensagens, mudar o que é de todos ou apagar.
             </small>
           </span>
@@ -129,8 +131,8 @@ export default function AgentKeys({ scope = 'me' }) {
       )}
       <p className="kv">
         {admin
-          ? 'O assistente usa a chave marcada, cobrada na conta dela pela Anthropic. Ela vale para todo mundo, menos para quem puser a própria chave nas configurações.'
-          : 'Por padrão, o assistente usa a chave que o administrador configurou. Se quiser, ponha a sua chave da API da Anthropic: aí os pedidos são cobrados na sua conta e você escolhe o modelo.'}
+          ? `O assistente usa a chave marcada, cobrada na conta dela pela Anthropic. ${info.access === 'list' ? 'Ela vale para você e para as pessoas que você liberar abaixo.' : 'Ela vale para todo mundo, menos para quem usar uma chave própria.'}`
+          : 'O assistente usa a chave configurada pelo administrador do app. Também dá para usar uma chave própria: nesse caso, os pedidos são cobrados na conta dela e o modelo é escolhido aqui.'}
       </p>
 
       <div className="settings-sec">{admin ? 'Chave da API em uso' : 'Qual chave usar'}</div>
@@ -144,7 +146,13 @@ export default function AgentKeys({ scope = 'me' }) {
             icon={<Building2 size={18} />}
             title="Chave do app"
             tag="padrão"
-            sub={info.appKey ? `Configurada pelo administrador · ${info.appModel}` : 'O administrador ainda não pôs uma chave'}
+            sub={
+              info.appKey
+                ? `Configurada pelo administrador · ${info.appModel}`
+                : info.appBlocked
+                  ? 'O administrador não liberou a chave do app para você'
+                  : 'O administrador ainda não pôs uma chave'
+            }
           />
         )}
         {keys.map((k) => (
@@ -277,11 +285,98 @@ export default function AgentKeys({ scope = 'me' }) {
       </div>
       <p className="agent-model-note">
         {admin
-          ? 'Vale para todos que usam a chave do app.'
+          ? info.access === 'list'
+            ? 'Vale para você e para quem você liberar abaixo.'
+            : 'Vale para todos que usam a chave do app.'
           : ownActive
             ? 'Vale só para você, com a sua chave.'
             : 'Com a chave do app, o modelo é o que o administrador escolheu. Para escolher, use uma chave sua.'}
       </p>
+      {admin && <AppAccess info={info} canEdit={canEdit} busy={busy} run={run} api={api} />}
+    </div>
+  );
+}
+
+/**
+ * Quem usa o assistente (painel): todo mundo, ou só as pessoas que o dono liberar (por nome de usuário). Para
+ * quem não está na lista, o assistente nem aparece; quem está nela usa a chave e o modelo do app.
+ */
+function AppAccess({ info, canEdit, busy, run, api }) {
+  const [name, setName] = useState('');
+  const people = info.people || [];
+  const list = info.access === 'list';
+  const setAccess = (v) => run(() => api().put('/api/admin/agent', { access: v }), v === 'list' ? 'Só as pessoas escolhidas' : 'Assistente para todos');
+  const add = async () => {
+    if (await run(() => api().post('/api/admin/agent/people', { username: name.trim() }), 'Liberado')) setName('');
+  };
+  return (
+    <div className="agent-access">
+      <div className="settings-sec">
+        <Users size={14} aria-hidden="true" /> Quem usa o assistente
+      </div>
+      <div className="agent-access-opts" role="radiogroup" aria-label="Quem usa o assistente">
+        <label className="checkbox">
+          <input type="radio" name="agent-access" checked={!list} disabled={!canEdit || busy} onChange={() => setAccess('all')} />
+          <span>
+            Todo mundo
+            <small className="check-hint">O assistente aparece para todos. Quem não usar uma chave própria usa a do app.</small>
+          </span>
+        </label>
+        <label className="checkbox">
+          <input type="radio" name="agent-access" checked={list} disabled={!canEdit || busy} onChange={() => setAccess('list')} />
+          <span>
+            Só as pessoas que eu escolher
+            <small className="check-hint">
+              O assistente só aparece para quem você liberar, com a chave e o modelo do app. Para os outros, ele não aparece. Você
+              (@{info.owner}) sempre tem acesso.
+            </small>
+          </span>
+        </label>
+      </div>
+      {list && (
+        <>
+          {canEdit && (
+            <form
+              className="adm-grant"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (name.trim()) add();
+              }}
+            >
+              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="nome_de_usuario" aria-label="Usuário para liberar o assistente" disabled={busy} />
+              <button className="btn" disabled={busy || !name.trim()}>
+                <UserPlus size={15} /> Liberar
+              </button>
+            </form>
+          )}
+          {people.length === 0 ? (
+            <p className="kv">Ninguém liberado ainda: só você vê o assistente.</p>
+          ) : (
+            <div className="adm-viewers">
+              {people.map((p) => (
+                <div className="block-row" key={p.user.id}>
+                  <Avatar user={p.user} size={22} frame={false} />
+                  <span className="nm">
+                    <UserName user={p.user} /> <small>@{p.user.username}</small>
+                  </span>
+                  {canEdit && (
+                    <button
+                      type="button"
+                      className="gloss mini"
+                      title="Tirar a liberação"
+                      aria-label={`Tirar a liberação de ${plain(p.user.displayName) || p.user.username}`}
+                      disabled={busy}
+                      onClick={() => run(() => api().del(`/api/admin/agent/people/${encodeURIComponent(p.user.id)}`), 'Liberação retirada')}
+                    >
+                      <X size={13} />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

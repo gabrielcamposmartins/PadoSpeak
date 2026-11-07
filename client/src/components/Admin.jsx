@@ -25,6 +25,7 @@ import {
   Sticker,
 } from 'lucide-react';
 import { useStore } from '../store.js';
+import { MODULES, normalizeModules } from '../modules.js';
 import AgentKeys from './AgentKeys.jsx';
 import MediaAdmin from './MediaAdmin.jsx';
 import Avatar, { UserName } from './Avatar.jsx';
@@ -859,6 +860,73 @@ function Viewers({ owner }) {
   );
 }
 
+// ---------- Módulos ----------
+
+/**
+ * Os módulos do app (veja `modules.js`): o chat de texto é fixo; o resto liga e desliga na hora para todos.
+ * Desligar não apaga nada (canais de voz, cargos e sons voltam ao religar). Com a variável `MODULES` no
+ * servidor, a escolha fica travada.
+ */
+function AppModules() {
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const st = useStore.getState();
+  useEffect(() => {
+    st.adminModules().then(setData, (e) => st.notify(e.message));
+  }, []);
+  if (!data) return <p className="kv">Carregando…</p>;
+  const editable = data.canEdit && !data.locked && !busy;
+  const toggle = async (key, on) => {
+    setBusy(true);
+    try {
+      // ligar um módulo liga também o de que ele depende (a música precisa das chamadas)
+      const need = on ? MODULES.find((m) => m.key === key)?.requires : null;
+      setData(await st.saveModules(normalizeModules({ ...data.modules, [key]: on, ...(need ? { [need]: true } : {}) })));
+    } catch (e) {
+      st.notify(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const nameOf = (key) => MODULES.find((m) => m.key === key)?.name;
+  const on = MODULES.filter((m) => data.modules[m.key] === true).length;
+  return (
+    <div className="adm-mode adm-features adm-modules">
+      <h3>Módulos</h3>
+      <p className="kv">
+        Escolha o que este app oferece. Um módulo desligado some do app de todo mundo na hora. Nada é apagado: ao religar, tudo volta como estava.
+      </p>
+      <label className="checkbox">
+        <input type="checkbox" checked disabled />
+        <span>
+          Chat de texto
+          <small className="check-hint">Conversas, servidores, canais de texto, arquivos e stickers. Sempre ligado: é a base do app.</small>
+        </span>
+      </label>
+      {MODULES.map((m) => {
+        const blocked = m.requires && data.modules[m.requires] === false;
+        return (
+          <label key={m.key} className={`checkbox${m.requires ? ' adm-module-sub' : ''}`}>
+            <input type="checkbox" checked={data.modules[m.key] === true} disabled={!editable} onChange={(e) => toggle(m.key, e.target.checked)} />
+            <span>
+              {m.name}
+              <small className="check-hint">
+                {m.desc}
+                {blocked && ` Precisa de ${nameOf(m.requires)}: ligar este liga os dois.`}
+              </small>
+            </span>
+          </label>
+        );
+      })}
+      <p className="kv">
+        {on === 0 ? 'Só o chat de texto está ligado.' : `${on + 1} de ${MODULES.length + 1} módulos ligados.`}
+        {data.locked && ' Definidos pela variável MODULES do servidor: para mudar, troque a variável e reinicie.'}
+        {!data.canEdit && !data.locked && ' Só o dono do app muda os módulos.'}
+      </p>
+    </div>
+  );
+}
+
 // ---------- Regras dos arquivos ----------
 
 const DAY = 24 * HOUR;
@@ -1152,6 +1220,7 @@ export default function AdminPage() {
               ['uso', 'Uso e horários'],
               ['pessoas', `Pessoas (${data.users.length})`],
               ['servidores', `Servidores (${data.guilds.length})`],
+              ['modulos', 'Módulos'],
               ['arquivos', 'Arquivos'],
               ['midia', 'Mídia'],
               ['assistente', 'Assistente'],
@@ -1173,6 +1242,7 @@ export default function AdminPage() {
             )}
             {tab === 'pessoas' && <UsersTable users={data.users} now={data.now} />}
             {tab === 'servidores' && <GuildsTable guilds={data.guilds} base={base} now={data.now} />}
+            {tab === 'modulos' && <AppModules />}
             {tab === 'arquivos' && <FilePolicy />}
             {tab === 'midia' && <MediaAdmin />}
             {tab === 'assistente' && <AgentKeys scope="admin" />}

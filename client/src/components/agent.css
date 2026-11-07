@@ -1,30 +1,190 @@
-/* Assistente: a conversa com o agente (Agent.jsx). Usa as cores do tema (claro e escuro). */
-.agent-main {
+/* Módulo Assistente: o balão do agente (Agent.jsx), por cima da tela aberta. Usa as cores do tema (claro e escuro). */
+.agent-pop {
+  position: fixed;
+  z-index: 120;
   display: flex;
   flex-direction: column;
-  min-height: 0;
+  width: min(420px, calc(100vw - 24px));
+  height: min(640px, calc(100vh - 24px));
+  padding: 10px 10px 8px;
+  border-radius: 14px;
+  border: 1px solid var(--window-border);
+  background: var(--window);
+  color: var(--text);
+  box-shadow: 0 18px 48px rgba(5, 40, 90, 0.32), 0 2px 6px rgba(0, 0, 0, 0.12);
+  transform-origin: left bottom;
+  animation: agent-pop-in 0.14s ease-out;
 }
-.agent-chat {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
+/* ao lado do ícone no pé do trilho, com a seta apontando para ele */
+.agent-pop.anchored {
+  max-height: calc(100vh - 16px);
+}
+.agent-pop.anchored::before {
+  content: '';
+  position: absolute;
+  left: -7px;
+  bottom: var(--arrow, 18px);
+  width: 12px;
+  height: 12px;
+  rotate: 45deg;
+  background: var(--window);
+  border-left: 1px solid var(--window-border);
+  border-bottom: 1px solid var(--window-border);
+}
+/* flutuante: logo acima do botão do canto inferior direito, com a seta para baixo, apontando para ele */
+.agent-pop.anchored.float {
+  transform-origin: right bottom;
+}
+.agent-pop.anchored.float::before {
+  left: auto;
+  right: var(--arrow, 18px);
+  bottom: -7px;
+  border-left: none;
+  border-right: 1px solid var(--window-border);
+}
+/* flutuante, os puxadores do lado e do canto ficam à esquerda (o balão cresce para a esquerda) */
+.agent-pop.float .agent-resize.x {
+  right: auto;
+  left: -4px;
+}
+.agent-pop.float .agent-resize.xy {
+  right: auto;
+  left: -4px;
+  cursor: nwse-resize;
+}
+.agent-pop.float .agent-resize.xy::after {
+  right: auto;
+  left: 7px;
+  border-right: none;
+  border-left: 2px solid var(--muted);
+  border-top-right-radius: 0;
+  border-top-left-radius: 3px;
+}
+/* sem o ícone à vista (celular): uma folha embaixo, na largura da tela */
+.agent-pop.sheet {
+  left: 8px;
+  right: 8px;
+  bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+  width: auto;
+  height: min(78vh, 640px);
+  transform-origin: center bottom;
+}
+/* puxadores para redimensionar: a borda de cima, a da direita e o canto entre elas (o balão cresce para
+   cima e para a direita, preso ao lado do ícone) */
+.agent-resize {
+  position: absolute;
+  z-index: 2;
+  touch-action: none;
+}
+.agent-resize.y {
+  top: -4px;
+  left: 16px;
+  right: 16px;
+  height: 9px;
+  cursor: ns-resize;
+}
+.agent-resize.x {
+  right: -4px;
+  top: 16px;
+  bottom: 16px;
+  width: 9px;
+  cursor: ew-resize;
+}
+.agent-resize.xy {
+  top: -4px;
+  right: -4px;
+  width: 20px;
+  height: 20px;
+  cursor: nesw-resize;
+}
+/* o sinal do canto: duas linhas curtas, mais fortes ao passar o mouse */
+.agent-resize.xy::after {
+  content: '';
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 7px;
+  height: 7px;
+  border-top: 2px solid var(--muted);
+  border-right: 2px solid var(--muted);
+  border-top-right-radius: 3px;
+  opacity: 0.45;
+  transition: opacity 0.12s;
+}
+.agent-resize.xy:hover::after,
+.agent-pop:hover .agent-resize.xy::after {
+  opacity: 0.8;
+}
+.agent-resize.y:hover,
+.agent-resize.x:hover {
+  background: color-mix(in srgb, var(--link) 18%, transparent);
+  border-radius: 999px;
+}
+.agent-pop.sheet .agent-resize.y {
+  top: -2px;
+  height: 14px;
+  left: 30%;
+  right: 30%;
+}
+.agent-pop.sheet .agent-resize.y::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 5px;
+  width: 36px;
+  height: 4px;
+  translate: -50% 0;
+  border-radius: 999px;
+  background: var(--line);
+}
+@keyframes agent-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-pop {
+    animation: none;
+  }
 }
 .agent-head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 4px 10px;
+  gap: 8px;
+  padding: 0 2px 8px;
   border-bottom: 1px solid var(--line);
   flex: none;
 }
-.agent-head .tool {
-  margin-left: auto;
-  font-size: 12px;
-  padding: 6px 12px;
-  display: inline-flex;
+.agent-head .agent-title {
+  flex: 1;
+}
+.agent-head .round.mini {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
+/* o que vai junto do pedido (a tela de agora) */
+.agent-scope {
+  flex: none;
+  display: flex;
   align-items: center;
   gap: 6px;
+  margin-top: 6px;
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 0;
+}
+.agent-scope span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .agent-title {
   display: flex;
@@ -44,16 +204,16 @@
   flex: none;
   display: grid;
   place-items: center;
-  width: 40px;
-  height: 40px;
+  width: 32px;
+  height: 32px;
   border-radius: 50%;
   color: #fff;
   background: radial-gradient(circle at 35% 30%, #c9b8ff, #7b5cf0 55%, #4b2bb8);
   box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.6), 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 .agent-avatar.small {
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
 }
 .guild-rail .agent-gel {
   --c: #7b5cf0;
@@ -64,10 +224,10 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 14px 6px;
+  padding: 12px 2px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 .agent-msg {
   display: flex;
@@ -83,10 +243,11 @@
   flex-direction: column;
   gap: 6px;
   min-width: 0;
-  max-width: min(680px, 85%);
+  max-width: 88%;
 }
 .agent-bubble {
-  padding: 8px 12px;
+  padding: 7px 11px;
+  font-size: 13.5px;
   border-radius: 14px;
   background: var(--panel);
   border: 1px solid var(--panel-border);
@@ -96,7 +257,7 @@
   line-height: 1.45;
 }
 .agent-msg.mine .agent-bubble {
-  max-width: min(600px, 85%);
+  max-width: 85%;
   background: var(--row-sel);
   border-color: var(--row-sel-border);
 }
@@ -127,7 +288,8 @@
 
 .agent-empty {
   margin: auto;
-  max-width: 520px;
+  max-width: 360px;
+  font-size: 13px;
   text-align: center;
   color: var(--text-2);
   display: flex;
@@ -170,8 +332,8 @@
 .agent-confirm {
   flex-direction: column;
   align-self: stretch;
-  max-width: 680px;
   border: 1px solid var(--row-sel-border);
+  background: var(--panel);
 }
 .agent-confirm ul {
   margin: 0;
@@ -220,15 +382,14 @@
   display: flex;
   align-items: flex-end;
   gap: 8px;
-  padding: 8px;
-  margin-top: 6px;
-  border-radius: 14px;
+  padding: 6px 0 0;
+  border-top: 1px solid var(--line);
 }
 .agent-compose textarea {
   flex: 1;
   resize: none;
-  min-height: 38px;
-  max-height: 160px;
+  min-height: 36px;
+  max-height: 140px;
   field-sizing: content;
   padding: 8px 10px;
   border-radius: 10px;
@@ -236,20 +397,40 @@
 }
 .agent-compose .round {
   flex: none;
-  width: 38px;
-  height: 38px;
+  width: 36px;
+  height: 36px;
   display: grid;
   place-items: center;
 }
 
-@media (max-width: 600px) {
-  .agent-head .tool {
-    padding: 6px 8px;
-  }
-  .agent-body,
-  .agent-msg.mine .agent-bubble {
-    max-width: 92%;
-  }
+/* as fontes da pesquisa na internet, embaixo da resposta */
+.agent-sources {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.agent-sources a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 220px;
+  font-size: 11.5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--link);
+  text-decoration: none;
+}
+.agent-sources a:hover {
+  border-color: var(--link);
+}
+.agent-sources span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Chaveiro (AgentKeys.jsx): no painel do administrador e em Configurações → Assistente */
@@ -480,4 +661,20 @@
 .agent-model-chip:hover {
   color: var(--link);
   text-decoration: underline;
+}
+
+/* Painel → Assistente: quem usa a chave e o modelo do app (AgentKeys.jsx, AppAccess) */
+.agent-access {
+  margin-top: 14px;
+}
+.agent-access .settings-sec {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.agent-access-opts .checkbox {
+  margin: 8px 0;
+}
+.agent-access .adm-grant {
+  margin: 10px 0;
 }

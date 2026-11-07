@@ -215,7 +215,7 @@ impl Shared {
 
     async fn session(self: Arc<Self>, boot_id: &mut Option<String>) -> Result<(), String> {
         let url = self.cfg.pairing.control_url();
-        let (ws, _) = tokio::time::timeout(Duration::from_secs(15), tokio_tungstenite::connect_async(url.as_str()))
+        let (ws, _) = tokio::time::timeout(Duration::from_secs(15), control::ws_connect(url.as_str()))
             .await
             .map_err(|_| format!("o servidor {} não respondeu", self.cfg.pairing.url))?
             .map_err(|e| format!("não deu para ligar para {}: {e}", self.cfg.pairing.url))?;
@@ -512,7 +512,7 @@ impl NodeMusic {
         }
         .await;
         let url = format!("{base}/api/media/stream/{ticket}");
-        let Ok(Ok((mut ws, _))) = tokio::time::timeout(Duration::from_secs(15), tokio_tungstenite::connect_async(url.as_str())).await else {
+        let Ok(Ok((mut ws, _))) = tokio::time::timeout(Duration::from_secs(15), control::ws_connect(url.as_str())).await else {
             self.logs.warn("Música pelo nó: não deu para entregar ao servidor");
             return;
         };

@@ -25,7 +25,8 @@ import {
 import { useStore, sendSticker, sendFile, sendVoice, usePerms } from '../store.js';
 import { FileView, UploadList, parseFile, parseVoice, isBlockedFile, VoiceNote, ExpiresTag } from './Files.jsx';
 import { StickerPicker, MessageSticker, parseSticker } from './Stickers.jsx';
-import FormatTools, { formatKey } from './FormatTools.jsx';
+import FormatTools from './FormatTools.jsx';
+import RichInput from './RichInput.jsx';
 import { AttachTray, oversized, CAPTION_MAX, CameraCapture, VoiceRecorder, requestMic, fromPhoneCamera } from './Compose.jsx';
 import AttachSheet from './AttachSheet.jsx';
 import { addRecent } from '../lib/recent.js';
@@ -121,7 +122,7 @@ function ComposerTools({ inputRef, text, setText, channelId, target, onFiles, on
   const stickerBtn = useRef(null);
   const fileInput = useRef(null);
   return (
-    <FormatTools inputRef={inputRef} text={text} setText={setText} maxRaw={MAX} phone={phone}>
+    <FormatTools inputRef={inputRef} phone={phone}>
       <button
         type="button"
         className="gloss tool-sq"
@@ -461,13 +462,15 @@ function Message({ m, head, canEdit: canEditText, canDelete, canPin, onReply, me
         )}
         {editing ? (
           <div className="edit-box">
-            <textarea
+            <RichInput
               autoFocus
+              multiline
               rows={Math.min(8, draft.split('\n').length)}
+              maxLength={MAX}
+              aria-label="Editar a mensagem"
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
+              onChange={setDraft}
               onKeyDown={(e) => {
-                if (formatKey(e, e.currentTarget, draft, setDraft, MAX)) return;
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
                   save();
@@ -1003,23 +1006,19 @@ export default function ChatView({ channel, variant = 'channel' }) {
     if ('everyone'.startsWith(q)) list.unshift({ key: 'everyone', username: 'everyone' });
     return list;
   }, [mention, members, me.id]);
-  const findMention = (value, caret) => {
+  /** O que está antes do cursor termina num "@algo": abre a lista de menções. */
+  const findMention = () => {
     if (!members) return setMention(null);
-    const m = /(^|[^\w.@])@([A-Za-z0-9_.]{0,32})$/.exec(value.slice(0, caret));
-    setMention(m ? { start: caret - m[2].length - 1, query: m[2], index: 0 } : null);
+    const before = inputRef.current?.textBeforeCaret() || '';
+    const m = /(^|[^\w.@])@([A-Za-z0-9_.]{0,32})$/.exec(before);
+    setMention(m ? { query: m[2], index: 0 } : null);
   };
+  /** Troca o "@algo" antes do cursor pela menção escolhida. */
   const pickMention = (item) => {
     const el = inputRef.current;
     if (!el || !mention || !item) return;
-    const caret = el.selectionStart;
-    const next = `${text.slice(0, mention.start)}@${item.username} ${text.slice(caret)}`.slice(0, MAX);
-    const pos = Math.min(next.length, mention.start + item.username.length + 2);
-    setText(next);
+    el.replaceBeforeCaret(mention.query.length + 1, `@${item.username} `);
     setMention(null);
-    requestAnimationFrame(() => {
-      el.focus();
-      el.setSelectionRange(pos, pos);
-    });
   };
   /** Teclas da lista de menções: setas escolhem, Enter/Tab colocam, Esc fecha. */
   const mentionKey = (e) => {
@@ -1043,11 +1042,11 @@ export default function ChatView({ channel, variant = 'channel' }) {
     return false;
   };
 
-  function onChange(e) {
-    setText(e.target.value);
-    findMention(e.target.value, e.target.selectionStart);
+  function onChange(value) {
+    setText(value);
+    findMention();
     const now = Date.now();
-    if (now - lastTyping.current > 3000 && e.target.value) {
+    if (now - lastTyping.current > 3000 && value) {
       lastTyping.current = now;
       useC.getState().sendTyping(channel.id);
     }
@@ -1178,9 +1177,10 @@ export default function ChatView({ channel, variant = 'channel' }) {
   );
 
   const textarea = (
-    <textarea
+    <RichInput
       ref={inputRef}
-      rows={dm ? 3 : 2}
+      multiline
+      className="compose-input"
       aria-label={dm ? `Mensagem para ${channel.name}` : `Mensagem para #${channel.name}`}
       placeholder={placeholder}
       value={text}
@@ -1188,13 +1188,12 @@ export default function ChatView({ channel, variant = 'channel' }) {
       onChange={onChange}
       onKeyDown={(e) => {
         if (mentionKey(e)) return;
-        if (formatKey(e, inputRef.current, text, setText, MAX)) return;
         if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
           e.preventDefault();
           send();
         } else if (e.key === 'Escape' && reply) setReply(null);
       }}
-      onClick={(e) => findMention(e.currentTarget.value, e.currentTarget.selectionStart)}
+      onClick={findMention}
       onBlur={() => setTimeout(() => setMention(null), 150)}
       onPaste={(e) => {
         // Colar uma imagem (print) ou arquivos copiados envia como arquivo.

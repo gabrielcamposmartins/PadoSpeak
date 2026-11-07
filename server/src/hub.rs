@@ -189,6 +189,8 @@ struct HubState {
     /// Chamada de uma conversa privada → quem foi chamado para ela sem ser da conversa (`call:invite`). Entra
     /// só na chamada (não vê a conversa) e some daqui quando a chamada acaba.
     call_guests: HashMap<String, HashSet<String>>,
+    /// Os módulos ligados (veja `crate::modules`): o que for de um módulo desligado é recusado aqui.
+    modules: crate::modules::Modules,
 }
 
 /// Quantas pessoas cabem numa chamada de conversa privada (os dois da conversa e os convidados).
@@ -283,6 +285,32 @@ impl Hub {
         self.state.lock().unwrap().media = Some(media);
     }
 
+    /// Os módulos em vigor (veja `crate::modules`).
+    pub fn modules(&self) -> crate::modules::Modules {
+        self.state.lock().unwrap().modules
+    }
+
+    /// Troca os módulos. Sem as chamadas, quem estava numa sai dela (o app já esconde a voz pelo `app:modules`).
+    pub fn set_modules(&self, m: crate::modules::Modules) {
+        let mut s = self.state.lock().unwrap();
+        s.modules = m;
+        if !m.voice {
+            let all: Vec<ConnId> = s.conn_voice.keys().cloned().collect();
+            for id in all {
+                Self::kick_from_voice(&mut s, &id);
+            }
+        }
+    }
+
+    /// A operação é de um módulo desligado? Devolve a recusa.
+    fn module_refusal(&self, op: &str) -> Option<Value> {
+        let m = crate::modules::Module::of_op(op)?;
+        if self.modules().has(m) {
+            return None;
+        }
+        Some(json!({ "error": format!("O módulo {} está desligado neste servidor", m.name()), "module": m.key() }))
+    }
+
     pub fn boot_id(&self) -> &str {
         &self.boot_id
     }
@@ -345,15 +373,19 @@ impl Hub {
             s.voice_route.remove(channel_id);
             return;
         };
-        if list.first().is_some_and(|p| p.dm_users.is_some()) {
+        // Chamada privada: em malha, a não ser com "sempre usar o SFU" (a que já está num nó é revista igual:
+        // o nó pode ter caído, ou a opção ter sido desligada depois, e ela continua nele até esvaziar).
+        let always = reg.sfu_always();
+        if !always && list.first().is_some_and(|p| p.dm_users.is_some()) && !s.voice_route.contains_key(channel_id) {
             return;
         }
+        let min = if always { 1 } else { reg.min_people() };
         let capable = list.iter().filter(|p| p.sfu_ok).count();
         let current = s.voice_route.get(channel_id).map(|r| r.node.clone());
         let target = match current.clone().filter(|n| reg.alive(n)) {
             Some(n) if n == crate::media::registry::LOCAL && reg.overloaded() && reg.has_remote_sfu() => reg.pick_sfu(),
             Some(n) => Some(n),
-            None if capable >= reg.min_people() => reg.pick_sfu(),
+            None if capable >= min => reg.pick_sfu(),
             None => None,
         };
         if target == current {
@@ -436,6 +468,37 @@ impl Hub {
     /// Alguém está no canal de voz agora?
     pub fn voice_has_people(&self, channel_id: &str) -> bool {
         self.state.lock().unwrap().voice.get(channel_id).is_some_and(|v| !v.is_empty())
+    }
+
+    /// Quem está num canal de voz (para o assistente) e desde quando a chamada começou.
+    pub fn voice_people(&self, channel_id: &str) -> (Vec<Value>, Option<i64>) {
+        let s = self.state.lock().unwrap();
+        let people = s
+            .voice
+            .get(channel_id)
+            .map(|list| {
+                list.iter()
+                    .map(|p| {
+                        json!({
+                            "id": p.user.id, "name": plain_text(&p.user.display_name), "username": p.user.username,
+                            "muted": p.muted || p.server_muted, "deafened": p.deafened, "camera": p.video, "screen": p.screen,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        (people, s.voice_since.get(channel_id).copied())
+    }
+
+    /// A chamada em que a pessoa está, por qualquer aparelho: (canal, servidor; "" numa chamada privada).
+    pub fn voice_of_user(&self, user_id: &str) -> Option<(String, String)> {
+        let s = self.state.lock().unwrap();
+        let conns = s.user_conns.get(user_id)?;
+        conns.iter().find_map(|c| {
+            let ch = s.conn_voice.get(c)?;
+            let first = s.voice.get(ch)?.first()?;
+            Some((ch.clone(), if first.dm_users.is_some() { String::new() } else { first.guild_id.clone() }))
+        })
     }
 
     /// Canal de voz (e guild) em que a conexão está.
@@ -1078,6 +1141,12 @@ impl Hub {
                         Some(Ok(WsMessage::Text(text))) => {
                             if let Ok(req) = serde_json::from_str::<Request>(&text) {
                                 pings |= req.op == "ping";
+                                if let Some(no) = self.module_refusal(&req.op) {
+                                    if let Some(id) = req.id {
+                                        let _ = tx.send(json!({ "re": id, "d": no }).to_string());
+                                    }
+                                    continue;
+                                }
                                 if req.op == "music:add" {
                                     self.spawn_music_add(&app, &conn_id, &user, req.d, req.id, tx.clone());
                                     continue;
@@ -1212,6 +1281,9 @@ impl Hub {
             let ids = s.user_conns.get(&user.id);
             ids.and_then(|ids| ids.iter().find(|c| s.conn_voice.contains_key(*c)).or_else(|| ids.iter().next()).cloned()).unwrap_or_default()
         };
+        if let Some(no) = self.module_refusal(op) {
+            return no;
+        }
         if op == "music:add" {
             let Some((channel_id, guild_id)) = self.voice_channel_of(&conn) else {
                 return json!({ "error": "Entre em um canal de voz para tocar música" });
@@ -1904,7 +1976,7 @@ impl Hub {
                     // Voltando depois de o servidor reiniciar: a sala continua no nó em que estava (a mídia
                     // pelo nó não parou), e a sessão de antes passa para esta conexão.
                     if let (Some(hint), Some(w)) = (&media_hint, &was) {
-                        if dm_users.is_none() && !s.voice_route.contains_key(&ch_id) && reg.alive(hint) {
+                        if (dm_users.is_none() || reg.sfu_always()) && !s.voice_route.contains_key(&ch_id) && reg.alive(hint) {
                             s.route_epoch += 1;
                             let epoch = s.route_epoch;
                             s.voice_route.insert(ch_id.clone(), Route { node: hint.clone(), epoch, prev: None });

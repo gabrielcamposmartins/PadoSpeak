@@ -199,7 +199,7 @@ function MePage() {
             <Sparkles size={20} className="ico-purple" />
             <span>
               <b>Assistente</b>
-              <small>Peça para mandar mensagens, criar canais, ajustar configurações…</small>
+              <small>Abre por cima da tela: resume canais, analisa a chamada, pesquisa na internet…</small>
             </span>
           </button>
         )}
@@ -267,7 +267,7 @@ export default function MobileShell() {
   const view = useStore((s) => s.view);
   const music = useStore((s) => s.sidebarView === 'music' && s.currentGuildId != null);
 
-  const detail = pane === 'detail' && (music || ['dm', 'text', 'voice', 'agent', 'call'].includes(view?.type));
+  const detail = pane === 'detail' && (music || ['dm', 'text', 'voice', 'call'].includes(view?.type));
   const bg = useAppBackground();
   return (
     <div className={`aero-app mobile-app${detail ? ' m-open' : ''}`} {...bg}>

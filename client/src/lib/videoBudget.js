@@ -13,12 +13,13 @@ const SOFTWARE_SCREEN_BPS = 2_500_000;
 /** Pelo relay (TURN) o servidor deixa 1,5 Mbps por sessão, somando voz, câmera e tela. */
 export const RELAY_SCREEN_BPS = 900_000;
 export const RELAY_CAMERA_BPS = 250_000;
+const RELAY_SCREEN_FPS = 30;
 
 /**
  * Alvo do envio de um vídeo para uma pessoa.
  * @param {object} o
  * @param {'screen' | 'camera'} o.kind
- * @param {{ bitrate: number, fps: number, height: number }} o.preset qualidade escolhida
+ * @param {{ bitrate: number, fps: number, height: number, auto?: boolean }} o.preset qualidade escolhida
  * @param {number} o.viewers quantas pessoas recebem este vídeo
  * @param {boolean} [o.relay] a conexão com esta pessoa passa pelo relay
  * @param {boolean} [o.software] o envio para esta pessoa está sendo codificado pelo processador
@@ -30,8 +31,9 @@ export function videoTarget({ kind, preset, viewers, relay = false, software = f
   let bitrate = Math.min(preset.bitrate, Math.max(screen ? SCREEN_FLOOR_BPS : CAMERA_FLOOR_BPS, Math.round(share)));
   let fps = preset.fps;
   let scale = 1;
-  // Sem a placa de vídeo (ou com ela já ocupada com os outros envios), 1080p pesa no processador.
-  if (software && screen && preset.height > 720) {
+  // Sem a placa de vídeo (ou com ela já ocupada com os outros envios), 1080p pesa no processador. Só a
+  // qualidade automática cede: quem escolheu uma fica nela.
+  if (software && screen && preset.auto && preset.height > 720) {
     scale = preset.height / 720;
     fps = Math.min(fps, 30);
     bitrate = Math.min(bitrate, SOFTWARE_SCREEN_BPS);
@@ -40,7 +42,7 @@ export function videoTarget({ kind, preset, viewers, relay = false, software = f
     bitrate = Math.min(bitrate, screen ? RELAY_SCREEN_BPS : RELAY_CAMERA_BPS);
     if (screen) {
       scale = Math.max(scale, preset.height / 720);
-      fps = Math.min(fps, 15);
+      fps = Math.min(fps, RELAY_SCREEN_FPS);
     }
   }
   return { bitrate, fps, scale };

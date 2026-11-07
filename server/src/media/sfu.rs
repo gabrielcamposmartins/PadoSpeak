@@ -197,7 +197,6 @@ impl Sfu {
             dirty: HashSet::new(),
             stats: stats.clone(),
             frames: FrameLog::default(),
-            next_addrs: None,
         };
         tokio::spawn(run(state, rx, stop.clone()));
         Ok(Arc::new(Self { tx, port, stats, stop }))
@@ -323,6 +322,9 @@ fn layer_index(rid: Rid) -> Option<usize> {
 
 struct Leg {
     rtc: Rtc,
+    /// O endereço que esta conexão anunciou (o destino dos pacotes que chegam para ela). Guardado por
+    /// conexão: o IP de casa pode mudar com conexões abertas, e as novas já anunciam o novo.
+    local: SocketAddr,
     next: Instant,
     created: Instant,
     connected: bool,
@@ -331,9 +333,9 @@ struct Leg {
 }
 
 impl Leg {
-    fn new(rtc: Rtc) -> Self {
+    fn new((rtc, local): (Rtc, SocketAddr)) -> Self {
         let now = Instant::now();
-        Leg { rtc, next: now, created: now, connected: false, lost_since: None }
+        Leg { rtc, local, next: now, created: now, connected: false, lost_since: None }
     }
 }
 
@@ -453,8 +455,6 @@ struct State {
     port: u16,
     stats: Arc<SfuStats>,
     frames: FrameLog,
-    /// Endereços novos esperando o SFU esvaziar (veja `Cmd::SetAddrs`).
-    next_addrs: Option<Vec<SocketAddr>>,
     provider: Arc<CryptoProvider>,
     cert: DtlsCert,
     addrs: Vec<SocketAddr>,
@@ -515,7 +515,8 @@ async fn run(mut st: State, mut rx: UnboundedReceiver<Cmd>, shutdown: Cancellati
 }
 
 impl State {
-    fn rtc(&self) -> Rtc {
+    /// Uma conexão nova, com os endereços de agora (e o primeiro deles, que ela anuncia como destino).
+    fn rtc(&self) -> (Rtc, SocketAddr) {
         let mut rtc = Rtc::builder()
             .set_ice_lite(true)
             .set_crypto_provider(self.provider.clone())
@@ -532,7 +533,7 @@ impl State {
                 rtc.add_local_candidate(c);
             }
         }
-        rtc
+        (rtc, self.addrs[0])
     }
 
     fn send(&self, conn: &str, ev: &str, d: Value) {
@@ -616,13 +617,10 @@ impl State {
                 if addrs.is_empty() || addrs == self.addrs {
                     return;
                 }
-                // As conexões abertas anunciaram os endereços de antes (e o destino de cada pacote é o
-                // primeiro deles): a troca espera o SFU esvaziar.
-                if self.peers.is_empty() {
-                    self.addrs = addrs;
-                } else {
-                    self.next_addrs = Some(addrs);
-                }
+                // Vale já para as conexões novas. As abertas continuam com o endereço que anunciaram (cada uma
+                // guarda o dela); se o IP público mudou, elas não chegam mais e os apps refazem.
+                eprintln!("[sfu] endereços anunciados: {}", addrs.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", "));
+                self.addrs = addrs;
             }
             Cmd::Publish { conn, offer, tracks, reply } => {
                 let _ = reply.send(self.publish(&conn, offer, tracks));
@@ -735,11 +733,6 @@ impl State {
                 self.dirty.insert(*id);
             }
         }
-        if self.peers.is_empty() {
-            if let Some(addrs) = self.next_addrs.take() {
-                self.addrs = addrs;
-            }
-        }
         self.count();
     }
 
@@ -759,25 +752,33 @@ impl State {
 
     /* ---------------------------------------------------------- rede */
 
+    /// Um pacote que chegou na porta UDP. Só entra numa conexão que o reconhece (STUN com o usuário e a senha
+    /// do ICE, trocados pelo servidor principal, ou o endereço de um caminho que o ICE já validou); o resto é
+    /// descartado sem resposta (não serve para refletir tráfego para outros).
     fn receive(&mut self, source: SocketAddr, data: &[u8]) {
-        let Ok(contents) = data.try_into() else { return };
-        // ICE-lite com um socket só: o destino é sempre o primeiro endereço anunciado.
-        let input = Input::Receive(
-            Instant::now(),
-            Receive { proto: Protocol::Udp, source, destination: self.addrs[0], contents },
-        );
+        if data.is_empty() || data.len() >= 2048 {
+            return;
+        }
+        // ICE-lite com um socket só: o destino é o endereço que a própria conexão anunciou.
+        let input_for = |local: SocketAddr| -> Option<Input<'_>> {
+            let contents = data.try_into().ok()?;
+            Some(Input::Receive(Instant::now(), Receive { proto: Protocol::Udp, source, destination: local, contents }))
+        };
+        let accepts = |l: &Leg| input_for(l.local).is_some_and(|i| l.rtc.accepts(&i));
         let cached = self.routes.get(&source).copied().filter(|(pid, side)| {
-            self.peers.get(pid).and_then(|p| match side {
-                Side::Pub => p.publ.as_ref(),
-                Side::Sub => Some(&p.sub),
-            })
-            .is_some_and(|l| l.rtc.accepts(&input))
+            self.peers
+                .get(pid)
+                .and_then(|p| match side {
+                    Side::Pub => p.publ.as_ref(),
+                    Side::Sub => Some(&p.sub),
+                })
+                .is_some_and(accepts)
         });
         let found = cached.or_else(|| {
             self.peers.iter().find_map(|(pid, p)| {
-                if p.sub.rtc.accepts(&input) {
+                if accepts(&p.sub) {
                     Some((*pid, Side::Sub))
-                } else if p.publ.as_ref().is_some_and(|l| l.rtc.accepts(&input)) {
+                } else if p.publ.as_ref().is_some_and(accepts) {
                     Some((*pid, Side::Pub))
                 } else {
                     None
@@ -787,8 +788,14 @@ impl State {
         let Some((pid, side)) = found else { return };
         self.routes.insert(source, (pid, side));
         let leg = self.peers.get_mut(&pid).and_then(|p| p.leg(side)).unwrap();
-        if leg.rtc.handle_input(input).is_err() {
-            leg.rtc.disconnect();
+        let Some(input) = input_for(leg.local) else { return };
+        // Um pacote ruim (forjado com o endereço de alguém, corrompido) é só descartado: derrubar a conexão por
+        // ele deixaria qualquer um que adivinhe o endereço de um participante tirá-lo do SFU. Conexão que
+        // morreu de verdade sai pelos tempos limite (`timeouts`).
+        if let Err(e) = leg.rtc.handle_input(input) {
+            if debug() {
+                eprintln!("[sfu] pacote descartado de {source}: {e}");
+            }
         }
         self.touched.insert((pid, side));
     }

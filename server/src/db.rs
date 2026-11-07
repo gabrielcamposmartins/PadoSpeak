@@ -134,6 +134,12 @@ CREATE TABLE IF NOT EXISTS agent_prefs (
   key_id TEXT,
   model TEXT
 );
+-- Quem pode usar o assistente, quando o dono escolhe só algumas pessoas (`agent_app_access = list`; veja
+-- `crate::agent`). Sem a liberação, o assistente não aparece para a pessoa.
+CREATE TABLE IF NOT EXISTS agent_app_users (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  added_at INTEGER NOT NULL
+);
 -- Nós de mídia (`crate::media`): SFU das chamadas e token da música em outra máquina. O segredo do
 -- pareamento fica selado; `priority` menor recebe as salas primeiro.
 CREATE TABLE IF NOT EXISTS media_nodes (
@@ -145,6 +151,22 @@ CREATE TABLE IF NOT EXISTS media_nodes (
   created_at INTEGER NOT NULL,
   last_seen INTEGER
 );
+-- Cargos dos servidores (`crate::roles`): nome, cor, as permissões que dão e quem tem cada um.
+CREATE TABLE IF NOT EXISTS roles (
+  id TEXT PRIMARY KEY,
+  guild_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  color TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  perms INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS roles_guild ON roles(guild_id);
+CREATE TABLE IF NOT EXISTS role_members (
+  role_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  PRIMARY KEY (role_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS role_members_user ON role_members(user_id);
 "#;
 
 /// Cada item leva o banco para a versão indicada.

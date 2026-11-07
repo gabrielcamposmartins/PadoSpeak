@@ -583,6 +583,14 @@ impl MusicManager {
         Ok(())
     }
 
+    /// Música desligada no app (módulo): para em todos os canais.
+    pub fn clear_all(&self) {
+        let ids: Vec<String> = self.channels.lock().unwrap().keys().cloned().collect();
+        for id in ids {
+            self.clear(&id);
+        }
+    }
+
     /// Canal de voz vazio: a música para e a fila é descartada (o histórico continua).
     pub fn clear(&self, channel_id: &str) {
         let was_playing = {

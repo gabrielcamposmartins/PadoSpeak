@@ -1,6 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { Suspense, lazy, useEffect, useRef } from 'react';
 import { AlertTriangle, Info } from 'lucide-react';
-import { useStore, primaryConn, openFromUrl } from './store.js';
+import { useStore, primaryConn, openFromUrl, agentOn } from './store.js';
 import { isPanel, isTauri } from './lib/env.js';
 import { setWindowMode } from './lib/appWindow.js';
 import { useUpdate, runAutoUpdate } from './lib/update.js';
@@ -13,6 +13,7 @@ import Modals from './components/Modals.jsx';
 import IncomingCalls from './components/IncomingCall.jsx';
 import CallScreen from './components/CallScreen.jsx';
 import { FloatingMiniCall } from './components/MiniCall.jsx';
+import AgentFab from './components/AgentFab.jsx';
 import { SoundSprite } from './components/SoundIcons.jsx';
 import Avatar from './components/Avatar.jsx';
 import { TitleBar } from './components/Aero.jsx';
@@ -151,11 +152,19 @@ function SharedInbox() {
   return null;
 }
 
+/** O balão do assistente só é baixado quando abre a primeira vez. */
+const AgentPopover = lazy(() => import('./components/Agent.jsx'));
+
 export default function App() {
   const phase = useStore((s) => s.phase);
   const toast = useStore((s) => s.toast);
   // Meu perfil (o local no app desktop): enquanto ele existir, a tela principal fica montada.
   const loggedIn = useAcross(() => Boolean(primaryConn().getState().me));
+  // o balão do assistente, por cima da tela
+  const agentOpen = useStore((s) => s.agentOpen && agentOn(s));
+  // flutuante: o ícone do assistente no canto inferior direito (no celular ele fica no trilho)
+  const phoneLayout = useLayout() === 'phone';
+  const agentFab = useStore((s) => agentOn(s) && s.prefs?.agentPlace === 'float') && !phoneLayout;
 
   const boot = useBootStatus();
   // Baixando ou instalando uma versão nova: só a tela de carregamento (o app reabre em seguida).
@@ -188,6 +197,12 @@ export default function App() {
       <SoundSprite />
       {loggedIn && !isPanel && <CallScreen />}
       {loggedIn && !isPanel && <FloatingMiniCall />}
+      {loggedIn && !isPanel && phase === 'app' && !updating && agentFab && <AgentFab />}
+      {loggedIn && !isPanel && phase === 'app' && !updating && agentOpen && (
+        <Suspense fallback={null}>
+          <AgentPopover />
+        </Suspense>
+      )}
       <Modals />
       {loggedIn && <IncomingCalls />}
       {loggedIn && <UnreadBadge />}

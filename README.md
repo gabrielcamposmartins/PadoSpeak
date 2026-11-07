@@ -174,6 +174,8 @@ Valores definidos por variável de ambiente prevalecem sobre o painel (lá apare
 | `MEDIA_JOIN`                                     | —                   | No nó (`padospeak-server media`): o código do Painel → Mídia |
 | `POT` / `MEDIA_MUSIC`                            | ligados             | No nó: `off` desliga o token do YouTube / a busca da música |
 | `POT_PROVIDER_URL`                               | —                   | Provedor de token (bgutil) já de pé, ex.: `http://127.0.0.1:4416` |
+| `MODULES`                                        | do painel           | Módulos ligados, ex.: `voice,music,sounds,roles,agent`; `chat` sozinho deixa só o chat de texto. Trava a escolha do Painel → Módulos |
+| `AGENT_WEB_SEARCH`                               | ligada              | `off` tira do Assistente a pesquisa na internet            |
 
 ## Voz, vídeo e tela
 
@@ -181,8 +183,11 @@ Valores definidos por variável de ambiente prevalecem sobre o painel (lá apare
   mesmo canal de voz. Áudio com cancelamento de eco/ruído, indicador de quem está falando, volume por pessoa,
   mudo/ensurdecer e escolha de microfone, câmera e saída.
 - **Tela em 1080p**: captura limitada a 1920×1080, `contentHint` adequado e bitrate alvo por preset —
-  1080p30 (6 Mbps, prioriza nitidez), 1080p60 (9 Mbps, prioriza fluidez) ou 720p30. A qualidade pode ser trocada
-  durante a transmissão; o selo no vídeo mostra a resolução e o fps recebidos de verdade.
+  automática (padrão: tenta 1080p60 e cede com pouca banda ou sem placa de vídeo), 1080p30 (6 Mbps, prioriza
+  nitidez), 1080p60 (9 Mbps, prioriza fluidez) ou 720p30. As escolhidas mantêm resolução e fps, e pelo relay o
+  teto é 720p30. A qualidade pode ser trocada durante a transmissão; o selo no vídeo mostra a resolução e o fps
+  recebidos de verdade. Enquanto a imagem abre, o quadro mostra "Conectando…"; a falha só aparece depois de 20 s
+  com a conexão caída.
 - Na malha, quem transmite envia uma cópia para cada participante: uma tela 1080p30 para 4 pessoas usa ~24 Mbps
   de upload. Com um **nó de mídia** (abaixo), os canais de voz passam para um SFU e cada um envia uma vez só.
 
@@ -199,7 +204,8 @@ nó** e recebe um código (`psm1.…`) que o nó usa para ligar para o servidor.
   redirecione a porta).
 - **Chamadas:** canal de voz com pelo menos N pessoas (painel, padrão 2) e um nó de pé vai para o SFU do nó (o de
   maior prioridade; o embutido por último). O SFU usa o [str0m](https://github.com/algesten/str0m): uma porta
-  UDP, câmera em simulcast, vídeo só para quem assiste. Chamadas privadas continuam na malha.
+  UDP, câmera em simulcast, vídeo só para quem assiste. Chamadas privadas continuam na malha, a não ser com
+  **Sempre usar o SFU** (Painel → Mídia), que manda toda chamada para o nó, 1 a 1 e nas conversas privadas também.
 - **Cifragem:** os apps cifram os quadros antes de mandar ao nó (Encoded Transforms, AES-256-GCM, chaves trocadas
   por ECDH entre os participantes): o nó só repassa. App ou navegador sem isso fica na malha com todos.
 - **Queda do nó sem ninguém perceber:** em salas de até 8 pessoas a malha fica de pé por baixo, só sem mandar
@@ -236,6 +242,26 @@ nó** e recebe um código (`psm1.…`) que o nó usa para ligar para o servidor.
   em Configurações → Funcionalidade → Atividade. Pokeru e Speedoru são sempre reconhecidos; outro programa
   qualquer entra pelo “Adicione-o” da mesma tela (lista dos programas abertos, com o nome escolhido). Quem
   está num canal privado não tem o canal no status.
+
+## Módulos, cargos e assistente
+
+- **Módulos** (Painel → Módulos, ou a variável `MODULES`): o chat de texto é sempre ligado; chamadas de voz e
+  vídeo, música, sons rápidos, cargos e o assistente ligam e desligam na hora para todos. Desligar não apaga
+  nada: as rotas respondem 404, o WebSocket recusa as operações e o app esconde as telas. A música e os sons
+  dependem das chamadas.
+- **Cargos**: cada servidor tem os seus (nome, cor e quem tem cada um; uma pessoa pode ter vários). A etiqueta
+  aparece embaixo do nome, junto da mensagem pessoal (não no lugar dela). Um cargo pode dar permissões, somadas
+  às da pessoa (nunca administrador); essas, e quem tem um cargo que as dá, só administradores mudam. A lista de
+  membros pode ser agrupada por cargo, e quem tem **Gerenciar cargos** abre a janela pelo botão ao lado de
+  Convidar.
+- **Assistente** (precisa de uma chave da API da Anthropic): abre num balão por cima da tela, pelo ícone no pé do
+  trilho dos servidores ou por um botão flutuante no canto inferior direito (Configurações → Assistente), e pelo
+  atalho (padrão Ctrl + Alt + A). Cada pedido leva o que está na tela (o servidor, os canais, quem está na voz, o
+  canal ou a conversa aberta e, numa chamada, os dados técnicos medidos no aparelho). Ele lê os canais de texto do
+  servidor, analisa a qualidade da chamada e pesquisa na internet (com as fontes na resposta), além de fazer o que
+  a pessoa pedir no app, sempre com o acesso dela.
+  No Painel → Assistente, o dono escolhe quem usa o assistente: todo mundo ou só as pessoas liberadas (para os
+  outros ele não aparece). Para quem não vê o painel, ele não fala de como o app é feito (linguagem, arquitetura, servidores).
 
 ## Música
 

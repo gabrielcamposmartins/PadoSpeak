@@ -97,7 +97,10 @@ function StreamVideo({ stream, mirror, onStats }) {
     let lastFrames = 0;
     const t = setInterval(() => {
       const el = ref.current;
-      if (!el?.videoWidth) return;
+      if (!el?.videoWidth) {
+        onStats(null);
+        return;
+      }
       const frames = el.getVideoPlaybackQuality?.().totalVideoFrames ?? 0;
       onStats({ w: el.videoWidth, h: el.videoHeight, fps: lastFrames ? frames - lastFrames : null });
       lastFrames = frames;
@@ -108,6 +111,11 @@ function StreamVideo({ stream, mirror, onStats }) {
 }
 
 const LIMIT = { bandwidth: 'banda', cpu: 'CPU', other: 'outro' };
+/** Vídeo preso por mais que isto entra no histórico do diagnóstico (menos é só o começo normal). */
+const NOTE_VIDEO_AFTER_MS = 5000;
+/** Conexão caída por mais que isto é falha de verdade (antes disso a reconexão automática ainda age). */
+const FAILED_AFTER_MS = 20000;
+const CONNECTING = 'Conectando…';
 
 function fmtStats(st, self) {
   const rate = st.kbps == null ? '' : st.kbps >= 1000 ? ` · ${(st.kbps / 1000).toFixed(1)} Mbps` : ` · ${st.kbps} kbps`;
@@ -116,21 +124,30 @@ function fmtStats(st, self) {
   return `${st.w}×${st.h} · ${st.fps} fps · ${st.codec}${rate}${limit}`;
 }
 
-/** Explica por que um vídeo recebido está preto, a partir do estado da conexão e do getStats. */
-function videoProblem(tile, rendered) {
-  if (tile.self || !tile.stream) return null;
-  const c = tile.connection;
-  if (c === 'failed' || c === 'disconnected' || c === 'closed')
-    return 'A conexão de mídia com esta pessoa falhou. Em redes diferentes é preciso um servidor TURN; na mesma rede, verifique o firewall.';
-  if (c !== 'connected') return 'Conectando mídia…';
+/**
+ * O que está segurando um vídeo recebido, em termos técnicos, a partir do getStats. Quase sempre passa
+ * sozinho (o começo da transmissão, a imagem que parou de mudar), então só o diagnóstico mostra.
+ */
+function videoDetail(tile, rendered) {
   const st = tile.stats;
-  if (!st) return null;
-  if (st.bytes === 0) return 'Conectado, mas nenhum dado de vídeo está chegando.';
-  if (st.frames === 0)
-    return `Dados chegando, mas o vídeo não decodifica (${st.codec}${st.decoder ? `, ${st.decoder}` : ''}).`;
-  if (rendered && rendered.fps === 0 && st.fps > 0)
-    return 'O vídeo chega e decodifica, mas não está sendo desenhado — provável problema de aceleração de vídeo/GPU.';
+  if (tile.self || !tile.stream || tile.connection !== 'connected' || !st) return null;
+  if (st.bytes === 0) return 'conectado, mas nenhum dado de vídeo está chegando';
+  if (st.frames === 0) return `dados chegando, mas o vídeo não decodifica (${st.codec}${st.decoder ? `, ${st.decoder}` : ''})`;
+  if (rendered && rendered.fps === 0 && st.fps > 0) return 'o vídeo chega e decodifica, mas não está sendo desenhado';
   return null;
+}
+
+const isDown = (c) => c === 'failed' || c === 'disconnected' || c === 'closed';
+
+/**
+ * O que o card diz enquanto um vídeo recebido não aparece: até estabilizar é sempre "Conectando…". Com
+ * imagem na tela, mesmo parada, nada. `failed`: a conexão continua caída depois de `FAILED_AFTER_MS`.
+ */
+function videoProblem(tile, rendered, failed) {
+  if (tile.self || !tile.stream) return null;
+  if (failed)
+    return 'A conexão de mídia com esta pessoa falhou. Em redes diferentes é preciso um servidor TURN; na mesma rede, verifique o firewall.';
+  return tile.connection !== 'connected' || !rendered?.w ? CONNECTING : null;
 }
 
 /** Lado menor do card (para a foto crescer quando o card é grande). */
@@ -158,12 +175,27 @@ function Tile({ tile, focused, grid, onFocus }) {
   // Na grade com mais de 4 pessoas a foto é 2,5× maior, mas sempre cabendo no card com espaço para o
   // nome embaixo: com mais gente na chamada os cards encolhem e a foto encolhe junto.
   const avatarSize = grid && side ? Math.max(baseSize, Math.round(Math.min(fitted * 2.5, side * 0.6, side - 70))) : fitted;
-  const { setPeerVolume, setStreamAudio, setScreenAudioMuted, watchPeer } = useConn().getState();
+  const { setPeerVolume, setStreamAudio, setScreenAudioMuted, watchPeer, noteVideo } = useConn().getState();
   const name = plain(tile.user?.displayName) || 'alguém';
   const kind = tile.kind === 'screen' ? 'screen' : 'camera';
   const isScreen = tile.kind === 'screen';
+  const detail = videoDetail(tile, rendered);
+  const down = Boolean(tile.stream) && !tile.self && isDown(tile.connection);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setFailed(false);
+    if (!down) return undefined;
+    const t = setTimeout(() => setFailed(true), FAILED_AFTER_MS);
+    return () => clearTimeout(t);
+  }, [down]);
+  useEffect(() => {
+    if (!detail) return undefined;
+    const t = setTimeout(() => noteVideo(tile.peerId, `${isScreen ? 'tela' : 'câmera'}: ${detail}`), NOTE_VIDEO_AFTER_MS);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail]);
   const problem =
-    videoProblem(tile, rendered) ||
+    videoProblem(tile, rendered, failed) ||
     (tile.trouble && !isScreen ? `Sem conexão de voz com ${name} — você não ouve e não é ouvido. Tentando reconectar…` : null);
   const badge = tile.stats?.w
     ? `${tile.self ? 'enviando ' : ''}${fmtStats(tile.stats, tile.self)}`
@@ -201,7 +233,7 @@ function Tile({ tile, focused, grid, onFocus }) {
           onStats={setRendered}
         />
       ) : tile.pending ? (
-        <span className="waiting">Aguardando transmissão…</span>
+        <span className="waiting">{CONNECTING}</span>
       ) : tile.offer === 'screen' ? (
         <div className="tile-offer">
           <Avatar user={tile.user} size={focused ? 72 : 40} status="live" />
@@ -407,7 +439,7 @@ export default function VoiceView({ channel, variant }) {
   const stripDrag = useDraggable(phone);
   // Pedido de "assistir a transmissão" (clique em quem está ao vivo): destaca a tela da pessoa assim que chegar.
   const focusRequest = useStore((s) => s.focusRequest);
-  const [preset, setPreset] = useState('1080p30');
+  const [preset, setPreset] = useState('auto');
   const [showDiag, setShowDiag] = useState(false);
   const seenScreens = useRef(new Set());
   const store = useC.getState();

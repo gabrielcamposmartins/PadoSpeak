@@ -1,6 +1,7 @@
 // Emoticons no estilo Aero (desenhos próprios em SVG, com brilho de vidro) e o texto formatado das mensagens.
 import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { plain, visibleLength, colorSpans, MENTION_RE, mentionsUser } from '../lib/text.js';
 import { MAGIC_RE, magicKind, magicEmoteKind, playMagic, rainbowColor } from '../lib/magic.js';
 
@@ -526,6 +527,45 @@ const EMOTE_RE = new RegExp(
     .join('|'),
 );
 
+/** O desenho do emoticon como imagem (o SVG de sempre, num data: URL), feito uma vez por código. */
+const emoteSrc = new Map();
+export function emoteUrl(code) {
+  if (!emoteSrc.has(code)) {
+    const svg = renderToStaticMarkup(<Emote code={code} size={20} />).replace('<svg ', '<svg xmlns="http://www.w3.org/2000/svg" ');
+    emoteSrc.set(code, `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`);
+  }
+  return emoteSrc.get(code);
+}
+
+/** O emoticon como <img> pronto para desenhar num canvas (o nome em cima da cabeça no escritório). */
+const emoteImgs = new Map();
+export function emoteImage(code) {
+  if (!BY_CODE.has(code)) return null;
+  if (!emoteImgs.has(code)) {
+    const img = new Image();
+    img.src = emoteUrl(code);
+    emoteImgs.set(code, img);
+  }
+  return emoteImgs.get(code);
+}
+
+/** O texto em pedaços: `{ t }` (texto) e `{ emote }` (o código de um emoticon). */
+export function splitEmotes(text) {
+  const out = [];
+  let rest = String(text ?? '');
+  while (rest) {
+    const m = EMOTE_RE.exec(rest);
+    if (!m) {
+      out.push({ t: rest });
+      break;
+    }
+    if (m.index > 0) out.push({ t: rest.slice(0, m.index) });
+    out.push({ emote: m[0] });
+    rest = rest.slice(m.index + m[0].length);
+  }
+  return out;
+}
+
 /** `inText`: emoticon no meio do texto, que cresce junto com o tamanho da fonte escolhido. */
 export function Emote({ code, size = 20, inText = false }) {
   const id = useId().replace(/:/g, '');
@@ -575,8 +615,13 @@ const colorMatch = {
   },
 };
 
+// As tags do campo de formatação (RichInput.jsx) e, depois, as marcas antigas (**negrito**, *itálico*…).
 const FORMAT_RULES = [
   { re: colorMatch, color: true },
+  { re: /\[b\]([\s\S]+?)\[\/b\]/, tag: 'b' },
+  { re: /\[i\]([\s\S]+?)\[\/i\]/, tag: 'i' },
+  { re: /\[u\]([\s\S]+?)\[\/u\]/, tag: 'u' },
+  { re: /\[s\]([\s\S]+?)\[\/s\]/, tag: 's' },
   { re: /\*\*([\s\S]+?)\*\*/, tag: 'b' },
   { re: /__([\s\S]+?)__/, tag: 'u' },
   { re: /~~([\s\S]+?)~~/, tag: 's' },
@@ -669,6 +714,34 @@ function parse(text, opts, key = 'k') {
     rest = rest.slice(m.index + m[0].length);
   }
   return out.map((x, i) => (typeof x === 'string' ? <Fragment key={`${key}t${i}`}>{x}</Fragment> : x));
+}
+
+/**
+ * O texto em árvore, só com a formatação e os emoticons (para o campo de formatação, RichInput.jsx): cada
+ * item é um texto, `{ emote }`, `{ color, children }` ou `{ tag: 'b' | 'i' | 'u' | 's', children }`.
+ */
+export function formatTree(text) {
+  const rules = [...FORMAT_RULES, EMOTE_RULE];
+  const out = [];
+  let rest = String(text ?? '');
+  while (rest) {
+    let best = null;
+    for (const rule of rules) {
+      const m = rule.re.exec(rest);
+      if (m && (!best || m.index < best.m.index)) best = { rule, m };
+    }
+    if (!best) {
+      out.push(rest);
+      break;
+    }
+    const { rule, m } = best;
+    if (m.index > 0) out.push(rest.slice(0, m.index));
+    if (rule.emote) out.push({ emote: m[0] });
+    else if (rule.color) out.push({ color: m[1].toLowerCase(), children: formatTree(m[2]) });
+    else out.push({ tag: rule.tag, children: formatTree(m[1]) });
+    rest = rest.slice(m.index + m[0].length);
+  }
+  return out;
 }
 
 /**
@@ -820,31 +893,4 @@ export function ColorPicker({ anchorRef, palette, onPick, onClose }) {
       </div>
     </Floating>
   );
-}
-
-/** Insere texto no lugar da seleção (ou no cursor) e deixa o cursor logo depois. */
-export function insertText(el, value, setValue, text) {
-  const start = el?.selectionStart ?? value.length;
-  const end = el?.selectionEnd ?? value.length;
-  setValue(value.slice(0, start) + text + value.slice(end));
-  requestAnimationFrame(() => {
-    if (!el) return;
-    el.focus();
-    el.setSelectionRange(start + text.length, start + text.length);
-  });
-}
-
-/** Insere/embrulha texto na seleção de um campo controlado e devolve o foco com a seleção certa. */
-export function editField(el, value, setValue, before, after = '', placeholder = '') {
-  const start = el?.selectionStart ?? value.length;
-  const end = el?.selectionEnd ?? value.length;
-  const selected = value.slice(start, end) || placeholder;
-  const next = value.slice(0, start) + before + selected + after + value.slice(end);
-  setValue(next);
-  requestAnimationFrame(() => {
-    if (!el) return;
-    el.focus();
-    const a = start + before.length;
-    el.setSelectionRange(after ? a : a + selected.length, a + selected.length);
-  });
 }

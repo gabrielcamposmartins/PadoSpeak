@@ -19,6 +19,7 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import { useStore } from '../store.js';
+import { soundsOn } from '../modules.js';
 import { useVoiceConn } from './conn.jsx';
 import { useLayout } from '../lib/layout.js';
 import { plain } from '../lib/text.js';
@@ -78,6 +79,7 @@ export default function CallScreen() {
   const muted = useStore((s) => s.selfMuted);
   const deafened = useStore((s) => s.selfDeafened);
   const [sheet, setSheet] = useState(false);
+  const soundsMod = vc(soundsOn);
   const clock = useClock(voice);
   const ping = useServerPing(Boolean(voice), vc);
   const lastId = useRef(null);
@@ -164,7 +166,7 @@ export default function CallScreen() {
       </div>
 
       <div className="cs-bottom">
-      {sheet && (
+      {sheet && soundsMod && (
         <div className="cs-sheet">
           <div className="cs-grab" onClick={() => setSheet(false)} />
           <SoundPanel variant="sheet" />
@@ -190,9 +192,11 @@ export default function CallScreen() {
             {voice.screen ? <MonitorOff /> : <MonitorUp />}
           </CtlButton>
         ) : null}
-        <CtlButton on={sheet} label="Sons" onClick={() => setSheet((v) => !v)} pressed={sheet}>
-          <LayoutGrid />
-        </CtlButton>
+        {soundsMod && (
+          <CtlButton on={sheet} label="Sons" onClick={() => setSheet((v) => !v)} pressed={sheet}>
+            <LayoutGrid />
+          </CtlButton>
+        )}
         <button type="button" className="cs-hangup" onClick={st.leaveVoice} aria-label={voice.dm ? 'Desligar' : 'Sair do canal'}>
           <PhoneOff />
           <span>{voice.dm ? 'Desligar' : 'Sair'}</span>

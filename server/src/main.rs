@@ -50,6 +50,38 @@ async fn main() {
         return;
     }
     // Nó de mídia de um servidor (outra máquina ou a mesma): `MEDIA_JOIN` traz o código do Painel → Mídia.
+    // Administração: `padospeak-server media-add <nome>` cadastra um nó de mídia e mostra o código de
+    // pareamento (o mesmo do Painel → Mídia → Adicionar nó). O endereço no código é o `PUBLIC_URL`.
+    if args.get(1).map(String::as_str) == Some("media-add") {
+        let name: String = args[2..].join(" ").trim().chars().take(40).collect();
+        let Some(url) = env("PUBLIC_URL").map(|u| u.trim_end_matches('/').to_string()).filter(|u| u.starts_with("http")) else {
+            eprintln!("Defina PUBLIC_URL (o endereço público deste servidor, ex.: https://padospeak.padoru.org)");
+            std::process::exit(2);
+        };
+        if name.is_empty() {
+            eprintln!("uso: padospeak-server media-add <nome do nó>");
+            std::process::exit(2);
+        }
+        let data_dir = env("DATA_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("data"));
+        let db = match padospeak_server::db::Db::open(&data_dir).await {
+            Ok(db) => db,
+            Err(e) => {
+                eprintln!("Falha ao abrir o banco: {e}");
+                std::process::exit(1);
+            }
+        };
+        match padospeak_server::media::create_node(&db, &name, url).await {
+            Ok((id, code)) => {
+                println!("Nó \"{name}\" cadastrado (id {id}). Código de pareamento (só aparece agora):");
+                println!("{code}");
+            }
+            Err(e) => {
+                eprintln!("Erro: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if args.get(1).map(String::as_str) == Some("media") {
         let data_dir = env("DATA_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("data-media"));
         let logs = padospeak_server::logs::Logs::default();
@@ -79,7 +111,8 @@ async fn main() {
         println!(
             "padospeak-server [--host] [--headless] [--no-panel]\n\
              padospeak-server reset-password <usuário>\n\
-             padospeak-server media           (nó de mídia: MEDIA_JOIN, SFU_UDP_PORT, SFU_PUBLIC_IP, POT, POT_PROVIDER_URL)\n\n\
+             padospeak-server media           (nó de mídia: MEDIA_JOIN, SFU_UDP_PORT, SFU_PUBLIC_IP, POT, POT_PROVIDER_URL)\n\
+             padospeak-server media-add <nome> (cadastra um nó de mídia e mostra o código; usa PUBLIC_URL)\n\n\
              Variáveis: DATA_DIR, DATABASE_URL, TURSO_AUTH_TOKEN, TURSO_SYNC_URL, PORT, HOST, SERVER_NAME,\n\
              HTTPS (off|self-signed|custom), TLS_CERT, TLS_KEY, ICE_SERVERS (JSON), ALLOW_REGISTRATION,\n\
              AUTO_HOST, PANEL, PANEL_HOST, PANEL_PORT, PANEL_PASSWORD, LOCAL_NODE (nó local do app desktop),\n\

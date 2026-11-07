@@ -12,6 +12,7 @@ import { SoundIcon } from './SoundIcons.jsx';
 import { plain } from '../lib/text.js';
 import { playSoundboard } from '../lib/soundboard.js';
 import SoundFx from './SoundFx.jsx';
+import { soundsOn } from '../modules.js';
 
 /** Som tocado há pouco por outra pessoa (para oferecer "Copiar"). */
 function useRecentOther(vc, meId) {
@@ -42,7 +43,14 @@ function useCooldownClock(cooldowns) {
   return now;
 }
 
-export default function SoundPanel({ variant = 'side' }) {
+/** Os sons rápidos (só com o módulo ligado no servidor da chamada). */
+export default function SoundPanel(props) {
+  const vc = useVoiceConn();
+  const on = vc(soundsOn);
+  return on ? <SoundBoard {...props} /> : null;
+}
+
+function SoundBoard({ variant = 'side' }) {
   const vc = useVoiceConn();
   const lib = vc((s) => s.sounds);
   const inCall = vc((s) => Boolean(s.voice));
