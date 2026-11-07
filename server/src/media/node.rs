@@ -228,7 +228,13 @@ impl Shared {
             caps.push("music".into());
         }
         let lan: Vec<String> = crate::tls::lan_addresses().iter().filter(|ip| ip.is_ipv4()).map(|ip| ip.to_string()).collect();
-        let hello = Hello::new(&self.cfg.pairing, caps, self.sfu.port, lan.clone(), crate::now_ms());
+        // O `hello` vai com a hora do servidor: o relógio deste computador pode estar errado (sem sincronizar),
+        // e o principal recusa diferenças de mais de um minuto (proteção contra repetir um `hello` antigo).
+        let offset = server_clock_offset(&self.cfg.pairing.url).await;
+        if offset != 0 {
+            self.logs.warn(format!("Nó de mídia: o relógio deste computador está {} s diferente do servidor; vale a hora do servidor", offset / 1000));
+        }
+        let hello = Hello::new(&self.cfg.pairing, caps, self.sfu.port, lan.clone(), crate::now_ms() + offset);
         let mut msg = serde_json::to_value(&hello).map_err(|e| e.to_string())?;
         msg["t"] = json!("hello");
         sink.send(TMsg::Text(msg.to_string().into())).await.map_err(|e| e.to_string())?;
@@ -543,5 +549,26 @@ impl NodeMusic {
             }
         }
         let _ = ws.close(None).await;
+    }
+}
+
+/// Quanto a hora do servidor principal (o cabeçalho `Date` de uma resposta dele) está à frente da deste
+/// computador, em ms. Diferenças pequenas (até 5 s, dentro da precisão do cabeçalho) contam como zero; sem
+/// resposta, zero (vale o relógio local).
+async fn server_clock_offset(url: &str) -> i64 {
+    let Ok(http) = reqwest::Client::builder().timeout(Duration::from_secs(10)).build() else { return 0 };
+    let sent = crate::now_ms();
+    let Ok(res) = http.get(format!("{}/api/config", url.trim_end_matches('/'))).send().await else { return 0 };
+    let got = crate::now_ms();
+    let Some(date) = res.headers().get(reqwest::header::DATE).and_then(|v| v.to_str().ok()) else { return 0 };
+    let Ok(at) = httpdate::parse_http_date(date) else { return 0 };
+    let Ok(since) = at.duration_since(std::time::UNIX_EPOCH) else { return 0 };
+    // o cabeçalho tem resolução de 1 s: o meio do segundo, contra o meio da ida e volta
+    let server_ms = since.as_millis() as i64 + 500;
+    let offset = server_ms - (sent + got) / 2;
+    if offset.abs() > 5_000 {
+        offset
+    } else {
+        0
     }
 }

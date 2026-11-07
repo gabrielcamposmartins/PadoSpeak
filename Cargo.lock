@@ -4404,6 +4404,7 @@ dependencies = [
  "flate2",
  "fs4",
  "futures-util",
+ "httpdate",
  "lettre",
  "libsql",
  "local-ip-address",

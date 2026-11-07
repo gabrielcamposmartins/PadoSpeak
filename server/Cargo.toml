@@ -52,3 +52,5 @@ str0m = { version = "0.24", default-features = false, features = ["rust-crypto"]
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 # Raízes de confiança do conector TLS do nó de mídia (com ALPN http/1.1, veja media/control.rs).
 webpki-roots = "0.26"
+# A hora do servidor principal (cabeçalho Date), para o nó com o relógio errado (media/node.rs).
+httpdate = "1"
