@@ -156,6 +156,19 @@ CREATE TABLE IF NOT EXISTS agent_jobs (
 );
 CREATE INDEX IF NOT EXISTS agent_jobs_run ON agent_jobs(run_at);
 -- Votos das enquetes (`crate::polls`): uma linha por opção escolhida.
+-- Tokens gastos com o assistente, por pessoa, dia (UTC) e chave (`own` = 1 é a chave da própria pessoa).
+CREATE TABLE IF NOT EXISTS agent_usage (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  day TEXT NOT NULL,
+  own INTEGER NOT NULL DEFAULT 0,
+  requests INTEGER NOT NULL DEFAULT 0,
+  input INTEGER NOT NULL DEFAULT 0,
+  output INTEGER NOT NULL DEFAULT 0,
+  cache_read INTEGER NOT NULL DEFAULT 0,
+  cache_write INTEGER NOT NULL DEFAULT 0,
+  web_searches INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (user_id, day, own)
+);
 CREATE TABLE IF NOT EXISTS poll_votes (
   message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -626,6 +639,16 @@ UPDATE guilds SET default_perms = default_perms | 16384;
 UPDATE guild_members SET perms = perms | 16384 WHERE custom = 1;
 -- Favoritas: marca só de quem favoritou (`message_marks.kind = 'star'`), listada pela data.
 CREATE INDEX IF NOT EXISTS idx_marks_kind ON message_marks(user_id, kind, created_at);
+"#,
+    ),
+    (
+        25,
+        r#"
+-- Tarefas agendadas do assistente de qualquer tipo: `kind` = message (o texto em `content`), action (uma
+-- ferramenta exata: JSON {tool, input}) ou task (uma instrução que o assistente faz sozinho na hora). `tz` é o
+-- fuso da pessoa (minutos) quando agendou, para a tarefa saber a hora local.
+ALTER TABLE agent_jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'message';
+ALTER TABLE agent_jobs ADD COLUMN tz INTEGER NOT NULL DEFAULT 0;
 "#,
     ),
 ];

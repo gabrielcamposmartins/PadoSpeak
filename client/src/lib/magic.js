@@ -61,6 +61,10 @@ const rand = (a, b) => a + Math.random() * (b - a);
 const STAR = (color) =>
   `<svg viewBox="0 0 24 24" width="100%" height="100%"><path fill="${color}" stroke="#c98a00" stroke-width="0.8" stroke-linejoin="round" d="M12 1.8l3.1 6.4 7 1-5.1 4.9 1.2 7-6.2-3.3-6.2 3.3 1.2-7L1.9 9.2l7-1z"/></svg>`;
 
+const HEART = (color) =>
+  `<svg viewBox="0 0 24 24" width="100%" height="100%"><path fill="${color}" stroke="#b0123f" stroke-width="0.8" stroke-linejoin="round" d="M12 21s-7.5-4.6-9.6-9.2C.9 8.5 2.7 4.5 6.4 4.5c2.3 0 3.9 1.4 5.6 3.4 1.7-2 3.3-3.4 5.6-3.4 3.7 0 5.5 4 4 7.3C19.5 16.4 12 21 12 21z"/></svg>`;
+const HEARTS = ['#ff2d55', '#ff5c8a', '#ff8fb1', '#e0245e'];
+
 /** Uma camada por cima de tudo, que não recebe cliques; some sozinha no fim. */
 function layer(ms) {
   const el = document.createElement('div');
@@ -78,7 +82,7 @@ function layer(ms) {
 function rise(kind) {
   const total = kind === 'confetti' ? 2600 : 3800;
   const el = layer(total + 200);
-  const count = { stars: 45, bubbles: 38, confetti: 80 }[kind];
+  const count = { stars: 45, bubbles: 38, confetti: 80, hearts: 32 }[kind];
   const w = window.innerWidth;
   const h = window.innerHeight;
   for (let i = 0; i < count; i++) {
@@ -89,6 +93,7 @@ function rise(kind) {
     p.style.width = `${size}px`;
     p.style.height = `${kind === 'confetti' ? size * 0.55 : size}px`;
     if (kind === 'stars') p.innerHTML = STAR(Math.random() < 0.7 ? '#ffd60a' : '#ffe680');
+    if (kind === 'hearts') p.innerHTML = HEART(HEARTS[i % HEARTS.length]);
     if (kind === 'confetti') p.style.background = CONFETTI[i % CONFETTI.length];
     el.appendChild(p);
     if (kind === 'confetti') {

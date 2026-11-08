@@ -5404,6 +5404,10 @@ fieldset.plain {
   display: block;
   filter: drop-shadow(0 0 4px rgba(255, 214, 10, 0.7));
 }
+.magic-p.hearts svg {
+  display: block;
+  filter: drop-shadow(0 0 4px rgba(255, 45, 85, 0.6));
+}
 .magic-p.bubbles {
   /* Bolha de sabão: quase transparente, com o brilho e o reflexo colorido da película. */
   border-radius: 50%;
@@ -13084,31 +13088,13 @@ html[data-kb] .m-tabs {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.friend-text .role-pills .role-pill,
-.member-text .role-pills .role-pill {
+.friend-text .role-pills .role-pill {
   font-size: 11px;
   color: #fff;
 }
-.friend-text .role-pills .role-pill-name,
-.member-text .role-pills .role-pill-name {
+.friend-text .role-pills .role-pill-name {
   font-size: 11px;
   color: inherit;
-}
-/* na lista de membros do servidor, as cápsulas têm 3/4 do tamanho */
-.member-text .role-pills {
-  gap: 2px;
-  margin-top: 1px;
-}
-.member-text .role-pills .role-pill {
-  height: 13.5px;
-  max-width: 105px;
-  padding: 0 6px;
-  border-radius: 7px;
-  font-size: 8.25px;
-  text-shadow: none;
-}
-.member-text .role-pills .role-pill-name {
-  font-size: 8.25px;
 }
 .role-pill.more {
   --role: #8a9bb0;
@@ -13421,10 +13407,6 @@ html[data-kb] .m-tabs {
 }
 .members-filter-menu button:hover {
   background: var(--row-hover);
-}
-/* na lista de membros, os cargos vêm numa linha própria embaixo da mensagem pessoal */
-.member-text .role-pills {
-  margin-top: 2px;
 }
 
 
@@ -13908,5 +13890,147 @@ html[data-touch] .mini-reset {
     --aero-top: hsl(var(--sf-h) var(--sf-sd) 24% / 0.99);
     --aero-bottom: hsl(var(--sf-h) var(--sf-sd) 12% / 0.99);
     --aero-hi: hsl(var(--sf-h) 100% 74% / 0.28);
+  }
+}
+/* Com imagem de fundo (do Início ou do servidor) o vidro fica mais transparente para ela aparecer: com a cor dos
+   painéis, a mesma transparência no tom escolhido. */
+:root[data-surface]:not([data-theme='dark']) .aero-app[data-bg] {
+  --glass: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-s) 99.5% / 0.8) 0%, hsl(var(--sf-h) var(--sf-s) 95% / 0.66) 100%);
+}
+:root[data-surface][data-theme='dark'] .aero-app[data-bg] {
+  --glass: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 15% / 0.82) 0%, hsl(var(--sf-h) var(--sf-sd) 10% / 0.7) 100%);
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-surface]:not([data-theme='light']) .aero-app[data-bg] {
+    --glass: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 15% / 0.82) 0%, hsl(var(--sf-h) var(--sf-sd) 10% / 0.7) 100%);
+  }
+}
+
+/* Efeitos dos gestos na chamada (CallFx.jsx): emoji subindo no vídeo de quem fez o gesto. Só transform/opacity. */
+.tile-fx {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 3;
+  /* o emoji cresce com o quadro (cqmin = o lado menor dele) */
+  container-type: size;
+}
+.tile-fx-emoji {
+  position: absolute;
+  left: var(--fx-x, 50%);
+  bottom: 12%;
+  font-size: clamp(30px, 22cqmin, 110px);
+  line-height: 1;
+  filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.35));
+  animation: tile-fx-rise 2.5s cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+  will-change: transform, opacity;
+}
+.mini-call .tile-fx-emoji {
+  font-size: 28px;
+}
+@keyframes tile-fx-rise {
+  0% {
+    transform: translate(-50%, 20px) scale(0.4);
+    opacity: 0;
+  }
+  15% {
+    transform: translate(-50%, 0) scale(1.15);
+    opacity: 1;
+  }
+  30% {
+    transform: translate(-50%, -8%) scale(1);
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -160%) scale(0.9);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tile-fx-emoji {
+    animation: tile-fx-fade 2.5s linear forwards;
+    transform: translate(-50%, -40%);
+  }
+  @keyframes tile-fx-fade {
+    0%,
+    80% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+}
+.tile-hand {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 50%;
+  background: linear-gradient(180deg, #fff6c9, #ffd65c);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+  font-size: 18px;
+  line-height: 1;
+  animation: tile-hand-in 0.35s ease-out;
+}
+button.tile-hand {
+  cursor: pointer;
+}
+@keyframes tile-hand-in {
+  from {
+    transform: scale(0.3) rotate(-30deg);
+    opacity: 0;
+  }
+}
+.callfx-corner {
+  position: fixed;
+  right: max(16px, env(safe-area-inset-right, 0px));
+  bottom: calc(90px + env(safe-area-inset-bottom, 0px));
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  pointer-events: none;
+}
+.callfx-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px 4px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--panel-border);
+  background: var(--glass);
+  box-shadow: var(--panel-shadow);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  animation: callfx-chip 2.6s ease forwards;
+}
+.callfx-emoji {
+  font-size: 22px;
+  line-height: 1;
+}
+@keyframes callfx-chip {
+  0% {
+    transform: translateY(10px);
+    opacity: 0;
+  }
+  10%,
+  80% {
+    transform: none;
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
   }
 }

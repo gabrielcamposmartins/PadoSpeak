@@ -13,6 +13,7 @@ import Modals from './components/Modals.jsx';
 import IncomingCalls from './components/IncomingCall.jsx';
 import CallScreen from './components/CallScreen.jsx';
 import { FloatingMiniCall } from './components/MiniCall.jsx';
+import { CallFxCorner } from './components/CallFx.jsx';
 import AgentFab from './components/AgentFab.jsx';
 import { SoundSprite } from './components/SoundIcons.jsx';
 import Avatar from './components/Avatar.jsx';
@@ -197,6 +198,7 @@ export default function App() {
       <SoundSprite />
       {loggedIn && !isPanel && <CallScreen />}
       {loggedIn && !isPanel && <FloatingMiniCall />}
+      {loggedIn && !isPanel && <CallFxCorner />}
       {loggedIn && !isPanel && phase === 'app' && !updating && agentFab && <AgentFab />}
       {loggedIn && !isPanel && phase === 'app' && !updating && agentOpen && (
         <Suspense fallback={null}>

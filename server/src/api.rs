@@ -429,6 +429,9 @@ async fn get_config(State(app): AppState) -> Json<Value> {
         "agent": app.hub.modules().agent,
         // Módulos ligados (veja `crate::modules`): o app esconde o que estiver desligado.
         "modules": app.hub.modules(),
+        // Arquivos dos recursos que rodam no aparelho (gestos da câmera) e os efeitos nas chamadas.
+        "models": crate::model_files::available(&app),
+        "callFx": true,
     }))
 }
 

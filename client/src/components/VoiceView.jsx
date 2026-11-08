@@ -34,6 +34,7 @@ import { MobileBack } from './Mobile.jsx';
 import { InviteButton } from './CallInvite.jsx';
 import VolumeSlider from './Volume.jsx';
 import { VoiceMemberMenu } from './VoiceMenus.jsx';
+import { TileFx, HandBadge } from './CallFx.jsx';
 
 /**
  * O botão de compartilhar tela fica em todo lugar (inclusive no app instalado no celular). Onde o
@@ -175,7 +176,7 @@ function Tile({ tile, focused, grid, onFocus }) {
   // Na grade com mais de 4 pessoas a foto é 2,5× maior, mas sempre cabendo no card com espaço para o
   // nome embaixo: com mais gente na chamada os cards encolhem e a foto encolhe junto.
   const avatarSize = grid && side ? Math.max(baseSize, Math.round(Math.min(fitted * 2.5, side * 0.6, side - 70))) : fitted;
-  const { setPeerVolume, setStreamAudio, setScreenAudioMuted, watchPeer, noteVideo } = useConn().getState();
+  const { setPeerVolume, setStreamAudio, setScreenAudioMuted, watchPeer, noteVideo, setHand } = useConn().getState();
   const name = plain(tile.user?.displayName) || 'alguém';
   const kind = tile.kind === 'screen' ? 'screen' : 'camera';
   const isScreen = tile.kind === 'screen';
@@ -272,6 +273,8 @@ function Tile({ tile, focused, grid, onFocus }) {
         </>
       )}
       {problem && <div className="tile-problem">{problem}</div>}
+      {!isScreen && <TileFx userId={tile.user?.id} />}
+      {!isScreen && tile.hand && <HandBadge self={tile.self} onLower={() => setHand(false)} />}
       {isScreen && (
         <div className="tile-badges">
           <span className="live">AO VIVO</span>
@@ -460,6 +463,7 @@ export default function VoiceView({ channel, variant }) {
       muted: muted || deafened,
       serverMuted: voice.serverMuted,
       live: Boolean(voice.localScreen),
+      hand: voice.hand,
     });
     if (voice.localScreen)
       tiles.push({
@@ -491,6 +495,7 @@ export default function VoiceView({ channel, variant }) {
         localMuted: p.localMuted,
         volume: p.volume,
         live: Boolean(p.screenAnnounced),
+        hand: p.hand,
       });
       if (p.screenAnnounced) {
         tiles.push({

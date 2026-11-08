@@ -9,7 +9,7 @@
  * As chaves aparecem escondidas (início e fim); o olho busca a chave inteira no servidor.
  */
 import { useEffect, useState } from 'react';
-import { Eye, EyeOff, Trash2, Copy, Plus, KeyRound, Building2, Server, Cpu, Users, UserPlus, X } from 'lucide-react';
+import { Eye, EyeOff, Trash2, Copy, Plus, KeyRound, Building2, Server, Cpu, Users, UserPlus, X, Repeat, CalendarClock, RefreshCw, Coins } from 'lucide-react';
 import Avatar, { UserName } from './Avatar.jsx';
 import { plain } from '../lib/text.js';
 import { useStore } from '../store.js';
@@ -293,6 +293,9 @@ export default function AgentKeys({ scope = 'me' }) {
             : 'Com a chave do app, o modelo é o que o administrador escolheu. Para escolher, use uma chave sua.'}
       </p>
       {admin && <AppAccess info={info} canEdit={canEdit} busy={busy} run={run} api={api} />}
+      {admin && <AppRepeat info={info} canEdit={canEdit} busy={busy} run={run} api={api} />}
+      {admin && <AppUsage api={api} />}
+      {admin && <AppJobs api={api} />}
     </div>
   );
 }
@@ -376,6 +379,232 @@ function AppAccess({ info, canEdit, busy, run, api }) {
             </div>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+/** Quem pode agendar com o assistente tarefas que se repetem ("todo dia às 9h…"). Agendar uma vez vale para todos. */
+const REPEAT_OPTS = [
+  ['none', 'Ninguém', 'O assistente só agenda tarefas para uma vez. As que já repetiam rodam a próxima vez e param.'],
+  ['admins', 'Só administradores do app', 'Quem vê o painel do administrador pode repetir; os outros agendam uma vez só.'],
+  ['all', 'Todo mundo', 'Qualquer pessoa com o assistente pode agendar tarefas que se repetem (as do assistente, no mínimo de hora em hora).'],
+];
+const REPEAT_DONE = { none: 'Repetir desligado', admins: 'Repetir só para administradores', all: 'Repetir para todos' };
+
+function AppRepeat({ info, canEdit, busy, run, api }) {
+  const value = info.repeat || 'admins';
+  return (
+    <div className="agent-access">
+      <div className="settings-sec">
+        <Repeat size={14} aria-hidden="true" /> Tarefas agendadas que se repetem
+      </div>
+      <div className="agent-access-opts" role="radiogroup" aria-label="Quem agenda tarefas que se repetem">
+        {REPEAT_OPTS.map(([v, label, hint]) => (
+          <label key={v} className="checkbox">
+            <input
+              type="radio"
+              name="agent-repeat"
+              checked={value === v}
+              disabled={!canEdit || busy}
+              onChange={() => run(() => api().put('/api/admin/agent', { repeat: v }), REPEAT_DONE[v])}
+            />
+            <span>
+              {label}
+              <small className="check-hint">{hint}</small>
+            </span>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const USAGE_RANGES = [
+  [7, '7 dias'],
+  [30, '30 dias'],
+  [0, 'Tudo'],
+];
+const fmtTokens = (n) => new Intl.NumberFormat('pt-BR', { notation: n >= 10000 ? 'compact' : 'standard', maximumFractionDigits: 1 }).format(n || 0);
+
+/** Tokens gastos com o assistente por pessoa (painel): no período escolhido, com a parte paga pela chave da própria pessoa. */
+function AppUsage({ api }) {
+  const [days, setDays] = useState(30);
+  const [data, setData] = useState(null);
+  const load = (d = days) =>
+    api()
+      .get(`/api/admin/agent/usage?days=${d}`)
+      .then(setData, (e) => useStore.getState().notify(e.message));
+  useEffect(() => {
+    load(days);
+  }, [days]);
+  const people = data?.people || [];
+  const t = data?.total;
+  return (
+    <div className="agent-access agent-usage">
+      <div className="settings-sec agent-jobs-head">
+        <Coins size={14} aria-hidden="true" /> Tokens gastos
+        <span className="agent-usage-range" role="radiogroup" aria-label="Período">
+          {USAGE_RANGES.map(([d, label]) => (
+            <button key={d} type="button" role="radio" aria-checked={days === d} className={`gloss mini${days === d ? ' pressed' : ''}`} onClick={() => setDays(d)}>
+              {label}
+            </button>
+          ))}
+        </span>
+        <button type="button" className="gloss mini" title="Atualizar" aria-label="Atualizar os tokens gastos" onClick={() => load()}>
+          <RefreshCw size={13} />
+        </button>
+      </div>
+      {!data ? (
+        <p className="kv">Carregando…</p>
+      ) : people.length === 0 ? (
+        <p className="kv">Ninguém usou o assistente neste período.</p>
+      ) : (
+        <div className="agent-usage-wrap">
+          <table className="agent-usage-table">
+            <thead>
+              <tr>
+                <th scope="col">Pessoa</th>
+                <th scope="col">Pedidos</th>
+                <th scope="col" title="Tokens de entrada (sem o cache)">Entrada</th>
+                <th scope="col" title="Tokens de saída (inclui o raciocínio)">Saída</th>
+                <th scope="col" title="Cache lido / escrito">Cache</th>
+                <th scope="col">Total</th>
+                <th scope="col" title="Parte paga pela chave da própria pessoa">Chave própria</th>
+              </tr>
+            </thead>
+            <tbody>
+              {people.map((p) => (
+                <tr key={p.user.id}>
+                  <th scope="row">
+                    <span className="agent-usage-who">
+                      <Avatar user={p.user} size={20} frame={false} />
+                      <UserName user={p.user} />
+                    </span>
+                  </th>
+                  <td>{fmtTokens(p.total.requests)}</td>
+                  <td>{fmtTokens(p.total.input)}</td>
+                  <td>{fmtTokens(p.total.output)}</td>
+                  <td>
+                    {fmtTokens(p.total.cacheRead)} / {fmtTokens(p.total.cacheWrite)}
+                  </td>
+                  <td className="agent-usage-total" title={`${(p.total.tokens || 0).toLocaleString('pt-BR')} tokens · ${p.total.webSearches} pesquisas`}>
+                    {fmtTokens(p.total.tokens)}
+                  </td>
+                  <td>{p.own.tokens ? fmtTokens(p.own.tokens) : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr>
+                <th scope="row">Total</th>
+                <td>{fmtTokens(t.requests)}</td>
+                <td>{fmtTokens(t.input)}</td>
+                <td>{fmtTokens(t.output)}</td>
+                <td>
+                  {fmtTokens(t.cacheRead)} / {fmtTokens(t.cacheWrite)}
+                </td>
+                <td className="agent-usage-total">{fmtTokens(t.tokens)}</td>
+                <td />
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
+      <small className="kv">Contado a partir desta versão. Os pedidos das tarefas agendadas entram na conta de quem agendou.</small>
+    </div>
+  );
+}
+
+const JOB_KIND = { message: 'Mensagem', action: 'Ação', task: 'Tarefa do assistente' };
+const fmtWhen = (ts) =>
+  new Date(ts).toLocaleString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+function repeatLabel(min) {
+  if (!min) return 'uma vez';
+  if (min === 1440) return 'todo dia';
+  if (min === 10080) return 'toda semana';
+  if (min % 1440 === 0) return `a cada ${min / 1440} dias`;
+  if (min % 60 === 0) return `a cada ${min / 60} h`;
+  return `a cada ${min} min`;
+}
+
+/** As tarefas agendadas de todo mundo (painel): de quem é, o que faz, quando roda; o dono pode apagar. */
+function AppJobs({ api }) {
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const load = () =>
+    api()
+      .get('/api/admin/agent/jobs')
+      .then(setData, (e) => useStore.getState().notify(e.message));
+  useEffect(() => {
+    load();
+  }, []);
+  const remove = (job) =>
+    useStore.getState().openModal({
+      type: 'confirm',
+      title: 'Apagar a tarefa agendada?',
+      text: `${JOB_KIND[job.kind] || 'Tarefa'} de ${plain(job.user.displayName) || job.user.username}: “${job.what}”. Ela não roda mais, e a pessoa recebe um aviso.`,
+      confirmLabel: 'Apagar',
+      action: async () => {
+        setBusy(true);
+        try {
+          setData(await api().del(`/api/admin/agent/jobs/${encodeURIComponent(job.id)}`));
+          useStore.getState().notify('Tarefa apagada', 'info');
+        } catch (e) {
+          useStore.getState().notify(e.message);
+          load();
+        } finally {
+          setBusy(false);
+        }
+      },
+    });
+  const jobs = data?.jobs || [];
+  return (
+    <div className="agent-access agent-jobs">
+      <div className="settings-sec agent-jobs-head">
+        <CalendarClock size={14} aria-hidden="true" /> Tarefas agendadas
+        {data && <span className="agent-jobs-count">{jobs.length}</span>}
+        <button type="button" className="gloss mini" title="Atualizar a lista" aria-label="Atualizar a lista de tarefas agendadas" onClick={load} disabled={busy}>
+          <RefreshCw size={13} />
+        </button>
+      </div>
+      {!data ? (
+        <p className="kv">Carregando…</p>
+      ) : jobs.length === 0 ? (
+        <p className="kv">Ninguém tem tarefas agendadas agora.</p>
+      ) : (
+        <ul className="agent-jobs-list" aria-label="Tarefas agendadas">
+          {jobs.map((j) => (
+            <li key={j.id} className="agent-job">
+              <Avatar user={j.user} size={26} frame={false} />
+              <div className="agent-job-main">
+                <div className="agent-job-top">
+                  <UserName user={j.user} /> <small>@{j.user.username}</small>
+                  <span className={`agent-job-kind k-${j.kind}`}>{JOB_KIND[j.kind] || j.kind}</span>
+                </div>
+                <div className="agent-job-what">{j.what}</div>
+                <div className="agent-job-meta">
+                  <span title={new Date(j.runAt).toLocaleString('pt-BR')}>Próxima: {fmtWhen(j.runAt)}</span>
+                  <span>{repeatLabel(j.repeatMinutes)}</span>
+                  {j.runs > 0 && <span>rodou {j.runs}×</span>}
+                  {j.lastError && <span className="agent-job-err" title={j.lastError}>último erro: {j.lastError}</span>}
+                </div>
+              </div>
+              {data.canEdit && (
+                <button
+                  type="button"
+                  className="gloss mini danger-ico"
+                  title="Apagar esta tarefa"
+                  aria-label={`Apagar a tarefa de ${plain(j.user.displayName) || j.user.username}: ${j.what}`}
+                  disabled={busy}
+                  onClick={() => remove(j)}
+                >
+                  <Trash2 size={13} />
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

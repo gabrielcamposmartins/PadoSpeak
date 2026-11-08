@@ -20,6 +20,7 @@ pub mod hub;
 pub mod lan;
 pub mod logs;
 pub mod media;
+pub mod model_files;
 pub mod models;
 pub mod modules;
 pub mod social;

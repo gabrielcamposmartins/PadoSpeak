@@ -18,6 +18,8 @@ import { syncPush, disablePush } from './lib/pwa.js';
 import { applyHotkeys, hotkeysOf } from './lib/hotkeys.js';
 import { NearbyProbe, deviceLabel } from './lib/nearby.js';
 import { voiceOn, musicOn, rolesOn } from './modules.js';
+import { GestureController } from './lib/gestures/controller.js';
+import { showFx, GESTURE_FX } from './lib/callfx.js';
 
 /*
  * Conexões
@@ -160,6 +162,72 @@ export function channelNotifyLevel(n, channelId) {
 export const connRegistry = new Map();
 /** O jogo em foco no app do Windows ({ type, name, since } ou null), contado a todas as conexões. */
 let myActivity = null;
+
+// ---------- Gestos da câmera (uma chamada por vez, em qualquer conexão) ----------
+/** O reconhecedor (só existe com a opção ligada, numa chamada e com a câmera aberta). */
+let gestureCtl = null;
+/** A chamada atual: { snap, prefs, notify, onGesture, disable }. */
+let gestureCall = null;
+/** Falhou ou ficou lento nesta chamada: não tenta de novo até mudar a opção ou a chamada. */
+let gestureBlocked = false;
+const GESTURE_TIP_KEY = 'padospeak.gestureTip';
+
+function syncGestures(call) {
+  if (call !== undefined) {
+    if (call?.snap?.channelId !== gestureCall?.snap?.channelId) gestureBlocked = false;
+    gestureCall = call;
+  }
+  const c = gestureCall;
+  const inCall = Boolean(c?.snap?.channelId);
+  const camera = inCall && c.snap.localCamera;
+  const want = Boolean(camera && c.prefs().gestures && !gestureBlocked);
+  if (want) {
+    gestureCtl ||= new GestureController({
+      onGesture: (g) => gestureCall?.onGesture(g),
+      onStatus: (st) => {
+        if (st.loading === 0 && gestureCtl && !gestureCtl.announced) {
+          gestureCtl.announced = true;
+          gestureCall?.notify('Preparando os gestos da câmera…', 'info');
+        }
+        if (st.error) {
+          gestureBlocked = true;
+          if (st.tooSlow) gestureCall?.disable();
+        }
+      },
+      onNotice: (t) => gestureCall?.notify(t, 'info'),
+    });
+    gestureCtl.start(camera);
+    return;
+  }
+  if (gestureCtl) {
+    if (inCall) gestureCtl.stop();
+    else {
+      gestureCtl.destroy();
+      gestureCtl = null;
+    }
+  }
+  // Câmera ligada e a opção nunca usada: uma dica, uma vez.
+  if (camera && !c.prefs().gestures && !storage.get(GESTURE_TIP_KEY)) {
+    storage.set(GESTURE_TIP_KEY, '1');
+    c.notify('Dica: com “Reconhecer gestos da câmera” (Configurações → Funcionalidade), 👍, ✌️ e 🤟 com a mão viram efeitos na chamada.', 'info');
+  }
+}
+
+/** Teste e diagnóstico: `__padospeak.simulateGesture('Victory')` e `__padospeak.metrics`. */
+function gestureDebug() {
+  let on = false;
+  try {
+    on = Boolean(import.meta.env?.DEV) || localStorage.getItem('padospeak.debug') === '1';
+  } catch {}
+  if (!on) return;
+  globalThis.__padospeak = {
+    ...(globalThis.__padospeak || {}),
+    simulateGesture: (g) => (gestureCtl || new GestureController({ onGesture: (x) => gestureCall?.onGesture(x) })).simulate(g),
+    get metrics() {
+      return { gesture: gestureCtl ? { ...gestureCtl.metrics } : null };
+    },
+  };
+}
 /** Servidores cujos cargos estão sendo buscados (um pedido por vez). */
 const rolesLoading = new Set();
 /** Jogos já detectados que ficam guardados (para escolher nas listas sem digitar o nome). */
@@ -947,6 +1015,8 @@ export function createConnStore({ key, kind, base, primary = false }) {
         ui().setState((st) => ({ agentAccess: (st.agentAccess || 0) + 1 }));
         get().loadAgentAccess();
       });
+      // uma tarefa agendada terminou e entrou na conversa com o assistente: o balão aberto busca de novo
+      rt.on('agent:refresh', () => primary && ui().setState((st) => ({ agentAccess: (st.agentAccess || 0) + 1 })));
       rt.on('agent:status', (d) => primary && ui().setState({ agentStatus: d.busy ? d.label || 'Pensando…' : null }));
       rt.on('agent:action', (a) => {
         if (primary && a?.type === 'appearance' && a.patch) ui().getState().setAppearance(a.patch);
@@ -996,6 +1066,14 @@ export function createConnStore({ key, kind, base, primary = false }) {
       rt.on('music:notice', ({ text }) => notify(text, 'info'));
       // Som rápido na chamada: toca para quem está nela (menos quem ensurdeceu, mutou os efeitos ou
       // mutou os efeitos dessa pessoa).
+      // Efeito de outra pessoa da chamada (gesto da câmera): o emoji no vídeo dela e, se for de tela toda e a opção
+      // estiver ligada, o efeito na tela.
+      rt.on('voice:fx', ({ channelId, by, kind }) => {
+        if (get().voice?.channelId !== channelId || !by?.id) return;
+        const p = prefs();
+        if (p.soundMutes?.[by.id]) return;
+        showFx({ userId: by.id, kind, screen: !p.callFxOff });
+      });
       rt.on('sound:play', ({ channelId, by, sound, at }) => {
         if (get().voice?.channelId !== channelId) return;
         const p = prefs();
@@ -1932,6 +2010,25 @@ export function createConnStore({ key, kind, base, primary = false }) {
         onChange: (snap) => {
           if (voiceClient !== client) return;
           voiceSounds(get().voice, snap, notify);
+          syncGestures(
+            snap.channelId
+              ? {
+                  snap,
+                  prefs,
+                  notify,
+                  onGesture: (g) => {
+                    if (voiceClient !== client) return;
+                    // ☝️ levanta ou abaixa a mão (fica no vídeo até abaixar)
+                    if (g === 'Pointing_Up') return client.setHand(!client.state.hand);
+                    const kind = GESTURE_FX[g];
+                    if (!kind) return;
+                    showFx({ userId: get().me?.id, kind, screen: true });
+                    rt?.request('voice:fx', { kind });
+                  },
+                  disable: () => ui().getState().setAppearance({ gestures: false }),
+                }
+              : null,
+          );
           if (!snap.channelId) {
             voiceClient = null;
             set({ voice: null });
@@ -2042,6 +2139,10 @@ export function createConnStore({ key, kind, base, primary = false }) {
       } catch (e) {
         notify(cameraError(e));
       }
+    },
+    /** Levanta ou abaixa a mão na chamada (o gesto ☝️ da câmera também). */
+    setHand(on) {
+      voiceClient?.setHand(on);
     },
     /** Câmera frontal ↔ traseira (celular e tablet). */
     async flipCamera() {
@@ -2819,6 +2920,13 @@ export function openMyProfile() {
 
 // Exposto para diagnóstico pelo DevTools.
 globalThis.__padospeakStore = useStore;
+// Ligar ou desligar os gestos no meio da chamada vale na hora.
+useStore.subscribe((st, prev) => {
+  if (st.prefs?.gestures !== prev.prefs?.gestures) {
+    gestureBlocked = false;
+    syncGestures();
+  }
+});
 globalThis.__padospeakConns = connRegistry;
 globalThis.__padospeak = {
   changeServer: (...a) => changeServer(...a),
@@ -2828,6 +2936,7 @@ globalThis.__padospeak = {
   setMyActivity: (a) => setMyActivity(a),
   NearbyProbe,
 };
+gestureDebug();
 
 // =====================================================================
 // App desktop: perfil local, rede local e servidor de comunidade

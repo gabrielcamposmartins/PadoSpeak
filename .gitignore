@@ -6,3 +6,5 @@ data/
 *.db-*
 desktop/src-tauri/gen/
 .env
+models/
+scripts/.cache/

@@ -279,6 +279,7 @@ impl HostManager {
             .merge(crate::media::router())
             .merge(crate::modules::router())
             .merge(crate::roles::router())
+            .merge(crate::model_files::router())
             .route("/ws", get(crate::hub::ws_handler))
             .route("/api/music/stream/{id}", get(crate::music::stream::handler))
             .fallback(crate::assets::static_handler)

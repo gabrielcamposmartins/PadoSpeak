@@ -129,6 +129,9 @@ pub struct Participant {
     /// O app sabe usar o SFU com cifragem (versão nova, navegador com transformação de quadros).
     #[serde(skip)]
     sfu_ok: bool,
+    /// Mão levantada (gesto ☝️ da câmera ou o botão): fica até a pessoa abaixar, e quem entra depois também vê.
+    /// Vai sempre (o app só copia os campos que chegam: sem ele, a mão não abaixaria).
+    hand: bool,
 }
 
 /// Onde a mídia de uma sala anda: o SFU de um nó (`crate::media::registry`). Sala sem rota: malha.
@@ -163,6 +166,8 @@ struct HubState {
     nudges: HashMap<String, VecDeque<i64>>,
     /// (usuário, som) → até quando esse som não pode ser tocado de novo por essa pessoa (`sounds::cooldown_ms`).
     sound_cooldowns: HashMap<(String, String), i64>,
+    /// (usuário, efeito) → até quando ele não pode mandar esse efeito de novo (`take_fx`; "*" = qualquer um).
+    fx_cooldowns: HashMap<(String, String), i64>,
     /// Nó local: a presença vai para todos os conectados (perfil do PC e convidados da rede).
     lan_mode: bool,
     /// Canais privados → (servidor, quem pode ver). Canal fora daqui é público.
@@ -248,6 +253,34 @@ pub struct HubStats {
     pub connections: usize,
     pub voice_participants: usize,
     pub voice_channels_active: usize,
+}
+
+/// Efeitos que tomam a tela toda: intervalo maior para o mesmo.
+const FX_FULL: [&str; 3] = ["confetti", "hearts", "stars"];
+/// Entre dois efeitos quaisquer da mesma pessoa, o mesmo efeito, e os de tela toda (ms).
+const FX_GAP_MS: i64 = 700;
+const FX_SAME_MS: i64 = 2500;
+const FX_FULL_MS: i64 = 8000;
+
+/// Nome de efeito aceito (o app decide o que desenhar: efeitos novos não precisam do servidor).
+fn valid_fx(kind: &str) -> bool {
+    (1..=24).contains(&kind.len()) && kind.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+}
+
+/// Confere e marca os intervalos de um efeito; `Err(ms)` = quanto falta.
+fn take_fx(map: &mut HashMap<(String, String), i64>, user: &str, kind: &str, now: i64) -> Result<(), i64> {
+    let any = (user.to_string(), "*".to_string());
+    let same = (user.to_string(), kind.to_string());
+    let wait = [map.get(&any), map.get(&same)].into_iter().flatten().map(|until| until - now).max().unwrap_or(0);
+    if wait > 0 {
+        return Err(wait);
+    }
+    if map.len() > 1024 {
+        map.retain(|_, until| *until > now);
+    }
+    map.insert(any, now + FX_GAP_MS);
+    map.insert(same, now + if FX_FULL.contains(&kind) { FX_FULL_MS } else { FX_SAME_MS });
+    Ok(())
 }
 
 impl Hub {
@@ -2040,6 +2073,7 @@ impl Hub {
                     route: "mesh".into(),
                     e2e: e2e.clone(),
                     sfu_ok,
+                    hand: flag("hand"),
                 };
                 if dm_users.is_none() && was.is_none() {
                     app.audit(crate::audit::Entry::new(&guild_id, "voice.join", &user.id).channel(&ch_id));
@@ -2224,6 +2258,7 @@ impl Hub {
                 me.deafened = flag("deafened", me.deafened);
                 me.video = flag("video", me.video);
                 me.screen = flag("screen", me.screen);
+                me.hand = flag("hand", me.hand);
                 for (k, slot) in [("cameraStreamId", &mut me.camera_stream_id), ("screenStreamId", &mut me.screen_stream_id)] {
                     if let Some(v) = d.get(k) {
                         *slot = v.as_str().map(|s| s.chars().take(100).collect());
@@ -2560,6 +2595,34 @@ impl Hub {
                 Some(json!({ "ok": true, "cooldownMs": cooldown }))
             }
 
+            // Efeito na chamada (um gesto da câmera: 👍, ✌️…): vai para os outros da chamada, que desenham no vídeo de
+            // quem mandou. Quem manda já desenhou na própria tela.
+            "voice:fx" => {
+                let kind = str_field("kind");
+                if !valid_fx(&kind) {
+                    return err("Efeito inválido");
+                }
+                let now = crate::now_ms();
+                let s = &mut *self.state.lock().unwrap();
+                let Some(channel_id) = s.conn_voice.get(conn_id).cloned() else {
+                    return err("Entre numa chamada para mandar efeitos");
+                };
+                let Some(me) = s.voice.get(&channel_id).and_then(|l| l.iter().find(|p| p.peer_id == conn_id)) else {
+                    return err("Entre numa chamada para mandar efeitos");
+                };
+                if me.server_muted {
+                    return err("Um moderador silenciou você nesta chamada");
+                }
+                if let Err(wait) = take_fx(&mut s.fx_cooldowns, &user.id, &kind, now) {
+                    return Some(json!({ "error": "Espere um pouco para mandar outro efeito", "retryMs": wait }));
+                }
+                let msg = event("voice:fx", json!({ "channelId": channel_id, "peerId": conn_id, "by": user, "kind": kind, "at": now }));
+                for p in s.voice.get(&channel_id).into_iter().flatten().filter(|p| p.peer_id != conn_id) {
+                    Self::send_to(s, &p.peer_id, msg.clone());
+                }
+                Some(json!({ "ok": true }))
+            }
+
             // O app foi para segundo plano (ou voltou): decide se as notificações vão por push.
             "app:visibility" => {
                 let visible = d.get("visible").and_then(Value::as_bool).unwrap_or(true);
@@ -2699,6 +2762,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn efeitos_da_chamada_tem_intervalo() {
+        assert!(valid_fx("thumbs_up") && valid_fx("confetti") && !valid_fx("") && !valid_fx("Thumbs") && !valid_fx("a-b") && !valid_fx(&"x".repeat(25)));
+        let mut m = HashMap::new();
+        assert!(take_fx(&mut m, "ana", "thumbs_up", 0).is_ok());
+        assert_eq!(take_fx(&mut m, "ana", "wave", 100), Err(600), "700 ms entre quaisquer efeitos");
+        assert!(take_fx(&mut m, "bia", "wave", 100).is_ok(), "cada pessoa tem o seu");
+        assert_eq!(take_fx(&mut m, "ana", "thumbs_up", 800), Err(1700), "2,5 s para o mesmo");
+        assert!(take_fx(&mut m, "ana", "wave", 800).is_ok());
+        assert!(take_fx(&mut m, "ana", "confetti", 2000).is_ok());
+        assert_eq!(take_fx(&mut m, "ana", "confetti", 3000), Err(7000), "8 s para os de tela toda");
+        assert!(take_fx(&mut m, "ana", "thumbs_up", 3000).is_ok());
+    }
+
+    #[test]
     fn chamar_atencao_no_maximo_3_por_minuto() {
         let (hub, _rx) = Hub::new();
         for _ in 0..NUDGES_PER_MINUTE {
@@ -2811,6 +2888,7 @@ mod tests {
             route: "mesh".into(),
             e2e: None,
             sfu_ok: false,
+            hand: false,
         };
         let (tx, mut pc) = unbounded_channel();
         let mut s = hub.state.lock().unwrap();
@@ -2878,6 +2956,7 @@ mod tests {
             route: if sfu_ok { "n1".into() } else { "mesh".into() },
             e2e: sfu_ok.then(|| "chave".to_string()),
             sfu_ok,
+            hand: false,
         };
         let mut inbox = HashMap::new();
         {

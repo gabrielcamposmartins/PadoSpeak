@@ -255,8 +255,12 @@ async fn ping(State(app): State<Arc<App>>) -> Response {
 mod tests {
     use super::*;
 
+    /// Os dois testes mexem no mesmo `FRESH_UNTIL`: um de cada vez.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
     #[test]
     fn depois_de_uma_falha_o_token_sai_novo() {
+        let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         *FRESH_UNTIL.lock().unwrap() = None;
         let pedido = json!({ "content_binding": "x", "proxy": "http://p", "source_address": "1.2.3.4" });
         let normal = for_node(pedido.clone());
@@ -268,6 +272,8 @@ mod tests {
 
     #[test]
     fn pedido_vai_ao_no_sem_proxy_e_novo_depois_de_bloqueio() {
+        let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        *FRESH_UNTIL.lock().unwrap() = None;
         let body = json!({ "content_binding": "x", "proxy": "http://p", "source_address": "0.0.0.0", "bypass_cache": false });
         let v = for_node(body.clone());
         assert!(v.get("proxy").is_none() && v.get("source_address").is_none());

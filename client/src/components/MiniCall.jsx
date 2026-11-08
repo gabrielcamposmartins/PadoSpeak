@@ -15,6 +15,7 @@ import { useVoiceConn } from './conn.jsx';
 import { useLayout } from '../lib/layout.js';
 import { plain } from '../lib/text.js';
 import Avatar from './Avatar.jsx';
+import { TileFx } from './CallFx.jsx';
 
 const POS_KEY = 'padospeak.miniCallPos';
 /** Antes disto, o ponteiro só tremeu: é um clique. */
@@ -134,6 +135,7 @@ export default function MiniCall({ floating = false }) {
           <Avatar user={who || me} size={floating ? 44 : 52} />
         </span>
       )}
+      {tile && !tile.screen && <TileFx userId={tile.user?.id} />}
       <span className="mini-label">
         {tile?.screen ? <MonitorUp size={12} /> : voice.dm ? null : <Volume2 size={12} />}
         <span>{label}</span>

@@ -90,6 +90,7 @@ import { isDesktop, isTauri, DOWNLOAD_URL, DEFAULT_SERVER, openExternal } from '
 import { usePwa, installState, install, pushStatus, enablePush, disablePush } from '../lib/pwa.js';
 import { ConnProvider, useConn } from './conn.jsx';
 import { PollModal } from './Polls.jsx';
+import { storageInfo, removeAll as removeModels } from '../lib/models.js';
 import Avatar, { useUser, UserName, colorClass, colorStyle, Orb } from './Avatar.jsx';
 import LatencyChart from './LatencyChart.jsx';
 import { TitleBar } from './Aero.jsx';
@@ -224,6 +225,54 @@ function Modal({ children, onClose, size, title }) {
         {children}
       </div>
     </div>
+  );
+}
+
+/** Gestos da câmera nas chamadas (valem na hora) e os arquivos que eles baixaram. */
+function GestureSettings() {
+  const gestures = useStore((s) => Boolean(s.prefs.gestures));
+  const fxOff = useStore((s) => Boolean(s.prefs.callFxOff));
+  const set = (patch) => useStore.getState().setAppearance(patch);
+  const [stored, setStored] = useState(0);
+  useEffect(() => {
+    storageInfo().then((list) => setStored(list.reduce((n, x) => n + x.size, 0)));
+  }, [gestures]);
+  return (
+    <>
+      <div className="settings-sec">Gestos da câmera</div>
+      <label className="checkbox">
+        <input type="checkbox" checked={gestures} onChange={(e) => set({ gestures: e.target.checked })} />
+        <span>
+          Reconhecer gestos da minha câmera
+          <small className="check-hint">
+            Com a câmera ligada numa chamada: 👍 e 👎, ✌️ (confete), 🤟 (corações) e 👋 (acenar) viram efeitos que todos
+            da chamada veem, e ☝️ levanta a mão. Tudo roda no seu aparelho; na primeira vez, baixa cerca de 11 MB.
+          </small>
+        </span>
+      </label>
+      <label className="checkbox">
+        <input type="checkbox" checked={!fxOff} onChange={(e) => set({ callFxOff: !e.target.checked })} />
+        <span>
+          Mostrar os efeitos de tela dos outros
+          <small className="check-hint">Confete e corações na tela toda quando alguém faz o gesto. Os emojis no vídeo continuam.</small>
+        </span>
+      </label>
+      {stored > 0 && (
+        <p className="kv gesture-files">
+          Recursos baixados: {(stored / 1048576).toFixed(1)} MB{' '}
+          <button
+            type="button"
+            className="btn ghost small-btn"
+            onClick={async () => {
+              await removeModels();
+              setStored(0);
+            }}
+          >
+            Apagar
+          </button>
+        </p>
+      )}
+    </>
   );
 }
 
@@ -1611,6 +1660,7 @@ function SettingsModal({ close, tab: startTab, focus }) {
             </span>
           </label>
         ))}
+        <GestureSettings />
       </section>
       <section className="settings-col">
         {isTauri && (

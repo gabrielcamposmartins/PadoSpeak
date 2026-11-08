@@ -1756,6 +1756,13 @@ export class VoiceClient {
     if (this.state.channelId) this.rt.send('voice:state', patch);
   }
 
+  /** Levanta ou abaixa a mão (gesto ☝️ da câmera ou o selo no próprio vídeo). */
+  setHand(on) {
+    this.state.hand = Boolean(on);
+    this.pushState({ hand: this.state.hand });
+    this.changed();
+  }
+
   setMuted(muted) {
     this.state.muted = muted;
     if (!muted && this.state.deafened) this.setDeafened(false);
@@ -2427,6 +2434,7 @@ export class VoiceClient {
       screenAudioMuted: Boolean(s.screenAudioMuted),
       video: Boolean(this.camera),
       cameraFacing: s.cameraFacing || 'user',
+      hand: Boolean(s.hand),
       screen: Boolean(this.screen),
       localCamera: this.camera,
       localScreen: this.screen,
@@ -2455,6 +2463,7 @@ export class VoiceClient {
           muted: Boolean(p.info.muted),
           deafened: Boolean(p.info.deafened),
           serverMuted: Boolean(p.info.serverMuted),
+          hand: Boolean(p.info.hand),
           localMuted: this.localMutes.has(p.info.user?.id),
           volume: p.volume,
           streamVolume: p.streamVolume,

@@ -1,5 +1,16 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.14.0 — 08/11/2026
+
+### Novidades
+- **Gestos da câmera nas chamadas**: com a câmera ligada, faça 👍, 👎, ✌️, 🤟 ou acene 👋 e todos da chamada veem o emoji subir no seu vídeo. O ✌️ solta confete e o 🤟, corações na tela toda. Ligue em Configurações → Funcionalidade → “Reconhecer gestos da minha câmera”. Tudo é reconhecido no próprio aparelho, sem mandar sua imagem para lugar nenhum, e pesa pouco: quase nada sem mão na imagem e para sozinho com a câmera desligada.
+- **Levantar a mão**: com os gestos ligados, aponte o dedo para cima ☝️ e um ✋ fica no seu vídeo até você clicar nele para abaixar.
+- **Efeitos dos outros**: em Configurações → Funcionalidade, “Mostrar os efeitos de tela dos outros” desliga o confete e os corações dos outros, e “Recursos baixados” mostra e apaga os arquivos dos gestos guardados no aparelho.
+
+### Correções
+- **Cor dos painéis com imagem de fundo**: a cor escolhida para os painéis agora vale também quando há uma imagem de fundo.
+- **Lista de membros mais limpa**: as etiquetas de cargo aparecem só ao abrir o perfil. A lista continua podendo ser filtrada e agrupada por cargo.
+
 ## 1.13.0 — 07/11/2026
 
 ### Novidades

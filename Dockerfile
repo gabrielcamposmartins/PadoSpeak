@@ -7,6 +7,13 @@ RUN npm ci --workspace client --include-workspace-root=false
 COPY client client
 RUN npm run build --workspace client
 
+# ---------- 1b) Arquivos dos recursos que rodam no aparelho (gestos da câmera) ----------
+# Ficam fora do binário: o wasm do MediaPipe sai do mesmo node_modules do app e o modelo é baixado da versão fixa
+# (conferida pelo SHA-256). Servidos em /api/models (server/src/model_files.rs).
+FROM client AS models
+COPY scripts/fetch-models.mjs scripts/
+RUN node scripts/fetch-models.mjs /out/models
+
 # ---------- 2) Servidor Rust (com o cliente embutido) ----------
 FROM rust:1-bookworm AS server
 WORKDIR /app
@@ -38,11 +45,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 COPY --from=server /app/target/release/padospeak-server /usr/local/bin/padospeak-server
 COPY --from=deno /deno /usr/local/bin/deno
 COPY --from=ytdlp /opt/yt-dlp /opt/yt-dlp
+COPY --from=models /out/models /opt/padospeak/models
 USER padospeak
 ENV DATA_DIR=/data
 # O servidor também consegue baixar um yt-dlp sozinho para DATA_DIR/bin se este faltar.
 ENV YTDLP_PATH=/opt/yt-dlp/yt-dlp_linux
 ENV YTDLP_PLUGIN_DIRS=/opt/yt-dlp/plugins
+ENV MODELS_DIR=/opt/padospeak/models
 VOLUME /data
 EXPOSE 3000 3001
 # A mesma imagem roda o nó de mídia: `padospeak-server media` (veja deploy/media).

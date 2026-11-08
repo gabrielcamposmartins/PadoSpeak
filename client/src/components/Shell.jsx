@@ -43,7 +43,7 @@ import { offerWindowsApp } from './AuthPage.jsx';
 import { ConnProvider, useAcross, useVoiceConn } from './conn.jsx';
 import { canHost } from '../lib/host.js';
 import { voiceOn, musicOn, rolesOn } from '../modules.js';
-import { RolePills, useRoles } from './Roles.jsx';
+import { useRoles } from './Roles.jsx';
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useLayout, useNarrow, isTouch } from '../lib/layout.js';
@@ -921,8 +921,6 @@ function MemberRow({ m, isOn, ownerId, admin, guildId }) {
             <FormattedText text={game || fresh.bio || activity} size={14} />
           </span>
         )}
-        {/* os cargos vêm embaixo, sem tomar o lugar da mensagem pessoal */}
-        <RolePills guildId={guildId} userId={m.id} />
       </span>
     </button>
     </>

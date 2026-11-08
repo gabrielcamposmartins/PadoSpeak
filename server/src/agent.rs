@@ -26,7 +26,7 @@ use crate::api::{ApiError, AuthUser};
 use crate::host::App;
 use crate::models::{user_from_row, User, USER_COLS};
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{Method, Request, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -104,6 +104,9 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/admin/agent/models", get(admin_models))
         .route("/api/admin/agent/people", post(admin_add_person))
         .route("/api/admin/agent/people/{id}", axum::routing::delete(admin_remove_person))
+        .route("/api/admin/agent/jobs", get(admin_jobs))
+        .route("/api/admin/agent/usage", get(admin_usage))
+        .route("/api/admin/agent/jobs/{id}", axum::routing::delete(admin_delete_job))
 }
 
 fn bad(msg: impl Into<String>) -> ApiError {
@@ -124,6 +127,8 @@ const SETTING_MODEL: &str = "agent_model";
 /// Quem usa o assistente: `all` (todo mundo, o padrão) ou `list` (só quem está em `agent_app_users`, e o
 /// dono). Para quem não está na lista, o assistente nem aparece (as rotas respondem 404).
 const SETTING_ACCESS: &str = "agent_app_access";
+/// Quem pode agendar tarefas que se repetem (painel do administrador): `none`, `admins` (padrão) ou `all`.
+const SETTING_REPEAT: &str = "agent_repeat";
 /// Onde ficava a chave única (antes do chaveiro): vira a primeira chave do app.
 const LEGACY_KEY: &str = "agent_api_key";
 /// Sugestões quando a lista de modelos da Anthropic não vem (sem chave, ou sem rede).
@@ -354,6 +359,7 @@ async fn config_view(app: &App, me: &User) -> ApiResult<Value> {
     Ok(json!({
         "enabled": enabled(app).await,
         "access": if app_limited(app).await { "list" } else { "all" },
+        "repeat": repeat_policy(app).await,
         "people": people,
         "owner": crate::admin::owner_username(),
         "configured": !active.is_empty(),
@@ -375,6 +381,8 @@ struct ConfigBody {
     model: Option<String>,
     /// Quem usa a chave e o modelo do app: `all` ou `list`.
     access: Option<String>,
+    /// Quem agenda tarefas que se repetem: `none`, `admins` ou `all`.
+    repeat: Option<String>,
 }
 
 async fn save_config(State(app): AppState, AuthUser(me, _): AuthUser, Json(body): Json<ConfigBody>) -> ApiResult<Json<Value>> {
@@ -403,12 +411,177 @@ async fn save_config(State(app): AppState, AuthUser(me, _): AuthUser, Json(body)
         app.logs.info(if a == "list" { "Assistente: só para as pessoas escolhidas" } else { "Assistente: para todos" });
         app.hub.to_all("agent:access", json!({}));
     }
+    if let Some(r) = body.repeat {
+        if !matches!(r.as_str(), "none" | "admins" | "all") {
+            return Err(bad("Escolha ninguém, só administradores ou todos"));
+        }
+        app.db.set_setting(SETTING_REPEAT, &r).await?;
+        app.logs.info(match r.as_str() {
+            "none" => "Assistente: tarefas que se repetem desligadas",
+            "all" => "Assistente: todos podem agendar tarefas que se repetem",
+            _ => "Assistente: só administradores do app agendam tarefas que se repetem",
+        });
+    }
     if let Some(m) = body.model {
         let m = clean_model(&m)?;
         app.db.set_setting(SETTING_MODEL, &m).await?;
         app.logs.info(&format!("Assistente: modelo do app = {}", if m.is_empty() { "padrão" } else { &m }));
     }
     Ok(Json(config_view(&app, &me).await?))
+}
+
+/// Os números de uso que a API devolve numa resposta.
+#[derive(Debug, Default, PartialEq)]
+struct Usage {
+    input: i64,
+    output: i64,
+    cache_read: i64,
+    cache_write: i64,
+    web_searches: i64,
+}
+
+fn usage_of(res: &Value) -> Usage {
+    let u = &res["usage"];
+    let n = |v: &Value| v.as_i64().unwrap_or(0).max(0);
+    Usage {
+        input: n(&u["input_tokens"]),
+        output: n(&u["output_tokens"]),
+        cache_read: n(&u["cache_read_input_tokens"]),
+        cache_write: n(&u["cache_creation_input_tokens"]),
+        web_searches: n(&u["server_tool_use"]["web_search_requests"]),
+    }
+}
+
+/// Soma o que uma resposta gastou na conta da pessoa (do dia, por chave). Falhar aqui não atrapalha a resposta.
+async fn record_usage(app: &App, user_id: &str, own: bool, res: &Value) {
+    let u = usage_of(res);
+    let day = local_day_utc(crate::now_ms());
+    let r = app
+        .db
+        .execute(
+            "INSERT INTO agent_usage (user_id, day, own, requests, input, output, cache_read, cache_write, web_searches) \
+             VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6, ?7, ?8) \
+             ON CONFLICT(user_id, day, own) DO UPDATE SET requests = requests + 1, input = input + excluded.input, \
+             output = output + excluded.output, cache_read = cache_read + excluded.cache_read, \
+             cache_write = cache_write + excluded.cache_write, web_searches = web_searches + excluded.web_searches",
+            libsql::params![user_id, day.as_str(), own as i64, u.input, u.output, u.cache_read, u.cache_write, u.web_searches],
+        )
+        .await;
+    if let Err(e) = r {
+        app.logs.warn(format!("Assistente: não deu para contar os tokens: {e}"));
+    }
+}
+
+/// "AAAA-MM-DD" (UTC) de um instante.
+fn local_day_utc(ms: i64) -> String {
+    let (y, m, d) = civil(ms.div_euclid(86_400_000));
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+#[derive(Deserialize)]
+struct UsageQuery {
+    /// Últimos N dias (0 = desde sempre).
+    #[serde(default)]
+    days: i64,
+}
+
+/// Painel: tokens gastos com o assistente por pessoa (quem vê o painel vê).
+async fn admin_usage(State(app): AppState, AuthUser(me, _): AuthUser, Query(q): Query<UsageQuery>) -> ApiResult<Json<Value>> {
+    if !crate::admin::can_view(&app, &me).await {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "Não encontrado"));
+    }
+    let days = q.days.clamp(0, 3660);
+    let since = if days == 0 { "0000-00-00".to_string() } else { local_day_utc(crate::now_ms() - (days - 1) * 86_400_000) };
+    let sql = format!(
+        "SELECT a.own, SUM(a.requests), SUM(a.input), SUM(a.output), SUM(a.cache_read), SUM(a.cache_write), SUM(a.web_searches), \
+         MAX(a.day), {USER_COLS} FROM agent_usage a JOIN users u ON u.id = a.user_id WHERE a.day >= ?1 GROUP BY a.user_id, a.own"
+    );
+    let rows = app
+        .db
+        .query_all(&sql, [since.as_str()], |r| {
+            Ok((
+                r.get::<i64>(0)? != 0,
+                [r.get::<i64>(1)?, r.get::<i64>(2)?, r.get::<i64>(3)?, r.get::<i64>(4)?, r.get::<i64>(5)?, r.get::<i64>(6)?],
+                r.get::<String>(7)?,
+                crate::models::user_at(r, 8)?,
+            ))
+        })
+        .await?;
+    // uma linha por pessoa: a chave do app e a própria separadas, e o total
+    let mut people: Vec<Value> = Vec::new();
+    let keys = ["requests", "input", "output", "cacheRead", "cacheWrite", "webSearches"];
+    let mut total = json!({ "requests": 0, "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "webSearches": 0, "tokens": 0 });
+    for (own, nums, last, user) in rows {
+        let idx = match people.iter().position(|p| p["user"]["id"] == json!(user.id)) {
+            Some(i) => i,
+            None => {
+                let zero = json!({ "requests": 0, "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "webSearches": 0, "tokens": 0 });
+                people.push(json!({ "user": user, "app": zero.clone(), "own": zero.clone(), "total": zero, "lastDay": last }));
+                people.len() - 1
+            }
+        };
+        let p = &mut people[idx];
+        if p["lastDay"].as_str().unwrap_or_default() < last.as_str() {
+            p["lastDay"] = json!(last);
+        }
+        let tokens = nums[1] + nums[2] + nums[3] + nums[4];
+        for part in [if own { "own" } else { "app" }, "total"] {
+            for (k, v) in keys.iter().zip(nums) {
+                p[part][*k] = json!(p[part][*k].as_i64().unwrap_or(0) + v);
+            }
+            p[part]["tokens"] = json!(p[part]["tokens"].as_i64().unwrap_or(0) + tokens);
+        }
+        for (k, v) in keys.iter().zip(nums) {
+            total[*k] = json!(total[*k].as_i64().unwrap_or(0) + v);
+        }
+        total["tokens"] = json!(total["tokens"].as_i64().unwrap_or(0) + tokens);
+    }
+    people.sort_by_key(|p| std::cmp::Reverse(p["total"]["tokens"].as_i64().unwrap_or(0)));
+    Ok(Json(json!({ "days": days, "people": people, "total": total })))
+}
+
+/// Painel: as tarefas agendadas de todo mundo (quem vê o painel vê; só o dono apaga).
+async fn admin_jobs(State(app): AppState, AuthUser(me, _): AuthUser) -> ApiResult<Json<Value>> {
+    if !crate::admin::can_view(&app, &me).await {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "Não encontrado"));
+    }
+    let mut jobs = crate::agent_jobs::list_all(&app).await.map_err(bad)?;
+    for j in &mut jobs {
+        // a mensagem: só para onde vai (o texto é da pessoa); a ação e a tarefa: o rótulo que ela confirmou
+        if j["kind"] == "message" {
+            let ch = j["channelId"].as_str().unwrap_or_default().to_string();
+            let what = match name_of(&app, "channels", &ch).await {
+                Some(n) => format!("Mensagem em #{n}"),
+                None => "Mensagem numa conversa privada".into(),
+            };
+            j["what"] = json!(what);
+        } else {
+            j["what"] = j["label"].clone();
+        }
+        if let Some(o) = j.as_object_mut() {
+            o.remove("channelId");
+            o.remove("label");
+        }
+    }
+    Ok(Json(json!({ "jobs": jobs, "canEdit": is_owner(&me) })))
+}
+
+async fn admin_delete_job(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): Path<String>) -> ApiResult<Json<Value>> {
+    if !is_owner(&me) {
+        return Err(ApiError::new(StatusCode::FORBIDDEN, "Só o dono do app apaga tarefas agendadas"));
+    }
+    let Some(user_id) = crate::agent_jobs::remove_any(&app, &id).await.map_err(bad)? else {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "Essa tarefa não existe mais (já rodou ou foi apagada)"));
+    };
+    app.logs.info(format!("Assistente: o administrador apagou a tarefa agendada {id}"));
+    if user_id != me.id {
+        app.hub.to_user(
+            &user_id,
+            "agent:notice",
+            json!({ "title": "Tarefa agendada", "body": "Uma tarefa agendada sua foi apagada pelo administrador do app.", "at": crate::now_ms() }),
+        );
+    }
+    admin_jobs(State(app), AuthUser(me, String::new())).await
 }
 
 #[derive(Deserialize)]
@@ -1256,8 +1429,11 @@ Onde você aparece: num balão aberto por cima da tela que a pessoa está usando
 que eles mostram (conexão direta, pelo SFU ou pelo relay; latência; perda de pacotes; o que limita o envio) e o que a pessoa pode fazer.\n\
 - Para o que está fora do app (notícias, documentação, preços, como fazer algo), pesquise na internet com web_search, quando ela \
 estiver disponível, e diga de onde veio a informação.\n\
-- Para mandar algo mais tarde ou repetir (\"daqui a 1 hora\", \"todo dia às 9h\"), use schedule_message com a hora local da pessoa \
-(o contexto traz a hora e o fuso); list_scheduled e cancel_scheduled mostram e cancelam.\n\
+- Para fazer algo mais tarde (\"daqui a 1 hora\", \"amanhã às 9h\"), com a hora local da pessoa (o contexto traz a hora e o \
+fuso): schedule_message manda uma mensagem; schedule_action roda uma ação exata de outra ferramenta; schedule_task deixa uma \
+instrução para você fazer sozinho na hora (resumir, conferir, avisar). Repetir (\"todo dia\") só aparece para administradores do \
+app (ou para todos, se o dono liberou). list_scheduled e cancel_scheduled mostram e cancelam.\n\
+- Para chamar a atenção de alguém (fazer a janela tremer), use send_nudge.
 - Enquetes existem só nos canais de texto dos servidores: create_poll cria; vote_poll vota e end_poll encerra (o id vem na \
 mensagem lida com read_messages).";
 
@@ -1365,6 +1541,7 @@ async fn run(app: &Arc<App>, me: &User, token: &str, using: &Resolved) -> Result
             }
             Err(f) => return Err(f.message),
         };
+        record_usage(app, &me.id, using.own, &res).await;
         let stop = res["stop_reason"].as_str().unwrap_or_default().to_string();
         let content = res.get("content").cloned().unwrap_or_else(|| json!([]));
         if stop == "refusal" {
@@ -1473,6 +1650,8 @@ struct Ctx {
     owner: bool,
     /// Os módulos ligados (sem as chamadas não há ferramentas de voz; sem a música, as dela).
     modules: crate::modules::Modules,
+    /// Quem pode agendar tarefas que se repetem (`SETTING_REPEAT`).
+    repeat: &'static str,
 }
 
 impl Ctx {
@@ -1481,7 +1660,35 @@ impl Ctx {
             app_admin: crate::admin::can_view(app, me).await,
             owner: me.username.to_lowercase() == crate::admin::owner_username(),
             modules: app.hub.modules(),
+            repeat: repeat_policy(app).await,
         }
+    }
+
+    /// Esta pessoa pode agendar tarefas que se repetem.
+    fn can_repeat(&self) -> bool {
+        match self.repeat {
+            "all" => true,
+            "admins" => self.app_admin,
+            _ => false,
+        }
+    }
+}
+
+/// Quem pode agendar tarefas que se repetem: `none`, `admins` (padrão) ou `all`.
+async fn repeat_policy(app: &App) -> &'static str {
+    match app.db.get_setting(SETTING_REPEAT).await.ok().flatten().as_deref() {
+        Some("none") => "none",
+        Some("all") => "all",
+        _ => "admins",
+    }
+}
+
+/// Se a pessoa ainda pode ter tarefas que se repetem (a rotina confere antes de agendar a próxima vez).
+pub async fn can_repeat(app: &App, user: &User) -> bool {
+    match repeat_policy(app).await {
+        "all" => true,
+        "admins" => crate::admin::can_view(app, user).await,
+        _ => false,
     }
 }
 
@@ -1506,11 +1713,14 @@ fn needs_confirm(name: &str) -> bool {
     matches!(
         name,
         "send_message"
+            | "send_nudge"
             | "send_notification"
             | "update_server"
             | "update_channel"
             | "set_member_permissions"
             | "schedule_message"
+            | "schedule_action"
+            | "schedule_task"
             | "create_poll"
             | "vote_poll"
             | "end_poll"
@@ -1606,6 +1816,17 @@ fn tool_defs(ctx: &Ctx) -> Vec<Tool> {
                     "content": { "type": "string" },
                 }),
                 &["content"],
+            ),
+        },
+        Tool {
+            name: "send_nudge",
+            desc: "Chama a atenção em nome da pessoa (faz a janela de quem está lá tremer, como o botão \"Chamar atenção\"):                    numa conversa direta com alguém (user_id ou channel_id da conversa) ou num canal de texto (channel_id;                    avisa quem está online no servidor). No máximo 3 vezes por minuto. A pessoa confirma antes.",
+            schema: obj(
+                json!({
+                    "channel_id": { "type": "string", "description": "Canal de texto ou conversa direta" },
+                    "user_id": { "type": "string", "description": "Ou: a pessoa (abre a conversa direta com ela)" },
+                }),
+                &[],
             ),
         },
         Tool {
@@ -1787,21 +2008,60 @@ fn tool_defs(ctx: &Ctx) -> Vec<Tool> {
             ),
         },
     ];
+    // Repetir depende do painel (ninguém, só administradores do app ou todos); sem o direito, o parâmetro nem aparece.
+    let when = |mut props: Value, repeat_help: &str| {
+        props["in_minutes"] = json!({ "type": "number", "description": "Daqui a N minutos" });
+        props["at"] = json!({ "type": "string", "description": "Hora local da pessoa: AAAA-MM-DD HH:MM" });
+        if ctx.can_repeat() {
+            props["repeat_minutes"] = json!({ "type": "integer", "description": repeat_help });
+        }
+        props
+    };
+    let repeat_msg = "Repetir a cada N minutos (mínimo 15; 1440 = todo dia, 10080 = toda semana)";
     t.push(Tool {
         name: "schedule_message",
-        desc: "Agenda uma mensagem para mandar mais tarde, num canal (channel_id) ou para uma pessoa (user_id), uma vez \
-               ou repetindo. Diga quando com in_minutes (daqui a N minutos) ou at (hora local da pessoa, \"AAAA-MM-DD HH:MM\"). \
-               repeat_minutes repete a cada N minutos (mínimo 15; 1440 = todo dia, 10080 = toda semana). A pessoa confirma antes.",
+        desc: if ctx.can_repeat() {
+            "Agenda uma mensagem para mandar mais tarde, num canal (channel_id) ou para uma pessoa (user_id), uma vez \
+             ou repetindo. Diga quando com in_minutes (daqui a N minutos) ou at (hora local da pessoa, \"AAAA-MM-DD HH:MM\"). \
+             A pessoa confirma antes."
+        } else {
+            "Agenda uma mensagem para mandar uma vez, mais tarde, num canal (channel_id) ou para uma pessoa (user_id). Diga \
+             quando com in_minutes (daqui a N minutos) ou at (hora local da pessoa, \"AAAA-MM-DD HH:MM\"). Repetir não está \
+             disponível para esta pessoa. A pessoa confirma antes."
+        },
         schema: obj(
-            json!({
-                "channel_id": { "type": "string" },
-                "user_id": { "type": "string" },
-                "content": { "type": "string" },
-                "in_minutes": { "type": "number" },
-                "at": { "type": "string", "description": "Hora local da pessoa: AAAA-MM-DD HH:MM" },
-                "repeat_minutes": { "type": "integer" },
-            }),
+            when(json!({ "channel_id": { "type": "string" }, "user_id": { "type": "string" }, "content": { "type": "string" } }), repeat_msg),
             &["content"],
+        ),
+    });
+    t.push(Tool {
+        name: "schedule_action",
+        desc: "Agenda uma ação exata para mais tarde: qualquer outra ferramenta sua, com os parâmetros que ela teria agora \
+               (tirar ou dar um cargo, encerrar uma enquete, fixar uma mensagem, pôr uma música, mudar um canal…). tool = o \
+               nome da ferramenta, input = os parâmetros dela (com os ids já resolvidos). Na hora, roda do jeito que a pessoa \
+               confirmou, com as permissões dela naquele momento, e ela recebe um aviso. A pessoa confirma antes.",
+        schema: obj(
+            when(
+                json!({
+                    "tool": { "type": "string", "description": "Nome da ferramenta (ex.: update_role, end_poll, pin_message)" },
+                    "input": { "type": "object", "description": "Os parâmetros da ferramenta" },
+                }),
+                "Repetir a cada N minutos (mínimo 15)",
+            ),
+            &["tool", "input"],
+        ),
+    });
+    t.push(Tool {
+        name: "schedule_task",
+        desc: "Agenda uma tarefa para você mesmo fazer sozinho mais tarde, quando o que fazer depende do momento: resumir um \
+               canal, ver se alguém respondeu e avisar, conferir quem está na voz, pesquisar algo na internet e mandar o \
+               resultado… instruction = o que fazer, escrito por completo (na hora você só terá a instrução, sem esta \
+               conversa: diga canais, pessoas e ids). O resumo do que você fizer chega para a pessoa como aviso e fica na \
+               conversa. Na tarefa, apagar, sair de servidor e mudar permissões não rodam: para isso use schedule_action. \
+               A pessoa confirma antes.",
+        schema: obj(
+            when(json!({ "instruction": { "type": "string" } }), "Repetir a cada N minutos (mínimo 60; 1440 = todo dia, 10080 = toda semana)"),
+            &["instruction"],
         ),
     });
     t.push(Tool {
@@ -2119,6 +2379,23 @@ async fn execute(app: &Arc<App>, me: &User, token: &str, ctx: &Ctx, name: &str, 
             };
             ws_result(app.hub.act_as(app, me, "message:send", json!({ "channelId": channel, "content": content })).await)
         }
+        "send_nudge" => {
+            let channel = if text_of(input, "channel_id").is_some() {
+                id_of(input, "channel_id")?
+            } else {
+                let user = id_of(input, "user_id").map_err(|_| "Diga o canal (channel_id) ou a pessoa (user_id)".to_string())?;
+                let dm = call(app, token, Method::POST, "/api/dms", Some(json!({ "userId": user }))).await?;
+                dm["id"].as_str().ok_or("Não deu para abrir a conversa")?.to_string()
+            };
+            let r = ws_result(app.hub.act_as(app, me, "nudge:send", json!({ "channelId": channel })).await)?;
+            let (got, refused) = (r["delivered"].as_i64().unwrap_or(0), r["refused"].as_i64().unwrap_or(0));
+            Ok(json!(match (got, refused) {
+                (0, 0) => "Ninguém online recebeu (ninguém conectado agora).".to_string(),
+                (0, _) => "Ninguém recebeu: quem está lá não está aceitando chamar atenção agora.".to_string(),
+                (n, 0) => format!("A atenção foi chamada ({n} {}).", if n == 1 { "pessoa" } else { "pessoas" }),
+                (n, x) => format!("A atenção foi chamada para {n}; {x} não aceita(m) agora."),
+            }))
+        }
         "pin_message" => {
             let id = id_of(input, "message_id")?;
             let m = if input["pinned"].as_bool() == Some(false) { Method::DELETE } else { Method::PUT };
@@ -2189,10 +2466,46 @@ async fn execute(app: &Arc<App>, me: &User, token: &str, ctx: &Ctx, name: &str, 
                 let dm = call(app, token, Method::POST, "/api/dms", Some(json!({ "userId": user }))).await?;
                 dm["id"].as_str().ok_or("Não deu para abrir a conversa")?.to_string()
             };
-            let run_at = when_of(input, recent_tz(&me.id))?;
-            let repeat = input["repeat_minutes"].as_i64().filter(|m| *m > 0);
+            let tz = recent_tz(&me.id);
+            let run_at = when_of(input, tz)?;
+            let repeat = repeat_of(ctx, input)?;
             let label = describe(app, "schedule_message", input).await;
-            crate::agent_jobs::create(app, me, &channel, &content, run_at, repeat, &label).await
+            crate::agent_jobs::create(
+                app,
+                me,
+                crate::agent_jobs::NewJob { kind: "message", channel_id: &channel, content: &content, run_at, repeat_min: repeat, label: &label, tz },
+            )
+            .await
+        }
+        "schedule_action" => {
+            let tool = need(input, "tool")?;
+            let args = if input["input"].is_object() { input["input"].clone() } else { json!({}) };
+            if NOT_SCHEDULABLE.contains(&tool.as_str()) {
+                return Err("Essa ferramenta não pode ser agendada".into());
+            }
+            if !tool_defs(ctx).iter().any(|t| t.name == tool) {
+                return Err(format!("Ferramenta desconhecida: {tool}"));
+            }
+            let tz = recent_tz(&me.id);
+            let run_at = when_of(input, tz)?;
+            let repeat = repeat_of(ctx, input)?;
+            let label = Box::pin(describe(app, &tool, &args)).await;
+            let content = json!({ "tool": tool, "input": args }).to_string();
+            crate::agent_jobs::create(app, me, crate::agent_jobs::NewJob { kind: "action", channel_id: "", content: &content, run_at, repeat_min: repeat, label: &label, tz })
+                .await
+        }
+        "schedule_task" => {
+            let instruction = need(input, "instruction")?;
+            let tz = recent_tz(&me.id);
+            let run_at = when_of(input, tz)?;
+            let repeat = repeat_of(ctx, input)?;
+            let label = quote_plain(instruction.lines().next().unwrap_or_default(), 80);
+            crate::agent_jobs::create(
+                app,
+                me,
+                crate::agent_jobs::NewJob { kind: "task", channel_id: "", content: &instruction, run_at, repeat_min: repeat, label: &label, tz },
+            )
+            .await
         }
         "create_poll" => {
             let channel = id_of(input, "channel_id")?;
@@ -2228,20 +2541,31 @@ async fn execute(app: &Arc<App>, me: &User, token: &str, ctx: &Ctx, name: &str, 
             let jobs = crate::agent_jobs::list(app, me).await?;
             let mut out = Vec::new();
             for j in jobs {
-                let ch = j["channelId"].as_str().unwrap_or_default();
-                let place = match name_of(app, "channels", ch).await {
-                    Some(n) => format!("#{n}"),
-                    None => "conversa privada".into(),
-                };
-                out.push(json!({
+                let mut item = json!({
                     "job_id": j["jobId"],
+                    "tipo": match j["kind"].as_str() { Some("action") => "ação", Some("task") => "tarefa do assistente", _ => "mensagem" },
                     "quando": local_when(j["runAt"].as_i64().unwrap_or(0), tz),
-                    "onde": place,
                     "repete_a_cada_minutos": j["repeatMinutes"],
-                    "texto": j["content"],
                     "vezes_que_rodou": j["runs"],
                     "ultimo_erro": j["lastError"],
-                }));
+                });
+                match j["kind"].as_str() {
+                    Some("action") => {
+                        item["acao"] = j["label"].clone();
+                        item["ferramenta"] = j["content"]["tool"].clone();
+                        item["parametros"] = j["content"]["input"].clone();
+                    }
+                    Some("task") => item["instrucao"] = j["content"].clone(),
+                    _ => {
+                        let ch = j["channelId"].as_str().unwrap_or_default();
+                        item["onde"] = json!(match name_of(app, "channels", ch).await {
+                            Some(n) => format!("#{n}"),
+                            None => "conversa privada".into(),
+                        });
+                        item["texto"] = j["content"].clone();
+                    }
+                }
+                out.push(item);
             }
             Ok(json!(out))
         }
@@ -2487,7 +2811,178 @@ async fn name_of(app: &App, table: &str, id: &str) -> Option<String> {
     app.db.query_one(&sql, [id], |r| r.get::<String>(0)).await.ok().flatten().map(|n| crate::models::plain_text(&n))
 }
 
-/// "de Ana em #geral: “texto…”" (o que vai ser apagado), de um canal ou de uma conversa direta.
+/// Ferramentas que não entram num agendamento (nem numa tarefa agendada): agendar de dentro de um agendamento.
+const NOT_SCHEDULABLE: [&str; 5] = ["schedule_message", "schedule_action", "schedule_task", "cancel_scheduled", "list_scheduled"];
+/// Numa tarefa do assistente (que roda sozinha, sem a pessoa para confirmar), o que apaga, tira do servidor ou
+/// mexe em permissões não roda: isso vai como ação exata (`schedule_action`), que a pessoa confirmou como é.
+const NOT_IN_TASKS: [&str; 7] = ["delete_message", "delete_channel", "delete_server", "leave_server", "delete_file", "delete_role", "set_member_permissions"];
+
+/// A repetição pedida (minutos), se esta pessoa pode repetir (veja `Ctx::can_repeat`).
+fn repeat_of(ctx: &Ctx, input: &Value) -> Result<Option<i64>, String> {
+    let repeat = input["repeat_minutes"].as_i64().filter(|m| *m > 0);
+    if repeat.is_some() && !ctx.can_repeat() {
+        return Err(if ctx.repeat == "none" {
+            "Agendamentos que se repetem estão desligados neste app. Dá para agendar uma vez só.".into()
+        } else {
+            "Só administradores do app podem agendar tarefas que se repetem. Dá para agendar uma vez só.".into()
+        });
+    }
+    Ok(repeat)
+}
+
+/// ", todo dia", ", a cada 2 h"… (vazio sem repetição).
+fn repeat_text(input: &Value) -> String {
+    match input["repeat_minutes"].as_i64().filter(|m| *m > 0) {
+        Some(1440) => ", todo dia".to_string(),
+        Some(10080) => ", toda semana".to_string(),
+        Some(m) if m % 60 == 0 => format!(", a cada {} h", m / 60),
+        Some(m) => format!(", a cada {m} min"),
+        None => String::new(),
+    }
+}
+
+/// Começo de um texto, sem aspas (o rótulo de uma tarefa).
+fn quote_plain(s: &str, max: usize) -> String {
+    let s = s.trim();
+    if s.chars().count() > max { s.chars().take(max).collect::<String>() + "…" } else { s.to_string() }
+}
+
+/// Um login só para a tarefa agendada (a pessoa pode estar sem o app aberto): as ferramentas usam a API com ele,
+/// valendo as permissões dela, e ele some no fim.
+async fn with_session<T, F>(app: &Arc<App>, user: &User, f: impl FnOnce(String) -> F) -> Result<T, String>
+where
+    F: std::future::Future<Output = Result<T, String>>,
+{
+    let token = crate::auth::create_session(&app.db, &user.id).await.map_err(|e| e.to_string())?;
+    let out = f(token.clone()).await;
+    let _ = app.db.execute("DELETE FROM sessions WHERE token = ?1", [token.as_str()]).await;
+    out
+}
+
+/// Ação agendada (`schedule_action`): roda a ferramenta como foi confirmada e diz o que fez.
+pub async fn run_scheduled_action(app: &Arc<App>, user: &User, tool: &str, input: &Value) -> Result<String, String> {
+    if NOT_SCHEDULABLE.contains(&tool) {
+        return Err("essa ferramenta não pode ser agendada".into());
+    }
+    let ctx = Ctx::load(app, user).await;
+    let label = describe(app, tool, input).await;
+    with_session(app, user, |token| async move { execute(app, user, &token, &ctx, tool, input).await }).await?;
+    Ok(format!("Feito: {label}."))
+}
+
+/// Tarefa agendada do assistente (`schedule_task`): ele faz sozinho o que a instrução pede, numa conversa à parte,
+/// e devolve o resumo. O pedido e o resumo também entram na conversa da pessoa com o assistente (se ela não está
+/// no meio de outra coisa com ele), para ela ver e poder perguntar depois.
+pub async fn run_scheduled_task(app: &Arc<App>, user: &User, instruction: &str, tz: i64) -> Result<String, String> {
+    let using = resolve(app, user).await.map_err(|e| e.1)?.ok_or("o assistente não tem uma chave da API para você")?;
+    let summary = with_session(app, user, |token| async move { task_loop(app, user, &token, &using, instruction, tz).await }).await?;
+    let summary = if summary.trim().is_empty() { "A tarefa terminou sem nada a relatar.".to_string() } else { summary };
+    // na conversa: espera a vez (outra tarefa ou um pedido dela em andamento, até 1 min) e só entra se não há ações
+    // esperando confirmação
+    let mut guard = None;
+    for _ in 0..60 {
+        if let Ok(g) = take_busy(&user.id) {
+            guard = Some(g);
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    if let Some(guard) = guard {
+        if let Ok(turns) = load_turns(app, &user.id).await {
+            let clean = turns.last().map_or(true, |t| t.role == "assistant") && pending_calls(&turns).is_empty();
+            if clean && (turns.len() as i64) + 2 < MAX_TURNS {
+                let asked = format!("⏰ Tarefa agendada: {instruction}");
+                let _ = save_turn(app, &user.id, "user", &json!([{ "type": "text", "text": asked }])).await;
+                let _ = save_turn(app, &user.id, "assistant", &json!([{ "type": "text", "text": summary }])).await;
+                app.hub.to_user(&user.id, "agent:refresh", json!({}));
+            }
+        }
+        drop(guard);
+    }
+    Ok(summary)
+}
+
+async fn task_loop(app: &Arc<App>, user: &User, token: &str, using: &Resolved, instruction: &str, tz: i64) -> Result<String, String> {
+    let ctx = Ctx::load(app, user).await;
+    let mut tools: Vec<Value> =
+        tool_defs(&ctx).into_iter().filter(|t| !NOT_SCHEDULABLE.contains(&t.name) && !NOT_IN_TASKS.contains(&t.name)).map(|t| t.wire()).collect();
+    let mut web = web_search_tool(using);
+    if let Some(w) = &web {
+        tools.push(w.clone());
+    }
+    let now = crate::now_ms();
+    let header = format!(
+        "<contexto>Tarefa agendada rodando agora, sem a pessoa presente: não dá para pedir confirmação nem fazer perguntas. \
+         Faça o que a instrução abaixo pede com as ferramentas e termine com um resumo curto (até 3 frases) do que fez ou \
+         encontrou: ele chega para a pessoa como aviso. Se algo não der, diga o que faltou. Apagar, sair de servidor e mudar \
+         permissões não rodam aqui.\nAgora: {} (hora local da pessoa).\nQuem pediu: {} (@{}, id {}).</contexto>",
+        local_when(now, tz),
+        crate::models::plain_text(&user.display_name),
+        user.username,
+        user.id
+    );
+    let mut messages = vec![json!({ "role": "user", "content": [{ "type": "text", "text": header }, { "type": "text", "text": instruction }] })];
+    let http = reqwest::Client::builder().timeout(Duration::from_secs(600)).build().map_err(|e| e.to_string())?;
+    let mut pauses = 0;
+    let mut said = String::new();
+    for _ in 0..MAX_STEPS {
+        let mut body = json!({
+            "model": using.model,
+            "max_tokens": 16000,
+            "system": system_for(ctx.app_admin),
+            "tools": tools,
+            "messages": messages,
+            "thinking": { "type": "adaptive" },
+            "output_config": { "effort": "medium" },
+            "fallbacks": "default",
+        });
+        let res = match call_claude(&http, using, &body).await {
+            Ok(v) => v,
+            Err(f) if web.is_some() && f.status == 400 && f.detail.to_lowercase().contains("web_search") => {
+                WEB_REFUSED.lock().unwrap().get_or_insert_with(HashSet::new).insert(hint(&using.key));
+                web = None;
+                tools.retain(|t| t["name"] != "web_search");
+                body["tools"] = json!(tools);
+                call_claude(&http, using, &body).await.map_err(|f| f.message)?
+            }
+            Err(f) => return Err(f.message),
+        };
+        record_usage(app, &user.id, using.own, &res).await;
+        let stop = res["stop_reason"].as_str().unwrap_or_default().to_string();
+        let content = res.get("content").cloned().unwrap_or_else(|| json!([]));
+        if stop == "refusal" {
+            return Err("o assistente não pode fazer essa tarefa".into());
+        }
+        let (text, _) = answer_text(&content);
+        if !text.is_empty() {
+            said = text;
+        }
+        messages.push(json!({ "role": "assistant", "content": content }));
+        if stop == "pause_turn" {
+            pauses += 1;
+            if pauses > MAX_PAUSES {
+                return Err("a pesquisa demorou demais".into());
+            }
+            continue;
+        }
+        if stop != "tool_use" {
+            return Ok(said);
+        }
+        let mut results = Vec::new();
+        for b in blocks(&content).filter(|b| b["type"] == "tool_use") {
+            let name = b["name"].as_str().unwrap_or_default();
+            let r = if NOT_SCHEDULABLE.contains(&name) || NOT_IN_TASKS.contains(&name) {
+                Err("Numa tarefa agendada esta ação não roda (precisa da pessoa presente). Diga no resumo que ela precisa fazer isso.".to_string())
+            } else {
+                execute(app, user, token, &ctx, name, &b["input"]).await
+            };
+            results.push(tool_result(&b["id"], r));
+        }
+        messages.push(json!({ "role": "user", "content": results }));
+    }
+    Err("a tarefa parou depois de muitos passos seguidos".into())
+}
+
 /// A pergunta de uma enquete (pelo id da mensagem).
 async fn poll_def(app: &App, id: &str) -> Option<crate::polls::Def> {
     let sealed = app.db.query_one("SELECT content FROM messages WHERE id = ?1", [id], |r| r.get::<String>(0)).await.ok().flatten()?;
@@ -2524,6 +3019,7 @@ fn poll_text(m: &Value, tz: i64) -> Option<String> {
     ))
 }
 
+/// "de Ana em #geral: “texto…”" (o que vai ser apagado), de um canal ou de uma conversa direta.
 async fn message_preview(app: &App, id: &str) -> Option<String> {
     let map = |r: &libsql::Row| Ok((r.get::<String>(0)?, r.get::<String>(1)?, r.get::<Option<String>>(2)?));
     let row = app
@@ -2582,6 +3078,20 @@ async fn describe(app: &App, name: &str, input: &Value) -> String {
             };
             format!("Mandar mensagem para {to}")
         }
+        "send_nudge" => {
+            let to = if !s("channel_id").is_empty() {
+                channel(s("channel_id")).await
+            } else {
+                name_of(app, "users", &s("user_id")).await.unwrap_or_else(|| "alguém".into())
+            };
+            if to == "uma conversa direta" {
+                "Chamar a atenção na conversa direta".into()
+            } else if to.starts_with('#') {
+                format!("Chamar a atenção em {to}")
+            } else {
+                format!("Chamar a atenção de {to}")
+            }
+        }
         "pin_message" => (if input["pinned"].as_bool() == Some(false) { "Desafixar mensagem" } else { "Fixar mensagem" }).into(),
         "list_pins" => format!("Ver as fixadas de {}", channel(s("channel_id")).await),
         "star_message" => (if input["starred"].as_bool() == Some(false) { "Tirar dos favoritos" } else { "Favoritar mensagem" }).into(),
@@ -2611,16 +3121,15 @@ async fn describe(app: &App, name: &str, input: &Value) -> String {
             } else {
                 name_of(app, "users", &s("user_id")).await.unwrap_or_else(|| "alguém".into())
             };
-            let when = when_text(input);
-            let repeat = match input["repeat_minutes"].as_i64().filter(|m| *m > 0) {
-                Some(1440) => ", todo dia".to_string(),
-                Some(10080) => ", toda semana".to_string(),
-                Some(m) if m % 60 == 0 => format!(", a cada {} h", m / 60),
-                Some(m) => format!(", a cada {m} min"),
-                None => String::new(),
-            };
-            format!("Agendar mensagem para {to}, {when}{repeat}")
+            format!("Agendar mensagem para {to}, {}{}", when_text(input), repeat_text(input))
         }
+        "schedule_action" => {
+            let tool = s("tool");
+            let args = if input["input"].is_object() { input["input"].clone() } else { json!({}) };
+            let what = Box::pin(describe(app, &tool, &args)).await;
+            format!("Agendar: {what}, {}{}", when_text(input), repeat_text(input))
+        }
+        "schedule_task" => format!("Agendar uma tarefa do assistente, {}{}", when_text(input), repeat_text(input)),
         "create_poll" => format!("Criar a enquete {} em {}", quote(&s("question"), 60), channel(s("channel_id")).await),
         "vote_poll" => {
             let q = poll_def(app, &s("message_id")).await.map(|d| quote(&d.q, 50)).unwrap_or_default();
@@ -2655,6 +3164,11 @@ fn detail(name: &str, input: &Value) -> Value {
     let s = |k: &str| input.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
     match name {
         "send_message" | "schedule_message" => json!(s("content")),
+        "schedule_task" => json!(s("instruction")),
+        "schedule_action" => {
+            let args = if input["input"].is_object() { input["input"].clone() } else { json!({}) };
+            detail(input["tool"].as_str().unwrap_or_default(), &args)
+        }
         "create_poll" => {
             let opts: Vec<String> = input["options"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|o| format!("• {o}")).collect();
             let hours = input["hours"].as_f64().unwrap_or(24.0);
@@ -2697,6 +3211,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn uso_da_api_e_dia() {
+        let res = json!({ "usage": { "input_tokens": 120, "output_tokens": 30, "cache_read_input_tokens": 1000,
+            "cache_creation_input_tokens": 50, "server_tool_use": { "web_search_requests": 2 } } });
+        assert_eq!(usage_of(&res), Usage { input: 120, output: 30, cache_read: 1000, cache_write: 50, web_searches: 2 });
+        assert_eq!(usage_of(&json!({})), Usage::default());
+        assert_eq!(local_day_utc(0), "1970-01-01");
+        assert_eq!(local_day_utc(1_794_105_393_000), "2026-11-08");
+    }
+
+    #[test]
+    fn agendar_qualquer_tarefa_e_repetir_so_admin() {
+        let comum = Ctx { app_admin: false, owner: false, modules: crate::modules::Modules::default(), repeat: "admins" };
+        let admin = Ctx { app_admin: true, owner: false, modules: crate::modules::Modules::default(), repeat: "admins" };
+        // tudo pede confirmação
+        assert!(needs_confirm("schedule_action") && needs_confirm("schedule_task") && needs_confirm("schedule_message"));
+        assert!(needs_confirm("send_nudge"));
+        // repetir: só administradores do app; agendar uma vez vale para todos
+        let rep = json!({ "repeat_minutes": 1440 });
+        assert!(repeat_of(&comum, &rep).is_err());
+        assert_eq!(repeat_of(&admin, &rep).unwrap(), Some(1440));
+        assert_eq!(repeat_of(&comum, &json!({ "in_minutes": 5 })).unwrap(), None);
+        // e o parâmetro nem aparece para quem não pode
+        let schema = |c: &Ctx, name: &str| tool_defs(c).into_iter().find(|t| t.name == name).unwrap().schema;
+        for name in ["schedule_message", "schedule_action", "schedule_task"] {
+            assert!(schema(&comum, name)["properties"].get("repeat_minutes").is_none(), "{name}");
+            assert!(schema(&admin, name)["properties"].get("repeat_minutes").is_some(), "{name}");
+        }
+        // agendar de dentro de um agendamento não vale, e a tarefa sozinha não apaga nem muda permissões
+        assert!(NOT_SCHEDULABLE.contains(&"schedule_task") && NOT_IN_TASKS.contains(&"delete_server"));
+        assert_eq!(repeat_text(&json!({ "repeat_minutes": 120 })), ", a cada 2 h");
+        // o painel decide: ninguém, só administradores (padrão) ou todos
+        let todos = Ctx { repeat: "all", ..comum };
+        let ninguem = Ctx { repeat: "none", ..admin };
+        assert!(todos.can_repeat() && !ninguem.can_repeat());
+        assert!(repeat_of(&todos, &rep).is_ok());
+        assert!(repeat_of(&ninguem, &rep).unwrap_err().contains("desligados"));
+    }
+
+    #[test]
     fn ids_e_codificacao() {
         assert!(id_of(&json!({ "x": "6574b61d-23ba-47ab-8bc0-d6f3e1dec150" }), "x").is_ok());
         assert!(id_of(&json!({ "x": "mesa:g1:d2" }), "x").is_ok());
@@ -2718,9 +3271,9 @@ mod tests {
     #[test]
     fn ferramentas_seguem_o_acesso() {
         let names = |ctx: &Ctx| tool_defs(ctx).iter().map(|t| t.name).collect::<Vec<_>>();
-        let user = names(&Ctx { app_admin: false, owner: false, modules: crate::modules::Modules::default() });
+        let user = names(&Ctx { app_admin: false, owner: false, modules: crate::modules::Modules::default(), repeat: "admins" });
         assert!(user.contains(&"send_message") && user.contains(&"music_add") && !user.contains(&"app_stats"));
-        let admin = names(&Ctx { app_admin: true, owner: false, modules: crate::modules::Modules::default() });
+        let admin = names(&Ctx { app_admin: true, owner: false, modules: crate::modules::Modules::default(), repeat: "admins" });
         assert!(admin.contains(&"app_stats") && admin.contains(&"app_server_members"));
         // nomes únicos
         let set: HashSet<&str> = admin.iter().copied().collect();
@@ -2729,7 +3282,7 @@ mod tests {
 
     #[test]
     fn toda_acao_com_confirmacao_existe() {
-        let all = tool_defs(&Ctx { app_admin: true, owner: true, modules: crate::modules::Modules::default() });
+        let all = tool_defs(&Ctx { app_admin: true, owner: true, modules: crate::modules::Modules::default(), repeat: "admins" });
         for name in ["send_message", "send_notification", "update_server", "update_channel", "set_member_permissions", "delete_message", "delete_channel", "delete_server", "leave_server", "delete_file"] {
             assert!(all.iter().any(|t| t.name == name), "{name}");
         }
@@ -2738,7 +3291,7 @@ mod tests {
     #[test]
     fn ferramentas_de_voz_so_com_o_modulo() {
         let mut modules = crate::modules::Modules::none();
-        let names = |m| tool_defs(&Ctx { modules: m, app_admin: false, owner: false }).iter().map(|t| t.name).collect::<Vec<_>>();
+        let names = |m| tool_defs(&Ctx { modules: m, app_admin: false, owner: false, repeat: "admins" }).iter().map(|t| t.name).collect::<Vec<_>>();
         assert!(names(modules).contains(&"read_server_messages") && !names(modules).contains(&"call_quality") && !names(modules).contains(&"music_add"));
         modules.voice = true;
         modules.music = true;
