@@ -288,6 +288,7 @@ impl HostManager {
             .with_state(app.clone());
         let _ = app.router.set(router.clone());
         if !self.local_node {
+            crate::agent_jobs::start(app.clone());
             crate::media::start(&app).await;
         }
 

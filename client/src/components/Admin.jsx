@@ -24,7 +24,8 @@ import {
   HardDrive,
   Sticker,
 } from 'lucide-react';
-import { useStore } from '../store.js';
+import { useStore, parsePoll } from '../store.js';
+import { PollView } from './Polls.jsx';
 import { MODULES, normalizeModules } from '../modules.js';
 import AgentKeys from './AgentKeys.jsx';
 import MediaAdmin from './MediaAdmin.jsx';
@@ -419,6 +420,7 @@ function AdminMessage({ m, me }) {
   const sticker = parseSticker(m.content);
   const file = !sticker && parseFile(m.content);
   const voice = !sticker && !file && parseVoice(m.content);
+  const poll = !sticker && !file && !voice && parsePoll(m.content);
   const caption = sticker?.caption || file?.caption || '';
   return (
     <li className="adm-msg">
@@ -436,7 +438,7 @@ function AdminMessage({ m, me }) {
           </div>
         )}
         <div className="adm-msg-content">
-          {sticker ? <MessageSticker sticker={sticker} /> : file ? <FileView file={file} /> : voice ? <VoiceNote voice={voice} /> : <RichText text={m.content} me={me} />}
+          {sticker ? <MessageSticker sticker={sticker} /> : file ? <FileView file={file} /> : voice ? <VoiceNote voice={voice} /> : poll ? <PollView m={m} me={{ id: null }} readOnly /> : <RichText text={m.content} me={me} />}
           {caption && <RichText text={caption} me={me} />}
         </div>
         {m.reactions?.length > 0 && (

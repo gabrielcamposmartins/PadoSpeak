@@ -236,6 +236,9 @@ pub struct Message {
     /// Fixada na conversa ou no canal (aparece no menu das fixadas para todos).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
+    /// Enquete (`[enquete]`): a pergunta, as opções e os votos.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub poll: Option<crate::polls::Poll>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -284,6 +287,7 @@ pub async fn attach_reactions(db: &crate::db::Db, list: &mut [Message]) -> crate
     for m in list.iter_mut() {
         m.pinned = pinned.contains(&m.id);
     }
+    crate::polls::attach(db, list).await?;
     // Arquivos e áudios com validade.
     let ids: Vec<String> = list.iter().filter(|m| is_file_message(&m.content)).map(|m| m.id.clone()).collect();
     if ids.is_empty() {
@@ -326,6 +330,9 @@ pub struct ReplyRef {
 
 /// Como a mensagem aparece citada numa resposta.
 pub fn reply_preview(content: &str) -> String {
+    if let Some(p) = crate::polls::preview(content) {
+        return short(&p, 120);
+    }
     // Sticker, arquivo e foto/vídeo podem vir com um texto junto (na linha de baixo).
     let (tag, caption) = match content.split_once("]
 ") {
@@ -350,6 +357,9 @@ pub fn reply_preview(content: &str) -> String {
 
 /// O que a pesquisa procura numa mensagem: o texto sem formatação e, nos arquivos, também o nome.
 pub fn search_text(content: &str) -> String {
+    if let Some(t) = crate::polls::search_text(content) {
+        return t;
+    }
     for prefix in ["[sticker:", "[arquivo:", "[voz:"] {
         if let Some(rest) = content.strip_prefix(prefix) {
             let (tag, caption) = rest.split_once("]\n").unwrap_or((rest.trim_end_matches(']'), ""));
@@ -419,6 +429,7 @@ pub fn message_from_row(r: &Row) -> DbResult<Message> {
         reactions: Vec::new(),
         expires_at: None,
         pinned: false,
+        poll: None,
     })
 }
 

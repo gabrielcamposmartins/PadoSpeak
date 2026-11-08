@@ -155,6 +155,11 @@ async fn require_access(app: &App, me: &User) -> ApiResult<()> {
     }
 }
 
+/// O assistente está liberado para a pessoa (as tarefas agendadas conferem antes de rodar).
+pub async fn has_access_for(app: &App, me: &User) -> bool {
+    has_access(app, me).await.unwrap_or(false)
+}
+
 /// `GET /api/agent/access`: o app pergunta se mostra o assistente para esta pessoa.
 async fn access(State(app): AppState, AuthUser(me, _): AuthUser) -> ApiResult<Json<Value>> {
     Ok(Json(json!({ "allowed": has_access(&app, &me).await? })))
@@ -732,6 +737,30 @@ fn answer_text(content: &Value) -> (String, Vec<Value>) {
     (out.trim().to_string(), sources)
 }
 
+/// Descrições já feitas das ações do histórico, por id da chamada: a mesma chamada sempre tem a mesma
+/// descrição, e fazê-la consulta o banco (nomes de canais, servidores e pessoas). Sem isso, abrir a conversa
+/// refazia todas, uma consulta por ação.
+static LABELS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+const MAX_LABELS: usize = 20_000;
+
+async fn label_of(app: &App, id: &str, name: &str, input: &Value) -> String {
+    if !id.is_empty() {
+        if let Some(l) = LABELS.lock().unwrap().as_ref().and_then(|m| m.get(id)).cloned() {
+            return l;
+        }
+    }
+    let label = describe(app, name, input).await;
+    if !id.is_empty() {
+        let mut guard = LABELS.lock().unwrap();
+        let map = guard.get_or_insert_with(HashMap::new);
+        if map.len() >= MAX_LABELS {
+            map.clear();
+        }
+        map.insert(id.to_string(), label.clone());
+    }
+    label
+}
+
 /// O que o app mostra: as falas (só o texto que a pessoa escreveu, sem o contexto que vai junto), as ações
 /// que o agente fez (com o resultado) e as que esperam confirmação.
 async fn visible(app: &App, user: &User) -> ApiResult<Value> {
@@ -769,7 +798,7 @@ async fn visible(app: &App, user: &User) -> ApiResult<Value> {
             let id = b["id"].as_str().unwrap_or_default();
             let name = b["name"].as_str().unwrap_or_default();
             actions.push(json!({
-                "label": describe(app, name, &b["input"]).await,
+                "label": label_of(app, id, name, &b["input"]).await,
                 "ok": results.get(id).copied(),
             }));
         }
@@ -1150,6 +1179,55 @@ fn local_when(ms: i64, tz: i64) -> String {
     format!("{} {}", local_day(ms, tz), local_clock(ms, tz))
 }
 
+/// Dias desde 1970-01-01 de uma data civil (o inverso de `civil`, também de Howard Hinnant).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// "AAAA-MM-DD HH:MM" (ou com T) na hora local da pessoa → ms (UTC).
+fn parse_local(at: &str, tz: i64) -> Option<i64> {
+    let at = at.trim().replace('T', " ");
+    let (date, time) = at.split_once(' ')?;
+    let mut d = date.split('-').map(|p| p.parse::<i64>().ok());
+    let (y, mo, da) = (d.next()??, d.next()??, d.next()??);
+    let mut t = time.split(':').map(|p| p.parse::<i64>().ok());
+    let (h, mi) = (t.next()??, t.next().flatten().unwrap_or(0));
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&da) || !(0..=23).contains(&h) || !(0..=59).contains(&mi) {
+        return None;
+    }
+    let local_secs = days_from_civil(y, mo, da) * 86_400 + h * 3600 + mi * 60;
+    Some((local_secs - tz * 60) * 1000)
+}
+
+/// Quando uma mensagem agendada roda (ms, UTC): `in_minutes` (daqui a N minutos) ou `at` (hora local).
+fn when_of(input: &Value, tz: i64) -> Result<i64, String> {
+    if let Some(m) = input["in_minutes"].as_f64().filter(|m| *m > 0.0) {
+        return Ok(crate::now_ms() + (m.min(527_040.0) * 60_000.0) as i64);
+    }
+    if let Some(at) = input["at"].as_str().filter(|a| !a.trim().is_empty()) {
+        return parse_local(at, tz).ok_or_else(|| "Hora inválida: use AAAA-MM-DD HH:MM".to_string());
+    }
+    Err("Diga quando: in_minutes (daqui a N minutos) ou at (AAAA-MM-DD HH:MM)".into())
+}
+
+/// O quando de uma mensagem agendada, como a pessoa disse (para o cartão de confirmação).
+fn when_text(input: &Value) -> String {
+    if let Some(m) = input["in_minutes"].as_f64().filter(|m| *m > 0.0) {
+        if m < 1.0 {
+            return "daqui a menos de 1 min".into();
+        }
+        let m = m.round() as i64;
+        return if m >= 60 && m % 60 == 0 { format!("daqui a {} h", m / 60) } else { format!("daqui a {m} min") };
+    }
+    input["at"].as_str().map(|a| format!("em {}", a.trim().replace('T', " "))).unwrap_or_else(|| "?".into())
+}
+
 // ---------- O laço do agente ----------
 
 const SYSTEM: &str = "Você é o Assistente do PadoSpeak, um app de chat (servidores com canais de texto e de voz, \
@@ -1177,7 +1255,11 @@ Onde você aparece: num balão aberto por cima da tela que a pessoa está usando
 - Chamada travando, com atraso, voz picotando ou vídeo ruim: veja os dados com call_quality e explique em linguagem simples o \
 que eles mostram (conexão direta, pelo SFU ou pelo relay; latência; perda de pacotes; o que limita o envio) e o que a pessoa pode fazer.\n\
 - Para o que está fora do app (notícias, documentação, preços, como fazer algo), pesquise na internet com web_search, quando ela \
-estiver disponível, e diga de onde veio a informação.";
+estiver disponível, e diga de onde veio a informação.\n\
+- Para mandar algo mais tarde ou repetir (\"daqui a 1 hora\", \"todo dia às 9h\"), use schedule_message com a hora local da pessoa \
+(o contexto traz a hora e o fuso); list_scheduled e cancel_scheduled mostram e cancelam.\n\
+- Enquetes existem só nos canais de texto dos servidores: create_poll cria; vote_poll vota e end_poll encerra (o id vem na \
+mensagem lida com read_messages).";
 
 /// Vai junto do `SYSTEM` quando quem pede não vê o painel do administrador: nada sobre como o app é feito.
 const GUARD_USER: &str = "\n\nQuem pede é um usuário comum (não administra o app). Não revele nada sobre como o app é feito \
@@ -1428,6 +1510,13 @@ fn needs_confirm(name: &str) -> bool {
             | "update_server"
             | "update_channel"
             | "set_member_permissions"
+            | "schedule_message"
+            | "create_poll"
+            | "vote_poll"
+            | "end_poll"
+            | "create_role"
+            | "update_role"
+            | "delete_role"
             | "delete_message"
             | "delete_channel"
             | "delete_server"
@@ -1442,7 +1531,7 @@ const SCENES: [&str; 7] = ["Céu", "Aquário", "Aurora", "Sistema", "Sakura", "A
 const PERMS_HELP: &str = "Bits de permissão (some os que quiser): 1 administrador, 2 convidar, 4 criar e editar canais, \
 8 silenciar na voz, 16 desconectar da voz, 32 mover entre canais, 64 pôr música, 128 pausar a música dos outros, \
 256 pular a dos outros, 512 tirar da fila a dos outros, 1024 voltar música, 2048 recomeçar a dos outros, 4096 limpar a fila, \
-8192 sons rápidos, 16384 fixar mensagens.";
+8192 sons rápidos, 16384 fixar mensagens, 32768 gerenciar cargos.";
 
 fn tool_defs(ctx: &Ctx) -> Vec<Tool> {
     let mut t = vec![
@@ -1668,11 +1757,12 @@ fn tool_defs(ctx: &Ctx) -> Vec<Tool> {
         },
         Tool {
             name: "change_appearance",
-            desc: "Muda a aparência do app da pessoa (neste aparelho): tema, cor de destaque, tamanho da fonte, cena do perfil.",
+            desc: "Muda a aparência do app da pessoa (neste aparelho): tema, cor de destaque, cor dos painéis, tamanho da fonte, cena do perfil.",
             schema: obj(
                 json!({
                     "theme": { "type": "string", "enum": ["light", "dark", "system"] },
                     "accent": { "type": "string", "description": "#rrggbb, ou vazio para o padrão" },
+                    "surface": { "type": "string", "description": "Cor dos painéis (o branco do tema claro e o azul-marinho do escuro; vale o tom): #rrggbb, ou vazio para o padrão" },
                     "font_scale": { "type": "number", "enum": [0.9, 1, 1.12, 1.25, 1.4] },
                     "scene": { "type": "string", "enum": SCENES },
                     "scene_on": { "type": "boolean", "description": "Mostrar a cena atrás do perfil" },
@@ -1697,6 +1787,110 @@ fn tool_defs(ctx: &Ctx) -> Vec<Tool> {
             ),
         },
     ];
+    t.push(Tool {
+        name: "schedule_message",
+        desc: "Agenda uma mensagem para mandar mais tarde, num canal (channel_id) ou para uma pessoa (user_id), uma vez \
+               ou repetindo. Diga quando com in_minutes (daqui a N minutos) ou at (hora local da pessoa, \"AAAA-MM-DD HH:MM\"). \
+               repeat_minutes repete a cada N minutos (mínimo 15; 1440 = todo dia, 10080 = toda semana). A pessoa confirma antes.",
+        schema: obj(
+            json!({
+                "channel_id": { "type": "string" },
+                "user_id": { "type": "string" },
+                "content": { "type": "string" },
+                "in_minutes": { "type": "number" },
+                "at": { "type": "string", "description": "Hora local da pessoa: AAAA-MM-DD HH:MM" },
+                "repeat_minutes": { "type": "integer" },
+            }),
+            &["content"],
+        ),
+    });
+    t.push(Tool {
+        name: "create_poll",
+        desc: "Cria uma enquete em nome da pessoa num canal de texto de servidor (não existe em conversa direta). \
+               2 a 10 opções; hours é a duração (padrão 24, até 720; 0 = sem prazo, até alguém encerrar). A pessoa confirma antes.",
+        schema: obj(
+            json!({
+                "channel_id": { "type": "string", "description": "Canal de texto do servidor" },
+                "question": { "type": "string", "description": "Até 300 caracteres" },
+                "options": { "type": "array", "items": { "type": "string" }, "description": "2 a 10 opções, até 100 caracteres cada" },
+                "multiple": { "type": "boolean", "description": "Aceita várias respostas (padrão false)" },
+                "hours": { "type": "number" },
+            }),
+            &["channel_id", "question", "options"],
+        ),
+    });
+    t.push(Tool {
+        name: "vote_poll",
+        desc: "Vota numa enquete em nome da pessoa (troca o voto dela pelo que vier). choices: o texto das opções escolhidas \
+               (uma só, se a enquete não aceita várias); vazio tira o voto. A pessoa confirma antes.",
+        schema: obj(
+            json!({
+                "message_id": { "type": "string", "description": "Id da mensagem da enquete" },
+                "choices": { "type": "array", "items": { "type": "string" } },
+            }),
+            &["message_id", "choices"],
+        ),
+    });
+    t.push(Tool {
+        name: "end_poll",
+        desc: "Encerra uma enquete antes do prazo (só quem criou ou um administrador do servidor). A pessoa confirma antes.",
+        schema: obj(json!({ "message_id": { "type": "string" } }), &["message_id"]),
+    });
+    t.push(Tool {
+        name: "list_scheduled",
+        desc: "As mensagens agendadas da pessoa: quando rodam, onde, se repetem e o texto.",
+        schema: obj(json!({}), &[]),
+    });
+    t.push(Tool {
+        name: "cancel_scheduled",
+        desc: "Cancela uma mensagem agendada da pessoa (pelo job_id de list_scheduled).",
+        schema: obj(json!({ "job_id": { "type": "string" } }), &["job_id"]),
+    });
+    if ctx.modules.roles {
+        t.push(Tool {
+            name: "list_roles",
+            desc: "Os cargos de um servidor: nome, cor, as permissões que cada um dá e quem tem cada um (ids das pessoas).",
+            schema: obj(json!({ "server_id": { "type": "string" } }), &["server_id"]),
+        });
+        t.push(Tool {
+            name: "create_role",
+            desc: "Cria um cargo num servidor (precisa da permissão de gerenciar cargos; dar permissões ao cargo, só \
+                   administradores). A pessoa confirma antes.",
+            schema: obj(
+                json!({
+                    "server_id": { "type": "string" },
+                    "name": { "type": "string", "description": "Até 32 caracteres" },
+                    "color": { "type": "string", "description": "#rrggbb (padrão #1a8fd6)" },
+                    "perms": { "type": "integer", "description": PERMS_HELP },
+                    "members": { "type": "array", "items": { "type": "string" }, "description": "Ids de quem recebe o cargo" },
+                }),
+                &["server_id", "name"],
+            ),
+        });
+        t.push(Tool {
+            name: "update_role",
+            desc: "Muda um cargo (só o que vier): nome, cor, permissões e quem tem o cargo (add_members e remove_members \
+                   mexem só nessas pessoas; members troca a lista inteira). A pessoa confirma antes.",
+            schema: obj(
+                json!({
+                    "server_id": { "type": "string" },
+                    "role_id": { "type": "string" },
+                    "name": { "type": "string" },
+                    "color": { "type": "string", "description": "#rrggbb" },
+                    "perms": { "type": "integer", "description": PERMS_HELP },
+                    "members": { "type": "array", "items": { "type": "string" } },
+                    "add_members": { "type": "array", "items": { "type": "string" } },
+                    "remove_members": { "type": "array", "items": { "type": "string" } },
+                }),
+                &["server_id", "role_id"],
+            ),
+        });
+        t.push(Tool {
+            name: "delete_role",
+            desc: "Apaga um cargo (quem tinha perde a etiqueta e as permissões que ele dava). A pessoa confirma antes.",
+            schema: obj(json!({ "server_id": { "type": "string" }, "role_id": { "type": "string" } }), &["server_id", "role_id"]),
+        });
+    }
     if ctx.modules.voice {
         t.push(Tool {
             name: "voice_channels",
@@ -1860,7 +2054,17 @@ async fn execute(app: &Arc<App>, me: &User, token: &str, ctx: &Ctx, name: &str, 
         "read_messages" => {
             let id = id_of(input, "channel_id")?;
             let limit = input["limit"].as_i64().unwrap_or(20).clamp(1, 50);
-            get_(app, token, &format!("/api/channels/{id}/messages?limit={limit}")).await
+            let mut list = get_(app, token, &format!("/api/channels/{id}/messages?limit={limit}")).await?;
+            let tz = recent_tz(&me.id);
+            for m in list.as_array_mut().into_iter().flatten() {
+                if let Some(text) = poll_text(m, tz) {
+                    m["content"] = json!(text);
+                    if let Some(o) = m.as_object_mut() {
+                        o.remove("poll");
+                    }
+                }
+            }
+            Ok(list)
         }
         "search_messages" => {
             let mut path = format!("/api/search?q={}", enc(&need(input, "query")?));
@@ -1976,6 +2180,115 @@ async fn execute(app: &Arc<App>, me: &User, token: &str, ctx: &Ctx, name: &str, 
             let v = call(app, token, Method::GET, &format!("/api/guilds/{id}/invite"), None).await?;
             Ok(v)
         }
+        "schedule_message" => {
+            let content = need(input, "content")?;
+            let channel = if text_of(input, "channel_id").is_some() {
+                id_of(input, "channel_id")?
+            } else {
+                let user = id_of(input, "user_id").map_err(|_| "Diga o canal (channel_id) ou a pessoa (user_id)".to_string())?;
+                let dm = call(app, token, Method::POST, "/api/dms", Some(json!({ "userId": user }))).await?;
+                dm["id"].as_str().ok_or("Não deu para abrir a conversa")?.to_string()
+            };
+            let run_at = when_of(input, recent_tz(&me.id))?;
+            let repeat = input["repeat_minutes"].as_i64().filter(|m| *m > 0);
+            let label = describe(app, "schedule_message", input).await;
+            crate::agent_jobs::create(app, me, &channel, &content, run_at, repeat, &label).await
+        }
+        "create_poll" => {
+            let channel = id_of(input, "channel_id")?;
+            let hours = input["hours"].as_f64().unwrap_or(24.0).max(0.0);
+            let def = json!({
+                "q": need(input, "question")?,
+                "o": input["options"].as_array().cloned().unwrap_or_default(),
+                "m": input["multiple"].as_bool().unwrap_or(false),
+                "h": hours,
+            });
+            let content = format!("{}\n{def}", crate::polls::TAG);
+            ws_result(app.hub.act_as(app, me, "message:send", json!({ "channelId": channel, "content": content })).await)
+        }
+        "vote_poll" => {
+            let id = id_of(input, "message_id")?;
+            let def = poll_def(app, &id).await.ok_or("Esta mensagem não é uma enquete")?;
+            let mut options = Vec::new();
+            for c in input["choices"].as_array().into_iter().flatten() {
+                let raw = c.as_str().unwrap_or_default();
+                let want = crate::models::fold(raw.trim());
+                let i = def
+                    .o
+                    .iter()
+                    .position(|o| crate::models::fold(o) == want)
+                    .ok_or_else(|| format!("A enquete não tem a opção {}; as opções são: {}", quote(raw, 60), def.o.join(" | ")))?;
+                options.push(i);
+            }
+            ws_result(app.hub.act_as(app, me, "poll:vote", json!({ "messageId": id, "options": options })).await)
+        }
+        "end_poll" => ws_result(app.hub.act_as(app, me, "poll:end", json!({ "messageId": id_of(input, "message_id")? })).await),
+        "list_scheduled" => {
+            let tz = recent_tz(&me.id);
+            let jobs = crate::agent_jobs::list(app, me).await?;
+            let mut out = Vec::new();
+            for j in jobs {
+                let ch = j["channelId"].as_str().unwrap_or_default();
+                let place = match name_of(app, "channels", ch).await {
+                    Some(n) => format!("#{n}"),
+                    None => "conversa privada".into(),
+                };
+                out.push(json!({
+                    "job_id": j["jobId"],
+                    "quando": local_when(j["runAt"].as_i64().unwrap_or(0), tz),
+                    "onde": place,
+                    "repete_a_cada_minutos": j["repeatMinutes"],
+                    "texto": j["content"],
+                    "vezes_que_rodou": j["runs"],
+                    "ultimo_erro": j["lastError"],
+                }));
+            }
+            Ok(json!(out))
+        }
+        "cancel_scheduled" => crate::agent_jobs::cancel(app, me, &id_of(input, "job_id")?).await,
+        "list_roles" => {
+            let g = id_of(input, "server_id")?;
+            call(app, token, Method::GET, &format!("/api/guilds/{g}/roles"), None).await
+        }
+        "create_role" => {
+            let g = id_of(input, "server_id")?;
+            let body = json!({
+                "name": need(input, "name")?,
+                "color": input["color"].as_str().filter(|c| !c.is_empty()).unwrap_or("#1a8fd6"),
+                "perms": input["perms"].as_i64().unwrap_or(0),
+                "members": input["members"].as_array().cloned().unwrap_or_default(),
+            });
+            call(app, token, Method::POST, &format!("/api/guilds/{g}/roles"), Some(body)).await
+        }
+        "update_role" => {
+            let (g, r) = (id_of(input, "server_id")?, id_of(input, "role_id")?);
+            let mut body = pick(input, &[("name", "name"), ("color", "color")]);
+            if let Some(p) = input["perms"].as_i64() {
+                body["perms"] = json!(p);
+            }
+            let ids = |k: &str| -> Vec<String> { input[k].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)).collect() };
+            if input["members"].is_array() {
+                body["members"] = json!(ids("members"));
+            } else if input["add_members"].is_array() || input["remove_members"].is_array() {
+                // a lista de agora, com quem entra e sem quem sai
+                let roles = call(app, token, Method::GET, &format!("/api/guilds/{g}/roles"), None).await?;
+                let role = roles.as_array().into_iter().flatten().find(|x| x["id"] == r.as_str()).ok_or("Esse cargo não existe neste servidor")?;
+                let mut list: Vec<String> = role["members"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)).collect();
+                let (add, remove) = (ids("add_members"), ids("remove_members"));
+                list.retain(|u| !remove.contains(u));
+                for u in add {
+                    if !list.contains(&u) {
+                        list.push(u);
+                    }
+                }
+                body["members"] = json!(list);
+            }
+            call(app, token, Method::PATCH, &format!("/api/roles/{r}"), Some(body)).await
+        }
+        "delete_role" => {
+            let r = id_of(input, "role_id")?;
+            call(app, token, Method::DELETE, &format!("/api/roles/{r}"), None).await
+        }
         "set_member_permissions" => {
             let (g, u) = (id_of(input, "server_id")?, id_of(input, "user_id")?);
             let body = if input["use_default"].as_bool() == Some(true) {
@@ -2007,9 +2320,14 @@ async fn execute(app: &Arc<App>, me: &User, token: &str, ctx: &Ctx, name: &str, 
             call(app, token, Method::PATCH, "/api/me/settings", Some(body)).await
         }
         "change_appearance" => {
-            let mut patch = pick(input, &[("theme", "theme"), ("accent", "accent"), ("font_scale", "fontScale"), ("scene", "scene"), ("scene_on", "sceneOn")]);
-            if patch["accent"].as_str() == Some("") {
-                patch["accent"] = Value::Null;
+            let mut patch = pick(
+                input,
+                &[("theme", "theme"), ("accent", "accent"), ("surface", "surface"), ("font_scale", "fontScale"), ("scene", "scene"), ("scene_on", "sceneOn")],
+            );
+            for k in ["accent", "surface"] {
+                if patch[k].as_str() == Some("") {
+                    patch[k] = Value::Null;
+                }
             }
             if let Some(name) = patch.get("scene").and_then(Value::as_str) {
                 let i = SCENES.iter().position(|s| *s == name).ok_or("Cena desconhecida")?;
@@ -2068,7 +2386,7 @@ async fn server_messages(app: &App, me: &User, token: &str, input: &Value) -> Re
             .flatten()
             .filter(|m| since.map_or(true, |s| m["createdAt"].as_i64().is_some_and(|t| t > s)))
             .map(|m| {
-                let text = crate::models::plain_text(m["content"].as_str().unwrap_or_default());
+                let text = poll_text(m, tz).unwrap_or_else(|| crate::models::plain_text(m["content"].as_str().unwrap_or_default()));
                 let text: String = if text.chars().count() > MAX_READ_CHARS { text.chars().take(MAX_READ_CHARS).collect::<String>() + "…" } else { text };
                 json!({
                     "id": m["id"],
@@ -2170,6 +2488,42 @@ async fn name_of(app: &App, table: &str, id: &str) -> Option<String> {
 }
 
 /// "de Ana em #geral: “texto…”" (o que vai ser apagado), de um canal ou de uma conversa direta.
+/// A pergunta de uma enquete (pelo id da mensagem).
+async fn poll_def(app: &App, id: &str) -> Option<crate::polls::Def> {
+    let sealed = app.db.query_one("SELECT content FROM messages WHERE id = ?1", [id], |r| r.get::<String>(0)).await.ok().flatten()?;
+    crate::polls::parse(&app.db.cipher.reveal(&sealed))
+}
+
+/// Uma enquete lida (com `poll` da API) em texto: a pergunta, os votos de cada opção e até quando vai.
+fn poll_text(m: &Value, tz: i64) -> Option<String> {
+    let p = m.get("poll").filter(|p| p.is_object())?;
+    let opts: Vec<String> = p["options"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|o| {
+            let n = o["users"].as_array().map_or(0, Vec::len);
+            format!("{} ({n} {})", o["text"].as_str().unwrap_or_default(), if n == 1 { "voto" } else { "votos" })
+        })
+        .collect();
+    let when = if p["closed"].as_bool() == Some(true) {
+        "encerrada".to_string()
+    } else {
+        match p["endsAt"].as_i64() {
+            Some(t) => format!("aberta até {}", local_when(t, tz)),
+            None => "aberta, sem prazo".to_string(),
+        }
+    };
+    let many = if p["multiple"].as_bool() == Some(true) { ", várias respostas" } else { "" };
+    let voters = p["voters"].as_u64().unwrap_or(0);
+    Some(format!(
+        "📊 Enquete: {} — {} ({when}{many}; {voters} {})",
+        p["question"].as_str().unwrap_or_default(),
+        opts.join("; "),
+        if voters == 1 { "pessoa votou" } else { "pessoas votaram" }
+    ))
+}
+
 async fn message_preview(app: &App, id: &str) -> Option<String> {
     let map = |r: &libsql::Row| Ok((r.get::<String>(0)?, r.get::<String>(1)?, r.get::<Option<String>>(2)?));
     let row = app
@@ -2185,7 +2539,7 @@ async fn message_preview(app: &App, id: &str) -> Option<String> {
         .ok()
         .flatten()?;
     let (sealed, author, channel) = row;
-    let text = crate::models::plain_text(&app.db.cipher.reveal(&sealed));
+    let text = crate::models::reply_preview(&app.db.cipher.reveal(&sealed));
     let place = channel.map(|c| format!("#{}", crate::models::plain_text(&c))).unwrap_or_else(|| "uma conversa direta".into());
     Some(format!("de {} em {place}: {}", crate::models::plain_text(&author), quote(&text, 60)))
 }
@@ -2251,6 +2605,39 @@ async fn describe(app: &App, name: &str, input: &Value) -> String {
             name_of(app, "users", &s("user_id")).await.unwrap_or_else(|| "alguém".into()),
             server(s("server_id")).await
         ),
+        "schedule_message" => {
+            let to = if !s("channel_id").is_empty() {
+                channel(s("channel_id")).await
+            } else {
+                name_of(app, "users", &s("user_id")).await.unwrap_or_else(|| "alguém".into())
+            };
+            let when = when_text(input);
+            let repeat = match input["repeat_minutes"].as_i64().filter(|m| *m > 0) {
+                Some(1440) => ", todo dia".to_string(),
+                Some(10080) => ", toda semana".to_string(),
+                Some(m) if m % 60 == 0 => format!(", a cada {} h", m / 60),
+                Some(m) => format!(", a cada {m} min"),
+                None => String::new(),
+            };
+            format!("Agendar mensagem para {to}, {when}{repeat}")
+        }
+        "create_poll" => format!("Criar a enquete {} em {}", quote(&s("question"), 60), channel(s("channel_id")).await),
+        "vote_poll" => {
+            let q = poll_def(app, &s("message_id")).await.map(|d| quote(&d.q, 50)).unwrap_or_default();
+            let picks: Vec<String> = input["choices"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|c| quote(c, 40)).collect();
+            if picks.is_empty() {
+                format!("Tirar o seu voto da enquete {q}")
+            } else {
+                format!("Votar em {} na enquete {q}", picks.join(" e "))
+            }
+        }
+        "end_poll" => format!("Encerrar a enquete {}", poll_def(app, &s("message_id")).await.map(|d| quote(&d.q, 50)).unwrap_or_default()),
+        "list_scheduled" => "Ver as mensagens agendadas".into(),
+        "cancel_scheduled" => "Cancelar uma mensagem agendada".into(),
+        "list_roles" => format!("Ver os cargos de {}", server(s("server_id")).await),
+        "create_role" => format!("Criar o cargo {} em {}", quote(&s("name"), 32), server(s("server_id")).await),
+        "update_role" => format!("Mudar o cargo {}", name_of(app, "roles", &s("role_id")).await.map(|n| quote(&n, 32)).unwrap_or_default()),
+        "delete_role" => format!("Apagar o cargo {}", name_of(app, "roles", &s("role_id")).await.map(|n| quote(&n, 32)).unwrap_or_default()),
         "update_profile" => "Mudar o seu perfil".into(),
         "update_settings" => "Mudar as suas configurações".into(),
         "change_appearance" => "Mudar a aparência do app".into(),
@@ -2267,13 +2654,30 @@ async fn describe(app: &App, name: &str, input: &Value) -> String {
 fn detail(name: &str, input: &Value) -> Value {
     let s = |k: &str| input.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
     match name {
-        "send_message" => json!(s("content")),
+        "send_message" | "schedule_message" => json!(s("content")),
+        "create_poll" => {
+            let opts: Vec<String> = input["options"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|o| format!("• {o}")).collect();
+            let hours = input["hours"].as_f64().unwrap_or(24.0);
+            let dur = if hours <= 0.0 {
+                "Sem prazo".to_string()
+            } else if hours >= 24.0 && hours % 24.0 == 0.0 {
+                let d = (hours / 24.0) as i64;
+                format!("Dura {d} {}", if d == 1 { "dia" } else { "dias" })
+            } else {
+                format!("Dura {hours} h")
+            };
+            let many = if input["multiple"].as_bool() == Some(true) { " · várias respostas" } else { "" };
+            json!(format!("{}\n{}\n{dur}{many}", s("question"), opts.join("\n")))
+        }
         "send_notification" => json!(format!("{}\n{}", s("title"), s("body"))),
         "set_member_permissions" if input["use_default"].as_bool() == Some(true) => json!("Volta para as permissões padrão do servidor"),
         "delete_server" => json!("Apaga todos os canais, mensagens e arquivos do servidor. Não tem como desfazer."),
         "delete_channel" => json!("As mensagens do canal somem junto. Não tem como desfazer."),
         "delete_message" | "delete_file" => json!("Não tem como desfazer."),
         "leave_server" => json!("Para voltar, você vai precisar de um convite novo."),
+        // o rótulo já diz em que opção (e em qual enquete)
+        "vote_poll" => Value::Null,
+        "end_poll" => json!("Ninguém mais vai poder votar."),
         _ => {
             let mut v = input.clone();
             if let Some(m) = v.as_object_mut() {
@@ -2385,6 +2789,21 @@ mod tests {
         let m = mask_addresses(t);
         assert!(!m.contains("192.168") && !m.contains("179.208") && !m.contains("2804:"), "{m}");
         assert!(m.contains("rtt 40 ms, v1.2 ok") && m.contains("caminho direto [endereço] udp"), "{m}");
+    }
+
+    #[test]
+    fn horas_agendadas_no_fuso_da_pessoa() {
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(civil(days_from_civil(2026, 11, 7)), (2026, 11, 7));
+        assert_eq!(civil(days_from_civil(2028, 2, 29)), (2028, 2, 29));
+        // 2026-11-05 12:30 em UTC-3 = 15:30 UTC
+        assert_eq!(parse_local("2026-11-05 12:30", -180), Some(1_793_892_600_000));
+        assert_eq!(parse_local("2026-11-05T12:30", -180), Some(1_793_892_600_000));
+        assert_eq!(parse_local("2026-13-05 12:30", -180), None);
+        assert_eq!(parse_local("amanhã", -180), None);
+        assert_eq!(when_text(&json!({ "in_minutes": 120 })), "daqui a 2 h");
+        assert!(when_of(&json!({}), 0).is_err());
+        assert!(needs_confirm("schedule_message") && needs_confirm("create_role") && !needs_confirm("list_roles") && !needs_confirm("list_scheduled"));
     }
 
     #[test]

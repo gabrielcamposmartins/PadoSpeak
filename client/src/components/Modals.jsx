@@ -89,6 +89,7 @@ import VolumeSlider from './Volume.jsx';
 import { isDesktop, isTauri, DOWNLOAD_URL, DEFAULT_SERVER, openExternal } from '../lib/env.js';
 import { usePwa, installState, install, pushStatus, enablePush, disablePush } from '../lib/pwa.js';
 import { ConnProvider, useConn } from './conn.jsx';
+import { PollModal } from './Polls.jsx';
 import Avatar, { useUser, UserName, colorClass, colorStyle, Orb } from './Avatar.jsx';
 import LatencyChart from './LatencyChart.jsx';
 import { TitleBar } from './Aero.jsx';
@@ -135,6 +136,7 @@ const TITLES = {
   userSounds: 'Sons',
   callInvite: 'Chamar para a chamada',
   roles: 'Cargos do servidor',
+  poll: 'Enquete',
 };
 
 /** Fundo do banner do perfil (acima da foto) a partir de uma cor. */
@@ -150,6 +152,22 @@ export const ACCENTS = [
   ['#8c63e0', 'Ametista'],
   ['#f07a3c', 'Coral'],
   ['#4c6d86', 'Grafite'],
+];
+
+/**
+ * Paleta pronta da cor dos painéis (o branco do tema claro e o azul-marinho do escuro). Vale só o tom: no claro
+ * vira um vidro bem clarinho dessa cor e no escuro, um fundo profundo dela.
+ */
+export const SURFACES = [
+  ['#7fb8e6', 'Gelo'],
+  ['#5fd3c4', 'Água'],
+  ['#7ed39a', 'Menta'],
+  ['#c3dc6a', 'Limão'],
+  ['#f2c46b', 'Areia'],
+  ['#f4a07a', 'Pêssego'],
+  ['#f28fb5', 'Rosa'],
+  ['#b49af0', 'Lavanda'],
+  ['#9aa5b1', 'Grafite'],
 ];
 
 /** Escolha de cor: paleta pronta, seletor livre e "padrão". */
@@ -1373,6 +1391,7 @@ function SettingsModal({ close, tab: startTab, focus }) {
   const me = prim((s) => s.me);
   const serverUrl = prim((s) => s.baseUrl);
   const accent = useStore((s) => s.prefs.accent || null);
+  const surface = useStore((s) => s.prefs.surface || null);
   const saved = useStore((s) => s.prefs.devices) || {};
   const [tab, setTab] = useState(startTab || (focus === 'devices' ? 'funcionalidade' : 'aparencia'));
   useEffect(() => {
@@ -1512,6 +1531,20 @@ function SettingsModal({ close, tab: startTab, focus }) {
           onChange={(hex) => useStore.getState().setAppearance({ accent: hex })}
         />
         <small>Seleções, abas, links e o brilho dos botões. A cena “Sistema” pinta o céu do topo com ela.</small>
+      </div>
+      <div className="field">
+        <span>Cor dos painéis</span>
+        <ColorChoice
+          label="Cor dos painéis"
+          value={surface}
+          palette={SURFACES}
+          defaultLabel="Aero"
+          onChange={(hex) => useStore.getState().setAppearance({ surface: hex })}
+        />
+        <small>
+          O fundo das janelas, listas e caixas (branco no tema claro, azul-marinho no escuro). Vale o tom da cor: no
+          claro ele fica bem suave e no escuro, profundo, sempre com o brilho e o vidro do Aero.
+        </small>
       </div>
       <div className="settings-sec">Mensagens</div>
       <div className="field">
@@ -3933,6 +3966,7 @@ const MODALS = {
   userSounds: UserSoundsModal,
   callInvite: CallInviteModal,
   roles: RolesModal,
+  poll: PollModal,
 };
 
 export default function Modals() {

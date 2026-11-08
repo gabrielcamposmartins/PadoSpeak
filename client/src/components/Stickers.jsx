@@ -6,6 +6,7 @@ import { useStore, useStickerHome, STICKER_RE } from '../store.js';
 import { EMOTES, Emote, Floating } from './Emotes.jsx';
 import { useConn } from './conn.jsx';
 import { magicEmoteKind, playMagic } from '../lib/magic.js';
+import { stickerUrl, stickerUrlNow } from '../lib/stickerCache.js';
 
 /** Tamanho máximo de um sticker se o servidor não disser (o administrador do app escolhe no painel). */
 const MAX_BYTES = 2 * 1024 * 1024;
@@ -23,6 +24,39 @@ export function parseSticker(content) {
  * sticker da minha coleção antes de enviar, que mora onde a coleção mora (a conta no servidor; no app do
  * Windows sem o servidor, o perfil local).
  */
+/**
+ * Imagem de um sticker pelo cache deste aparelho (`lib/stickerCache.js`): na hora se já foi aberta nesta
+ * sessão, logo depois se está guardada, e baixada só na primeira vez. `null` enquanto procura.
+ */
+function useStickerSrc(src) {
+  const [state, setState] = useState(() => ({ src, url: src ? stickerUrlNow(src) : null, broken: false }));
+  const current = state.src === src ? state : { src, url: src ? stickerUrlNow(src) : null, broken: false };
+  useEffect(() => {
+    if (!src || stickerUrlNow(src)) return;
+    let alive = true;
+    stickerUrl(src).then(
+      (url) => alive && setState({ src, url, broken: false }),
+      () => alive && setState({ src, url: null, broken: true }),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [src]);
+  return current;
+}
+
+/** Imagem de sticker (da coleção ou de uma mensagem) vinda do cache. */
+function CachedImg({ src, className, alt = '', onBroken }) {
+  const { url, broken } = useStickerSrc(src);
+  useEffect(() => {
+    if (broken) onBroken?.();
+  }, [broken]);
+  if (broken) return null;
+  // enquanto procura no cache: um espaço do tamanho do sticker, para a conversa não pular
+  if (!url) return <span className={`${className} sticker-wait`} aria-hidden="true" />;
+  return <img className={className} src={url} alt={alt} draggable={false} />;
+}
+
 export function StickerView({ sticker, base: fromBase }) {
   const connBase = useConn()((s) => s.baseUrl);
   const base = fromBase || connBase;
@@ -36,14 +70,7 @@ export function StickerView({ sticker, base: fromBase }) {
   }
   if (broken) return <span className="sticker-missing">Sticker indisponível</span>;
   return (
-    <img
-      className="sticker sticker-img"
-      src={`${base}/api/stickers/${sticker.id}/image`}
-      alt="Sticker"
-      loading="lazy"
-      draggable={false}
-      onError={() => setBroken(true)}
-    />
+    <CachedImg className="sticker sticker-img" src={`${base}/api/stickers/${sticker.id}/image`} alt="Sticker" onBroken={() => setBroken(true)} />
   );
 }
 
@@ -134,9 +161,10 @@ export function StickerPicker({ anchorRef, onPick, onClose }) {
   const [busy, setBusy] = useState(false);
   const fileRef = useRef(null);
 
+  // A lista guardada aparece na hora; a do servidor chega por trás (uma vez por sessão).
   useEffect(() => {
-    if (tab === 'meus' && mine == null) home.getState().loadStickers();
-  }, [tab, mine, home]);
+    if (tab === 'meus' && !home.getState().stickersFresh) home.getState().loadStickers();
+  }, [tab, home]);
 
   async function add(e) {
     const files = [...(e.target.files || [])];
@@ -184,7 +212,7 @@ export function StickerPicker({ anchorRef, onPick, onClose }) {
           {(mine || []).map((st) => (
             <div key={st.id} className="sticker-tile-wrap">
               <button type="button" className="sticker-tile" title={st.name} aria-label={`Sticker ${st.name}`} onClick={() => onPick(st)}>
-                <img src={`${base}${st.url}`} alt="" draggable={false} />
+                <CachedImg className="sticker-thumb" src={`${base}${st.url}`} />
               </button>
               <button
                 type="button"

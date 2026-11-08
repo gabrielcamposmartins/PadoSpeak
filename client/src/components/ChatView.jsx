@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Hash,
   Pencil,
@@ -21,14 +21,16 @@ import {
   Pin,
   PinOff,
   Star,
+  ChartBar,
 } from 'lucide-react';
-import { useStore, sendSticker, sendFile, sendVoice, usePerms } from '../store.js';
+import { useStore, sendSticker, sendFile, sendVoice, usePerms, parsePoll } from '../store.js';
 import { FileView, UploadList, parseFile, parseVoice, isBlockedFile, VoiceNote, ExpiresTag } from './Files.jsx';
 import { StickerPicker, MessageSticker, parseSticker } from './Stickers.jsx';
 import FormatTools from './FormatTools.jsx';
 import RichInput from './RichInput.jsx';
 import { AttachTray, oversized, CAPTION_MAX, CameraCapture, VoiceRecorder, requestMic, fromPhoneCamera } from './Compose.jsx';
 import AttachSheet from './AttachSheet.jsx';
+import { PollView } from './Polls.jsx';
 import { addRecent } from '../lib/recent.js';
 import { magicOf, playMagic } from '../lib/magic.js';
 import { useConn, useConnKey } from './conn.jsx';
@@ -50,6 +52,10 @@ const SKELETON = [[62, 38], [45], [70, 55, 30], [40], [58, 26]];
 const EMPTY = [];
 const NOBODY = { id: null };
 const MAX = 4000;
+/** Mensagens desenhadas de uma vez; as de antes aparecem ao rolar para cima (conversa grande continua leve). */
+const WINDOW = 150;
+/** Quantas a mais aparecem cada vez que se chega no alto. */
+const WINDOW_STEP = 100;
 
 const hhmm = (ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
@@ -98,8 +104,9 @@ function countReaction(code) {
   st.setAppearance({ reactionUse: Object.fromEntries(Object.entries(use).sort((a, b) => b[1] - a[1]).slice(0, 20)) });
 }
 
-/** Barra acima da caixa de texto: formatação, cor, emoticons, arquivos, stickers e chamar atenção. */
-function ComposerTools({ inputRef, text, setText, channelId, target, onFiles, onSticker, onCamera }) {
+/** Barra acima da caixa de texto: formatação, cor, emoticons, arquivos, stickers, enquete (só nos canais de
+ * servidor: `onPoll`) e chamar atenção. */
+function ComposerTools({ inputRef, text, setText, channelId, target, onFiles, onSticker, onCamera, onPoll }) {
   const phone = useLayout() === 'phone';
   const [sheet, setSheet] = useState(false); // celular: menu rápido do clipe (recentes, galeria, câmera, arquivos)
   // Celular: o "Chamar atenção" ocupa o resto da linha; o nome encolhe conforme o espaço.
@@ -167,6 +174,11 @@ function ComposerTools({ inputRef, text, setText, channelId, target, onFiles, on
           />
         )}
       </span>
+      {onPoll && (
+        <button type="button" className="gloss tool-sq" title="Criar enquete" aria-label="Criar enquete" aria-haspopup="dialog" onClick={onPoll}>
+          <ChartBar size={15} className="ico-green" />
+        </button>
+      )}
       <button
         ref={nudgeRef}
         type="button"
@@ -314,12 +326,13 @@ function messageColor(author, guild) {
   return mine;
 }
 
-function Message({ m, head, canEdit: canEditText, canDelete, canPin, onReply, me, receipt, color, guildId }) {
+function MessageRow({ m, head, canEdit: canEditText, canDelete, canPin, onReply, me, receipt, color, guildId }) {
   const sticker = parseSticker(m.content);
   const parsedFile = !sticker && parseFile(m.content);
   const voice = !sticker && !parsedFile && parseVoice(m.content);
+  const poll = !sticker && !parsedFile && !voice && (m.poll || parsePoll(m.content));
   const caption = sticker?.caption || parsedFile?.caption || '';
-  const canEdit = canEditText && !sticker && !parsedFile && !voice;
+  const canEdit = canEditText && !sticker && !parsedFile && !voice && !poll;
   // Mensagem de outra pessoa que fala comigo (@meu_usuario ou @everyone): fica destacada.
   const mentionsMe = m.author?.id !== me?.id && mentionsUser(plain(m.content), me?.username);
   const [editing, setEditing] = useState(false);
@@ -499,6 +512,8 @@ function Message({ m, head, canEdit: canEditText, canDelete, canPin, onReply, me
               <FileView file={file} />
             ) : voice ? (
               <VoiceNote voice={voice} />
+            ) : poll ? (
+              <PollView m={m} me={me} canEnd={canDelete} />
             ) : color ? (
               <span className="tc msg-color" style={{ '--tc': color }}>
                 <RichText text={m.content} me={me?.username} />
@@ -693,6 +708,23 @@ function DmHeader({ recipient }) {
 }
 
 /**
+ * Cada mensagem só se desenha de novo quando ela (ou o que muda nela) muda: digitar na caixa redesenha a
+ * conversa, e com milhares de mensagens cada letra ficava lenta. `onReply` é sempre a mesma função.
+ */
+const receiptKey = (r) => (r ? `${r.state}|${(r.viewers || []).map((v) => `${v.user.id}:${v.at}:${v.user.displayName}`).join(',')}` : '');
+const sameMessage = (a, b) =>
+  a.m === b.m &&
+  a.head === b.head &&
+  a.canEdit === b.canEdit &&
+  a.canDelete === b.canDelete &&
+  a.canPin === b.canPin &&
+  a.me === b.me &&
+  a.color === b.color &&
+  a.guildId === b.guildId &&
+  receiptKey(a.receipt) === receiptKey(b.receipt);
+const Message = memo(MessageRow, sameMessage);
+
+/**
  * Conversa de um canal de texto ou de uma DM.
  * `variant="dm"`: painéis separados (mensagens / escrita), sem fotos nas mensagens, como a janela do Messenger.
  */
@@ -772,8 +804,26 @@ export default function ChatView({ channel, variant = 'channel' }) {
   const inputRef = useRef(null);
   const dm = variant === 'dm';
 
+  // Só as últimas mensagens ficam desenhadas (`WINDOW`): `startId` é a primeira desenhada quando ela fica
+  // parada (lendo mais acima, ou depois de mostrar as anteriores); sem ela, são as últimas `WINDOW`.
+  const [startId, setStartId] = useState(null);
+  const expanding = useRef(false); // mostrou (ou carregou) as anteriores: mantém a posição de leitura
+  const wasBottom = useRef(true); // na última rolagem a conversa estava no fim
+  let startIdx = startId ? messages.findIndex((x) => x.id === startId) : -1;
+  if (startIdx < 0) startIdx = Math.max(0, messages.length - WINDOW);
+  const shown = useMemo(() => (startIdx ? messages.slice(startIdx) : messages), [messages, startIdx]);
+  const showOlder = () => {
+    if (!startIdx) return;
+    expanding.current = true;
+    stickToBottom.current = false;
+    setStartId(messages[Math.max(0, startIdx - WINDOW_STEP)].id);
+  };
+
   useEffect(() => {
     stickToBottom.current = true;
+    wasBottom.current = true;
+    expanding.current = false;
+    setStartId(null);
     setText('');
     setAttach([]);
     setReply(null);
@@ -903,10 +953,10 @@ export default function ChatView({ channel, variant = 'channel' }) {
     }
   }
 
-  const startReply = (m) => {
+  const startReply = useCallback((m) => {
     setReply(m);
     inputRef.current?.focus();
-  };
+  }, []);
 
   // Mantém o fim da conversa visível; ao carregar antigas, preserva a posição de leitura.
   useLayoutEffect(() => {
@@ -917,12 +967,13 @@ export default function ChatView({ channel, variant = 'channel' }) {
     const last = messages[messages.length - 1];
     if (last?.id !== lastId.current && last?.author?.id === me?.id) stickToBottom.current = true;
     lastId.current = last?.id ?? null;
-    const olderLoaded = messages[0]?.id !== firstId.current;
-    firstId.current = messages[0]?.id ?? null;
+    const olderLoaded = shown[0]?.id !== firstId.current;
+    firstId.current = shown[0]?.id ?? null;
     if (stickToBottom.current) el.scrollTop = el.scrollHeight;
-    else if (olderLoaded && prevHeight.current && el.scrollTop < 50) el.scrollTop += el.scrollHeight - prevHeight.current;
+    else if (olderLoaded && prevHeight.current && (expanding.current || el.scrollTop < 50)) el.scrollTop += el.scrollHeight - prevHeight.current;
+    if (olderLoaded) expanding.current = false;
     prevHeight.current = el.scrollHeight;
-  }, [messages]);
+  }, [shown]);
 
   // Pesquisa, fixadas e favoritas: leva até a mensagem (carregando as anteriores, se precisar) e pisca.
   const jump = useC((s) => (s.jumpTarget?.channelId === channel.id ? s.jumpTarget : null));
@@ -931,6 +982,13 @@ export default function ChatView({ channel, variant = 'channel' }) {
   useEffect(() => {
     if (!jump || !loaded) return;
     const clear = () => useC.setState((s) => (s.jumpTarget === jump ? { jumpTarget: null } : {}));
+    // Já carregada, mas acima das que estão desenhadas: desenha a partir dela (o efeito roda de novo).
+    const at = messages.findIndex((x) => x.id === jump.id);
+    if (at >= 0 && at < startIdx) {
+      stickToBottom.current = false;
+      setStartId(messages[Math.max(0, at - 20)].id);
+      return;
+    }
     const el = document.getElementById(`msg-${jump.id}`);
     if (el) {
       stickToBottom.current = false;
@@ -956,7 +1014,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
           useStore.getState().notify(e.message);
         },
       );
-  }, [jump, loaded, messages, jumpTick]);
+  }, [jump, loaded, messages, jumpTick, startIdx]);
 
   // Stickers e imagens terminam de carregar depois e aumentam a conversa: continua no fim.
   const onMediaLoad = () => {
@@ -967,8 +1025,32 @@ export default function ChatView({ channel, variant = 'channel' }) {
 
   const onScroll = () => {
     const el = listRef.current;
-    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    // Voltou agora ao fim (rolando): pular para uma mensagem antiga também mexe na rolagem, mas não conta.
+    const reached = atBottom && !wasBottom.current;
+    wasBottom.current = atBottom;
+    stickToBottom.current = atBottom;
     prevHeight.current = el.scrollHeight;
+    // Lendo mais acima: as desenhadas param de andar (uma mensagem nova não tira a de cima do lugar).
+    // (várias rolagens chegam antes de desenhar de novo: não passa por cima de "mostrar as anteriores")
+    if (!atBottom && !startId && shown.length) setStartId((cur) => cur ?? shown[0].id);
+    // De volta ao fim depois de ver as antigas: volta a desenhar só as últimas.
+    else if (reached && startId && messages.length - startIdx > WINDOW + WINDOW_STEP / 2) setStartId(null);
+    // Chegou perto do alto: mostra as anteriores que já estão carregadas.
+    if (el.scrollTop < 300 && startIdx > 0 && !expanding.current) showOlder();
+  };
+
+  /** Busca no servidor as mensagens de antes e desenha a partir da mais antiga que chegou. */
+  const loadOlder = async () => {
+    expanding.current = true;
+    stickToBottom.current = false;
+    await useC.getState().loadMessages(channel.id, true);
+    const list = useC.getState().messages[channel.id];
+    // Chegaram mais antigas: desenha a partir da primeira (sem mudança, a marca não pode ficar presa).
+    if (list?.length && list[0].id !== firstId.current) {
+      expanding.current = true;
+      setStartId(list[0].id);
+    } else expanding.current = false;
   };
 
   async function send() {
@@ -1075,15 +1157,24 @@ export default function ChatView({ channel, variant = 'channel' }) {
       onFiles={sendFiles}
       onCamera={openCamera}
       onSticker={(sticker) => addAttach([{ kind: 'sticker', sticker }])}
+      onPoll={
+        dm
+          ? undefined
+          : () => useStore.getState().openModal({ type: 'poll', channelId: channel.id, channelName: channel.name, conn: connKey })
+      }
     />
   );
-  const lastReceived = [...messages].reverse().find((m) => !m.notice && m.author.id !== me.id);
+  const lastReceived = useMemo(() => messages.findLast((m) => !m.notice && m.author.id !== me.id), [messages, me.id]);
   const placeholder = dm ? `Conversar com ${channel.name}` : `Conversar em #${channel.name}`;
 
   const log = (
     <div className="messages" ref={listRef} onScroll={onScroll} onLoadCapture={onMediaLoad}>
-      {hasMore ? (
-        <button className="btn secondary load-more" onClick={() => useC.getState().loadMessages(channel.id, true)}>
+      {startIdx > 0 ? (
+        <button className="btn secondary load-more" onClick={showOlder}>
+          Mostrar mensagens anteriores
+        </button>
+      ) : hasMore ? (
+        <button className="btn secondary load-more" onClick={loadOlder}>
           Carregar mensagens anteriores
         </button>
       ) : (
@@ -1135,8 +1226,8 @@ export default function ChatView({ channel, variant = 'channel' }) {
             ))}
           </div>
         ))}
-      {messages.map((m, i) => {
-        const prev = messages[i - 1];
+      {shown.map((m, i) => {
+        const prev = i ? shown[i - 1] : messages[startIdx - 1];
         const newDay = !prev || new Date(prev.createdAt).toDateString() !== new Date(m.createdAt).toDateString();
         if (m.notice)
           return (
@@ -1216,6 +1307,7 @@ export default function ChatView({ channel, variant = 'channel' }) {
         {parseFile(reply.content)?.name ||
           (parseVoice(reply.content) && 'Mensagem de voz') ||
           (parseSticker(reply.content) && 'Sticker') ||
+          (parsePoll(reply.content) && `📊 Enquete: ${parsePoll(reply.content).question}`) ||
           plain(reply.content).slice(0, 120)}
       </span>
       <button className="gloss mini" onClick={() => setReply(null)} title="Cancelar resposta" aria-label="Cancelar resposta">

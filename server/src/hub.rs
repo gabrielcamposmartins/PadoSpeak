@@ -1366,6 +1366,9 @@ impl Hub {
             if content.is_empty() || content.chars().count() > 4000 {
                 return err("Conteúdo inválido");
             }
+            if crate::polls::is_poll(content) {
+                return err("As enquetes só existem nos canais de texto dos servidores");
+            }
             let edited_at = crate::now_ms();
             let sealed = app.db.cipher.seal(content);
             if app.db.execute("UPDATE dm_messages SET content = ?1, edited_at = ?2 WHERE id = ?3", libsql::params![sealed, edited_at, message_id]).await.is_err() {
@@ -1400,9 +1403,17 @@ impl Hub {
 
         match op {
             "message:send" => {
-                let content = str_field("content").trim().to_string();
+                let mut content = str_field("content").trim().to_string();
                 if content.is_empty() || content.chars().count() > 4000 {
                     return err("Mensagem vazia ou longa demais");
+                }
+                // Enquete: confere a pergunta e as opções e guarda do jeito certo (o prazo vira a hora do fim).
+                let is_poll = crate::polls::is_poll(&content);
+                if is_poll {
+                    content = match crate::polls::normalize(&content, crate::now_ms()) {
+                        Ok(c) => c,
+                        Err(e) => return err(e),
+                    };
                 }
                 let channel_id = str_field("channelId");
                 let mut msg = Message {
@@ -1417,6 +1428,7 @@ impl Hub {
                     reactions: Vec::new(),
                     expires_at: None,
                     pinned: false,
+                    poll: None,
                 };
                 let reply_to = str_field("replyTo");
                 let ch = channel_with_access(app, &channel_id, &user.id).await;
@@ -1425,6 +1437,9 @@ impl Hub {
                     let Some(dm) = crate::social::dm_with_access(app, &channel_id, &user.id).await else {
                         return err("Sem acesso ao canal");
                     };
+                    if is_poll {
+                        return err("As enquetes só existem nos canais de texto dos servidores");
+                    }
                     msg.channel_id = dm.id.clone();
                     if !reply_to.is_empty() {
                         msg.reply = reply_ref(app, "dm_messages", "dm_id", &reply_to, &dm.id).await;
@@ -1477,6 +1492,9 @@ impl Hub {
                     return err("Erro ao salvar mensagem");
                 }
                 msg.expires_at = crate::files::link_message(app, &msg.content, &ch.id, &user.id, &msg.id).await;
+                if is_poll {
+                    msg.poll = crate::polls::parse(&msg.content).map(|d| crate::polls::build(&d, &[], msg.created_at));
+                }
                 // Com o servidor junto: quem ainda não abriu o servidor no app sabe de onde veio o aviso.
                 let mut payload = serde_json::to_value(&msg).unwrap_or_default();
                 payload["guildId"] = json!(ch.guild_id);
@@ -1529,6 +1547,9 @@ impl Hub {
                     if content.is_empty() || content.chars().count() > 4000 {
                         return err("Conteúdo inválido");
                     }
+                    if crate::polls::is_poll(&content) || crate::polls::is_poll(&app.db.cipher.reveal(&sealed)) {
+                        return err("Enquetes não podem ser editadas");
+                    }
                     let edited_at = crate::now_ms();
                     if app
                         .db
@@ -1570,6 +1591,69 @@ impl Hub {
                     app.audit(entry);
                 }
                 Some(json!({ "ok": true }))
+            }
+
+            // Enquete: votar (`options` = as opções escolhidas; vazio tira o voto) ou encerrar antes do prazo.
+            "poll:vote" | "poll:end" => {
+                let message_id = str_field("messageId");
+                let row = app
+                    .db
+                    .query_one(
+                        "SELECT m.channel_id, m.content, m.author_id, g.owner_id FROM messages m \
+                         JOIN channels c ON c.id = m.channel_id JOIN guilds g ON g.id = c.guild_id WHERE m.id = ?1",
+                        [message_id.as_str()],
+                        |r| Ok((r.get::<String>(0)?, r.get::<String>(1)?, r.get::<String>(2)?, r.get::<String>(3)?)),
+                    )
+                    .await
+                    .ok()
+                    .flatten();
+                let Some((channel_id, sealed, author, owner)) = row else {
+                    return err("Enquete não encontrada");
+                };
+                let Some(ch) = channel_with_access(app, &channel_id, &user.id).await else {
+                    return err("Sem acesso ao canal");
+                };
+                let mut content = app.db.cipher.reveal(&sealed);
+                let Some(def) = crate::polls::parse(&content) else {
+                    return err("Esta mensagem não é uma enquete");
+                };
+                let now = crate::now_ms();
+                if crate::polls::is_closed(&def, now) {
+                    return err("Esta enquete já foi encerrada");
+                }
+                if op == "poll:vote" {
+                    let choices = match crate::polls::check_choices(&def, d.get("options").unwrap_or(&Value::Null)) {
+                        Ok(c) => c,
+                        Err(e) => return err(e),
+                    };
+                    if let Err(e) = crate::polls::set_vote(&app.db, &message_id, &user.id, &choices).await {
+                        app.logs.error(format!("poll:vote: {e}"));
+                        return err("Erro ao votar");
+                    }
+                } else {
+                    let admin = owner == user.id
+                        || crate::api::member_perms(app, &ch.guild_id, &user.id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .is_some_and(|p| crate::api::perm::has(p, crate::api::perm::ADMIN));
+                    if author != user.id && !admin {
+                        return err("Só quem criou a enquete (ou um administrador) pode encerrar");
+                    }
+                    content = crate::polls::closed_now(&def, now);
+                    if app
+                        .db
+                        .execute("UPDATE messages SET content = ?1 WHERE id = ?2", libsql::params![app.db.cipher.seal(&content), message_id.as_str()])
+                        .await
+                        .is_err()
+                    {
+                        return err("Erro ao encerrar a enquete");
+                    }
+                }
+                let poll = crate::polls::load(&app.db, &message_id, &content).await;
+                let payload = json!({ "channelId": ch.id, "messageId": message_id, "poll": poll });
+                self.to_channel(&ch.guild_id, &ch.id, "message:poll", &payload);
+                Some(json!({ "ok": true, "poll": poll }))
             }
 
             // Reagir (ou tirar a reação) com um emoticon.

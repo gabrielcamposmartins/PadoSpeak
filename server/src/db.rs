@@ -140,6 +140,29 @@ CREATE TABLE IF NOT EXISTS agent_app_users (
   user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   added_at INTEGER NOT NULL
 );
+-- Mensagens agendadas pelo assistente (`crate::agent_jobs`): o texto selado, quando roda e se repete.
+CREATE TABLE IF NOT EXISTS agent_jobs (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  channel_id TEXT NOT NULL,
+  content TEXT NOT NULL,
+  run_at INTEGER NOT NULL,
+  repeat_min INTEGER,
+  label TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  runs INTEGER NOT NULL DEFAULT 0,
+  errors INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT
+);
+CREATE INDEX IF NOT EXISTS agent_jobs_run ON agent_jobs(run_at);
+-- Votos das enquetes (`crate::polls`): uma linha por opção escolhida.
+CREATE TABLE IF NOT EXISTS poll_votes (
+  message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  option INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (message_id, user_id, option)
+);
 -- Nós de mídia (`crate::media`): SFU das chamadas e token da música em outra máquina. O segredo do
 -- pareamento fica selado; `priority` menor recebe as salas primeiro.
 CREATE TABLE IF NOT EXISTS media_nodes (

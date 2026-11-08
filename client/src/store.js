@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { createApi, loadToken, saveToken, savedServerUrl, saveServerUrl, normalizeUrl, ApiError, storage } from './lib/api.js';
+import { forgetSticker } from './lib/stickerCache.js';
 import { Realtime } from './lib/realtime.js';
 import { VoiceClient } from './lib/voice.js';
 import { MusicPlayer } from './lib/music.js';
@@ -104,7 +105,22 @@ export const STICKER_RE = /^\[sticker:(emote:)?([^\]\s]+)\](?:\n([\s\S]*))?$/;
 export const VOICE_RE = /^\[voz:([0-9a-f]{32}):(\d+):([^:\]]*)\]$/;
 
 /** Como uma mensagem aparece num aviso ("diz: …", "enviou uma foto"…). */
+/** Enquete: `[enquete]` e, na linha de baixo, `{"q": pergunta, "o": [opções], "m": várias, "e": fim (ms) ou null}`. */
+export const POLL_TAG = '[enquete]';
+export function parsePoll(content) {
+  if (typeof content !== 'string' || !content.startsWith(POLL_TAG)) return null;
+  try {
+    const d = JSON.parse(content.slice(POLL_TAG.length).trim());
+    if (typeof d?.q !== 'string' || !Array.isArray(d.o)) return null;
+    return { question: d.q, options: d.o.map(String), multiple: Boolean(d.m), endsAt: typeof d.e === 'number' ? d.e : null };
+  } catch {
+    return null;
+  }
+}
+
 export function messageSummary(content) {
+  const poll = parsePoll(content);
+  if (poll) return { verb: 'criou uma enquete', text: poll.question };
   const file = FILE_RE.exec(content);
   if (file) {
     const nsfw = file[3].startsWith(NSFW_PREFIX);
@@ -340,6 +356,7 @@ export function createConnStore({ key, kind, base, primary = false }) {
     typing: {}, // channelId -> { userId: { user, until } }
     lanPeers: [], // perfis da rede local (só no nó local)
     stickers: null, // minha coleção de stickers neste servidor (null = ainda não carregada)
+    stickersFresh: false, // a lista já veio do servidor nesta sessão (antes disso, pode ser a guardada)
     sounds: null, // sons rápidos: { sounds, slots, rows, max } (null = ainda não carregados)
     soundLast: null, // último som que tocou na chamada: { by, sound, at }
     soundCooldowns: {}, // som -> { from, until }: espera para tocar o mesmo som de novo (contra spam)
@@ -503,6 +520,16 @@ export function createConnStore({ key, kind, base, primary = false }) {
       // Este aparelho para de receber notificações da conta que saiu.
       if (primary && !isDesktop) await disablePush(store).catch(() => {});
       await api.post('/api/auth/logout').catch(() => {});
+      // a conversa com o assistente e o rascunho guardados neste aparelho saem junto com a conta
+      if (primary) {
+        try {
+          const id = get().me?.id;
+          for (const k of Object.keys(localStorage)) if (id && k.startsWith('padospeak.agent') && k.endsWith(`:${id}`)) localStorage.removeItem(k);
+          for (const k of Object.keys(localStorage)) if (id && k.startsWith('padospeak.stickers:') && k.endsWith(`#${id}`)) localStorage.removeItem(k);
+        } catch {
+          /* sem armazenamento */
+        }
+      }
       get().teardown();
       setToken(null);
       if (primary && !isDesktop) set({ phase: 'auth', me: null });
@@ -867,6 +894,13 @@ export function createConnStore({ key, kind, base, primary = false }) {
               [u.channelId]: list.map((m) => (m.id === u.id ? { ...m, content: u.content, editedAt: u.editedAt } : m)),
             },
           };
+        }),
+      );
+      rt.on('message:poll', ({ channelId, messageId, poll }) =>
+        set((s) => {
+          const list = s.messages[channelId];
+          if (!list || !poll) return {};
+          return { messages: { ...s.messages, [channelId]: list.map((m) => (m.id === messageId ? { ...m, poll } : m)) } };
         }),
       );
       rt.on('message:reactions', ({ channelId, messageId, reactions }) =>
@@ -1411,22 +1445,35 @@ export function createConnStore({ key, kind, base, primary = false }) {
     },
 
     // ---------- Stickers ----------
+    /** A coleção: a guardada neste aparelho aparece na hora, e a do servidor chega por trás. */
     async loadStickers() {
+      const key = stickerListKey(get());
+      if (get().stickers == null && key) {
+        try {
+          const saved = JSON.parse(storage.get(key) || 'null');
+          if (Array.isArray(saved)) set({ stickers: saved });
+        } catch {}
+      }
       try {
-        set({ stickers: await api.get('/api/stickers') });
+        set({ stickers: await api.get('/api/stickers'), stickersFresh: true });
+        saveStickerList(get());
       } catch (e) {
-        notify(e.message);
+        if (get().stickers == null) notify(e.message);
       }
     },
     /** Envia uma imagem (PNG, JPEG, WebP ou GIF animado) para a coleção; o mesmo arquivo não duplica. */
     async uploadSticker(blob, name = '') {
       const st = await api.post(`/api/stickers?name=${encodeURIComponent(name)}`, blob);
       set((s) => (s.stickers && !s.stickers.some((x) => x.id === st.id) ? { stickers: [...s.stickers, st] } : {}));
+      saveStickerList(get());
       return st;
     },
     async deleteSticker(id) {
       await api.del(`/api/stickers/${id}`);
+      const st = (get().stickers || []).find((x) => x.id === id);
       set((s) => ({ stickers: (s.stickers || []).filter((x) => x.id !== id) }));
+      saveStickerList(get());
+      if (st?.url) forgetSticker(`${get().baseUrl}${st.url}`);
     },
     stickerBlob: (id) => api.blob(`/api/stickers/${id}/image`),
     /** A coleção sem guardar no estado (para copiar de uma conexão para outra). */
@@ -1852,6 +1899,15 @@ export function createConnStore({ key, kind, base, primary = false }) {
     async reactMessage(messageId, emoji, on = true) {
       const res = await rt?.request('message:react', { messageId, emoji, on });
       if (res?.error) notify(res.error);
+    },
+    /** Enquete: o meu voto passa a ser `options` (índices; vazio tira o voto). */
+    async votePoll(messageId, options) {
+      const res = await rt?.request('poll:vote', { messageId, options });
+      if (!res || res.error) notify(res?.error || 'Sem conexão');
+    },
+    async endPoll(messageId) {
+      const res = await rt?.request('poll:end', { messageId });
+      if (!res || res.error) notify(res?.error || 'Sem conexão');
     },
     async deleteMessage(messageId) {
       const res = await rt?.request('message:delete', { messageId });
@@ -3201,6 +3257,15 @@ export async function openLanDm(peer, { call = false } = {}) {
  * Onde mora a minha coleção de stickers: a conta no servidor, a mesma no celular, no navegador e no app do
  * Windows. No app do Windows sem a conta conectada (servidor fora do ar), a do perfil local deste PC.
  */
+/** Onde fica guardada neste aparelho a lista da minha coleção (por servidor e conta). */
+function stickerListKey(st) {
+  return st.me?.id && st.baseUrl != null ? `padospeak.stickers:${st.baseUrl}#${st.me.id}` : null;
+}
+function saveStickerList(st) {
+  const key = stickerListKey(st);
+  if (key && Array.isArray(st.stickers)) storage.set(key, JSON.stringify(st.stickers));
+}
+
 export const stickerHome = () => (useStore.getState().me ? useStore : primaryConn());
 
 /** Hook de `stickerHome()`: troca de coleção quando a conta do servidor conecta ou cai. */
@@ -3293,6 +3358,21 @@ export async function sendSticker(connKey, channelId, sticker, { caption, replyT
 }
 
 // ---------- Aparência: tema e cena aplicados na raiz do documento ----------
+/** Tom (0–360) e saturação (0–1) de uma cor #rrggbb. */
+export function hueOf(hex) {
+  const n = parseInt(hex.slice(1), 16);
+  const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => v / 255);
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (!d) return { h: 0, s: 0 };
+  const s = d / (1 - Math.abs(2 * l - 1));
+  let h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  h = Math.round(h * 60);
+  return { h: h < 0 ? h + 360 : h, s: Math.min(1, s) };
+}
+
 function applyAppearance(p) {
   const root = document.documentElement;
   // Padrão: tema claro (Aero). "system" segue o Windows.
@@ -3312,6 +3392,18 @@ function applyAppearance(p) {
   } else {
     root.style.removeProperty('--accent');
     delete root.dataset.accent;
+  }
+  // Cor dos painéis: só o tom da cor escolhida vai para o CSS (a claridade é a de cada tema). A saturação é
+  // contida para o vidro continuar suave: até 85% no claro e 65% no escuro.
+  if (/^#[0-9a-f]{6}$/i.test(p.surface || '')) {
+    const { h, s } = hueOf(p.surface);
+    root.style.setProperty('--sf-h', String(h));
+    root.style.setProperty('--sf-s', `${Math.round(Math.min(s, 0.85) * 100)}%`);
+    root.style.setProperty('--sf-sd', `${Math.round(Math.min(s, 0.65) * 100)}%`);
+    root.dataset.surface = '1';
+  } else {
+    for (const k of ['--sf-h', '--sf-s', '--sf-sd']) root.style.removeProperty(k);
+    delete root.dataset.surface;
   }
 }
 applyAppearance(useStore.getState().prefs);

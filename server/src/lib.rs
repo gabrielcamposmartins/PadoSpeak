@@ -5,6 +5,7 @@
 pub mod account;
 pub mod admin;
 pub mod agent;
+pub mod agent_jobs;
 pub mod api;
 pub mod audit;
 pub mod backgrounds;
@@ -28,6 +29,7 @@ pub mod sounds;
 pub mod music;
 pub mod panel;
 pub mod pins;
+pub mod polls;
 pub mod privacy;
 pub mod push;
 pub mod ratelimit;

@@ -114,9 +114,49 @@ function useAnchor(phone, place) {
   return pos;
 }
 
+/**
+ * A última conversa e o rascunho da caixa de mensagem, por pessoa, fora do balão: abrir de novo mostra na hora
+ * o que já se sabia (e atualiza por trás), e o texto que estava sendo escrito não se perde ao fechar.
+ */
+const cacheKey = (kind) => `padospeak.agent${kind}:${useStore.getState().me?.id || ''}`;
+const memory = { data: new Map(), draft: new Map() };
+function loadCached(kind) {
+  const key = cacheKey(kind);
+  if (memory[kind === 'Cache' ? 'data' : 'draft'].has(key)) return memory[kind === 'Cache' ? 'data' : 'draft'].get(key);
+  try {
+    const raw = storage.get(key);
+    if (kind === 'Cache') return raw ? JSON.parse(raw) : null;
+    return raw || '';
+  } catch {
+    return kind === 'Cache' ? null : '';
+  }
+}
+function saveCached(kind, value) {
+  const key = cacheKey(kind);
+  memory[kind === 'Cache' ? 'data' : 'draft'].set(key, value);
+  try {
+    if (kind === 'Cache') {
+      // só o que a tela usa; sem as confirmações pendentes (podem ter mudado até a próxima abertura)
+      const keep = value ? { ...value, pending: [], items: (value.items || []).slice(-60) } : null;
+      const raw = keep ? JSON.stringify(keep) : null;
+      storage.set(key, raw && raw.length < 400_000 ? raw : null);
+    } else storage.set(key, value || null);
+  } catch {
+    /* sem armazenamento: vale só a memória */
+  }
+}
+
 export default function AgentPopover() {
-  const [data, setData] = useState(null);
-  const [text, setText] = useState('');
+  const [data, setDataState] = useState(() => loadCached('Cache'));
+  const setData = (d) => {
+    saveCached('Cache', d);
+    setDataState(d);
+  };
+  const [text, setTextState] = useState(() => loadCached('Draft'));
+  const setText = (t) => {
+    saveCached('Draft', t);
+    setTextState(t);
+  };
   const [sending, setSending] = useState(false);
   const [draft, setDraft] = useState(null); // o que acabou de ser mandado, enquanto a resposta não vem
   const [error, setError] = useState(null);

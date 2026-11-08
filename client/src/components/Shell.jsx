@@ -50,7 +50,7 @@ import { useLayout, useNarrow, isTouch } from '../lib/layout.js';
 import { formatHotkey, hotkeysOf } from '../lib/hotkeys.js';
 import MobileShell, { MobileBack } from './Mobile.jsx';
 import GuestCall from './GuestCall.jsx';
-import MiniCall, { useOnCallPage } from './MiniCall.jsx';
+import MiniCall, { useOnCallPage, useMiniCallMoved } from './MiniCall.jsx';
 import Avatar, { UserName, Orb, useActivity, useGame, gameText, STATUS_INFO, colorClass, colorStyle } from './Avatar.jsx';
 import { useUserMenu, GuildMenu, ChannelMenu } from './ContextMenus.jsx';
 import { SceneArt, BuddiesIcon } from './Aero.jsx';
@@ -734,22 +734,27 @@ export function ChannelSidebar() {
           {musicMod && (
             <button className="go" onClick={toggleMusicPanel} title="Fila de música">
               <Music size={14} />
-              Música
+              <span className="side-act-label">Música</span>
             </button>
           )}
           {perms.invite && (
-            <button className="gloss" onClick={() => openModal({ type: 'invite', guild })} title="Convidar pessoas">
+            <button
+              className={`gloss${rolesMod && perms.roles ? ' icon-only' : ''}`}
+              onClick={() => openModal({ type: 'invite', guild })}
+              title="Convidar pessoas"
+              aria-label="Convidar pessoas"
+            >
               <UserPlus size={14} />
-              Convidar
+              <span className="side-act-label">Convidar</span>
             </button>
           )}
           {rolesMod && perms.roles && (
-            <button className="gloss" title="Cargos do servidor" aria-label="Cargos do servidor" onClick={() => openModal({ type: 'roles', guildId: guild.id })}>
+            <button className="gloss icon-only" title="Cargos do servidor" aria-label="Cargos do servidor" onClick={() => openModal({ type: 'roles', guildId: guild.id })}>
               <Tags size={14} />
             </button>
           )}
           <button
-            className="gloss"
+            className="gloss icon-only"
             title="Configurações do servidor"
             aria-label="Configurações do servidor"
             onClick={() => openModal({ type: 'guildSettings', guildId: guild.id })}
@@ -799,6 +804,8 @@ export function VoiceStatus() {
   // Fora da tela da chamada, a miniatura dela fica aqui (computador; no resto ela flutua, veja MiniCall).
   const desktop = useLayout() === 'desktop';
   const onCallPage = useOnCallPage();
+  // arrastada para um lugar próprio, ela flutua (FloatingMiniCall, no App)
+  const miniMoved = useMiniCallMoved();
   if (!voice) return null;
   const { toggleMute, toggleDeafen } = useStore.getState();
   const { showVoice, leaveVoice, openModal } = vc.getState();
@@ -821,7 +828,7 @@ export function VoiceStatus() {
           : `${channel?.name} · ${guild?.name}`;
   return (
     <div className={`voice-status${connected && !calling ? '' : ' pending'}`}>
-      {desktop && !onCallPage && <MiniCall />}
+      {desktop && !onCallPage && !miniMoved && <MiniCall />}
       <button className="conn" onClick={showVoice} title="Abrir chamada">
         <b>
           <Orb status={connected && !calling ? 'on' : 'off'} />

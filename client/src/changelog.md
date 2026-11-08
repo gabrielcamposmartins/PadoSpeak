@@ -1,5 +1,18 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.13.0 — 07/11/2026
+
+### Novidades
+- **Enquetes**: nos canais de texto dos servidores, o botão de gráfico acima da caixa de mensagem cria uma enquete com 2 a 10 opções, prazo de 1 hora a 1 semana (ou sem prazo) e, se quiser, várias respostas. Os votos aparecem para todos na hora, passar o mouse mostra quem votou, e quem criou pode encerrar antes do prazo.
+- **Cor dos painéis**: em Configurações → Aparência, escolha a cor do fundo das janelas, listas e caixas, numa das cores prontas ou em qualquer outra. No tema claro ela fica bem suave e no escuro, profunda, sempre com o brilho e o vidro do Aero.
+- **Miniatura da chamada onde você quiser**: segure e arraste a miniatura da chamada para qualquer lugar da tela. O lugar fica guardado, e um botãozinho nela a devolve ao canto.
+
+### Correções
+- **Conversas grandes mais leves**: em conversas e canais com muitas mensagens, escrever não fica mais lento. As mensagens mais antigas aparecem conforme você rola para cima.
+- **Stickers mais rápidos**: os stickers ficam guardados no aparelho e aparecem na hora quando você abre o app, inclusive em “Meus stickers”.
+- **Botões do servidor**: os botões ao lado de “Convidar” não passam mais da borda.
+- **Configurações**: a janela de configurações ficou mais larga e não rola mais para o lado.
+
 ## 1.12.1 — 07/11/2026
 
 ### Correções

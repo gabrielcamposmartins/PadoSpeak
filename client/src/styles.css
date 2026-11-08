@@ -1688,13 +1688,29 @@ html.framed .overlay {
   margin-top: 8px;
 }
 .side-actions button {
-  flex: 1;
+  flex: 1 1 0;
+  min-width: 0;
   height: 28px;
   font-size: 12px;
   padding: 0 6px;
+  white-space: nowrap;
+  overflow: hidden;
 }
-.side-actions button:last-child {
-  flex: 0 0 32px;
+/* os botões só com ícone (cargos, configurações) têm largura fixa; os com texto dividem o resto */
+.side-actions button.icon-only {
+  flex: 0 0 30px;
+  padding: 0;
+}
+.side-actions button > svg {
+  flex: none;
+}
+.side-actions .icon-only .side-act-label {
+  display: none;
+}
+.side-actions .side-act-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .channel-list {
   flex: 1;
@@ -3695,7 +3711,8 @@ html:not([data-touch]) .channel:hover .call-timer:has(~ .ch-del) {
   max-width: 720px;
 }
 .modal.settings {
-  max-width: 880px;
+  /* larga o bastante para as oito abas numa linha (sem rolagem para o lado), sem passar da tela */
+  max-width: min(1040px, calc(100vw - 32px));
 }
 .settings-cols {
   display: grid;
@@ -5540,6 +5557,28 @@ fieldset.plain {
 }
 .mobile-app .phone-tools .tool-sep {
   height: 28px;
+}
+/* Celulares estreitos: com a enquete, são 6 botões quadrados + o "Chamar atenção" na mesma linha. */
+@media (max-width: 400px) {
+  .mobile-app .phone-tools .tool-sq {
+    width: 40px;
+  }
+  .mobile-app .phone-tools .tool-nudge {
+    flex-basis: 40px;
+    min-width: 40px;
+  }
+}
+@media (max-width: 340px) {
+  .mobile-app .composer-tools.phone-tools {
+    gap: 2px;
+  }
+  .mobile-app .phone-tools .tool-sq {
+    width: 36px;
+  }
+  .mobile-app .phone-tools .tool-nudge {
+    flex-basis: 36px;
+    min-width: 36px;
+  }
 }
 .tool-effects {
   display: inline-flex;
@@ -8489,6 +8528,7 @@ html[data-touch] [data-tip]::after {
 /* ---------- Configurações do usuário em abas ---------- */
 .settings-tabs {
   justify-content: center;
+  flex-wrap: wrap;
   margin-top: 0;
 }
 .settings-tabs button {
@@ -13536,4 +13576,337 @@ html[data-kb] .m-tabs {
 }
 .agent-place-opt.on .agent-place-mini {
   border-color: color-mix(in srgb, #7b5cf0 50%, var(--line));
+}
+
+/* Miniatura arrastada (MiniCall.jsx): a cópia que segue o ponteiro, o lugar de onde saiu e o botão de voltar */
+.mini-call {
+  touch-action: none;
+  user-select: none;
+}
+.mini-call.drag-source {
+  opacity: 0.35;
+}
+.mini-call.dragging {
+  z-index: 200;
+  cursor: grabbing;
+  pointer-events: none;
+  opacity: 0.92;
+}
+.mini-reset {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.mini-call:hover .mini-reset,
+.mini-call:focus-within .mini-reset {
+  opacity: 1;
+}
+html[data-touch] .mini-reset {
+  opacity: 0.85;
+}
+
+/* Enquete (canais de texto dos servidores): cartão com as opções e a barra de votos de cada uma. */
+.poll {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(440px, 100%);
+  margin: 2px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+}
+.poll-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.poll-ico {
+  flex: none;
+  margin-top: 2px;
+  color: var(--accent, #1a8fd6);
+}
+.poll-hint {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.poll-options {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.poll-option {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  overflow: hidden;
+  cursor: pointer;
+  isolation: isolate;
+}
+.poll-option:hover:not(:disabled) {
+  border-color: var(--row-hover-border, var(--accent, #1a8fd6));
+}
+.poll-option:disabled {
+  cursor: default;
+  opacity: 1;
+}
+.poll-option.mine {
+  border-color: var(--accent, #1a8fd6);
+}
+.poll-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--pct, 0%);
+  background: color-mix(in srgb, var(--accent, #1a8fd6) 16%, transparent);
+  transition: width 0.3s ease;
+  z-index: -1;
+}
+.poll-option.mine .poll-bar {
+  background: color-mix(in srgb, var(--accent, #1a8fd6) 28%, transparent);
+}
+.poll-option.winner {
+  font-weight: 700;
+}
+.poll-mark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid var(--muted);
+  border-radius: 50%;
+  color: #fff;
+}
+.poll-mark.square {
+  border-radius: 4px;
+}
+.poll-option.mine .poll-mark {
+  border-color: var(--accent, #1a8fd6);
+  background: var(--accent, #1a8fd6);
+}
+.poll.closed .poll-mark {
+  display: none;
+}
+.poll-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.poll-count {
+  flex: none;
+  font-size: 12px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.poll-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.poll-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.poll-end {
+  margin-left: auto;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.poll-end:hover {
+  border-color: var(--accent, #1a8fd6);
+  color: var(--text);
+}
+.poll-form-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.poll-form-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.poll-form-option input {
+  flex: 1;
+  min-width: 0;
+}
+.poll-add {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+/* Sticker procurando a imagem no cache deste aparelho: guarda o lugar para a conversa não pular. */
+.sticker-img.sticker-wait {
+  display: inline-block;
+  width: 96px;
+  height: 96px;
+  background: var(--row-hover);
+}
+.sticker-tile .sticker-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.sticker-tile .sticker-thumb.sticker-wait {
+  display: block;
+  border-radius: 6px;
+  background: var(--row-hover);
+}
+
+/* Cor dos painéis (Configurações → Aparência): o tom escolhido (`--sf-h`, `--sf-s`; `--sf-sd` no escuro) no
+   lugar do azul-claro/branco do tema claro e do azul-marinho do escuro. Só o tom vem da escolha: a claridade de
+   cada camada é a do tema, então os brilhos, o vidro e o texto continuam iguais com qualquer cor. */
+:root[data-surface]:not([data-theme='dark']) {
+  --app-bg: radial-gradient(90% 70% at 15% 100%, hsl(var(--sf-h) var(--sf-s) 95% / 1) 0%, hsl(var(--sf-h) var(--sf-s) 95% / 0) 60%),
+    linear-gradient(180deg, hsl(var(--sf-h) var(--sf-s) 89%) 0%, hsl(var(--sf-h) var(--sf-s) 95.5%) 55%, hsl(var(--sf-h) var(--sf-s) 98%) 100%);
+  --glass: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-s) 99.5% / 0.9) 0%, hsl(var(--sf-h) var(--sf-s) 95% / 0.74) 100%);
+  --glass-border: hsl(var(--sf-h) var(--sf-s) 99.5% / 0.95);
+  --head: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-s) 99.5% / 0.95), hsl(var(--sf-h) var(--sf-s) 92.5% / 0.7));
+  --line: hsl(var(--sf-h) calc(var(--sf-s) * 0.6) 88%);
+  --line-soft: hsl(var(--sf-h) calc(var(--sf-s) * 0.6) 90.5%);
+  --area: hsl(var(--sf-h) var(--sf-s) 99% / 0.55);
+  --panel: hsl(var(--sf-h) var(--sf-s) 98.5%);
+  --panel-border: hsl(var(--sf-h) calc(var(--sf-s) * 0.6) 78%);
+  --panel-head: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-s) 99.5%), hsl(var(--sf-h) var(--sf-s) 93.5%));
+  --panel-line: hsl(var(--sf-h) calc(var(--sf-s) * 0.6) 86.5%);
+  --panel-foot: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-s) 97%), hsl(var(--sf-h) var(--sf-s) 92%));
+  --gloss: linear-gradient(180deg, #ffffff 0%, hsl(var(--sf-h) var(--sf-s) 96%) 47%, hsl(var(--sf-h) var(--sf-s) 88.5%) 50%, hsl(var(--sf-h) var(--sf-s) 94.5%) 100%);
+  --gloss-border: hsl(var(--sf-h) calc(var(--sf-s) * 0.5) 71%);
+  --input: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-s) 97.5%), hsl(var(--sf-h) var(--sf-s) 99.6%) 30%);
+  --input-border: hsl(var(--sf-h) calc(var(--sf-s) * 0.5) 76%);
+  --titlebar: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-s) 99.3%) 0%, hsl(var(--sf-h) var(--sf-s) 94%) 48%, hsl(var(--sf-h) var(--sf-s) 89.5%) 50%, hsl(var(--sf-h) var(--sf-s) 94%) 100%);
+  --titlebar-border: hsl(var(--sf-h) calc(var(--sf-s) * 0.6) 80%);
+  --window: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-s) 99.8%) 0%, hsl(var(--sf-h) var(--sf-s) 95%) 100%);
+  --window-border: hsl(var(--sf-h) calc(var(--sf-s) * 0.5) 73%);
+  --auth-card: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-s) 99.5% / 0.94) 0%, hsl(var(--sf-h) var(--sf-s) 95% / 0.88) 100%);
+  --notice: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-s) 97.5%), hsl(var(--sf-h) var(--sf-s) 92%));
+  --notice-border: hsl(var(--sf-h) calc(var(--sf-s) * 0.6) 84%);
+  --tab: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-s) 99.3%), hsl(var(--sf-h) var(--sf-s) 94%));
+  --tab-border: hsl(var(--sf-h) calc(var(--sf-s) * 0.5) 82%);
+  --tab-on: hsl(var(--sf-h) var(--sf-s) 99.8%);
+  --tab-on-border: hsl(var(--sf-h) calc(var(--sf-s) * 0.5) 71%);
+  --chip: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-s) 99.8%), hsl(var(--sf-h) var(--sf-s) 94.5%));
+  --chip-border: hsl(var(--sf-h) calc(var(--sf-s) * 0.5) 84%);
+  --stat: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-s) 99.8%) 0%, hsl(var(--sf-h) var(--sf-s) 95.5%) 100%);
+  --stat-border: hsl(var(--sf-h) calc(var(--sf-s) * 0.6) 84%);
+  --addr: hsl(var(--sf-h) var(--sf-s) 99.5%);
+  --aero-top: hsl(var(--sf-h) var(--sf-s) 95% / 0.99);
+  --aero-bottom: hsl(var(--sf-h) var(--sf-s) 85% / 0.99);
+}
+/* SURFACE-DARK:BEGIN */
+:root[data-surface][data-theme='dark'] {
+  --app-bg: radial-gradient(70% 50% at 85% 0%, hsl(var(--sf-h) 90% 60% / 0.2) 0%, hsl(var(--sf-h) 90% 60% / 0) 60%),
+    radial-gradient(80% 60% at 10% 100%, rgba(40, 200, 140, 0.12) 0%, rgba(40, 200, 140, 0) 60%),
+    linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 11%) 0%, hsl(var(--sf-h) var(--sf-sd) 14%) 55%, hsl(var(--sf-h) var(--sf-sd) 10%) 100%);
+  --glass: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 31% / 0.62) 0%, hsl(var(--sf-h) var(--sf-sd) 13.5% / 0.8) 100%);
+  --glass-border: hsl(var(--sf-h) 100% 77% / 0.22);
+  --line: hsl(var(--sf-h) 100% 75% / 0.18);
+  --line-soft: hsl(var(--sf-h) 100% 75% / 0.15);
+  --area: hsl(var(--sf-h) var(--sf-sd) 6.5% / 0.35);
+  --panel: hsl(var(--sf-h) var(--sf-sd) 6.5% / 0.6);
+  --panel-border: hsl(var(--sf-h) 100% 75% / 0.3);
+  --panel-line: hsl(var(--sf-h) 100% 75% / 0.18);
+  --gloss: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 44%) 0%, hsl(var(--sf-h) var(--sf-sd) 31%) 47%, hsl(var(--sf-h) var(--sf-sd) 24%) 50%, hsl(var(--sf-h) var(--sf-sd) 33%) 100%);
+  --gloss-hover: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 51%) 0%, hsl(var(--sf-h) var(--sf-sd) 37%) 47%, hsl(var(--sf-h) var(--sf-sd) 30%) 50%, hsl(var(--sf-h) var(--sf-sd) 39%) 100%);
+  --gloss-border: hsl(var(--sf-h) var(--sf-sd) 54%);
+  --input: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 5% / 0.85), hsl(var(--sf-h) var(--sf-sd) 11.5% / 0.75));
+  --input-border: hsl(var(--sf-h) var(--sf-sd) 41%);
+  --titlebar: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 29%) 0%, hsl(var(--sf-h) var(--sf-sd) 21%) 48%, hsl(var(--sf-h) var(--sf-sd) 15%) 50%, hsl(var(--sf-h) var(--sf-sd) 22%) 100%);
+  --titlebar-border: hsl(var(--sf-h) var(--sf-sd) 7%);
+  --window: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 25%) 0%, hsl(var(--sf-h) var(--sf-sd) 15%) 100%);
+  --window-border: hsl(var(--sf-h) 100% 75% / 0.4);
+  --auth-card: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 25% / 0.92) 0%, hsl(var(--sf-h) var(--sf-sd) 13% / 0.92) 100%);
+  --tab: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 43% / 0.45), hsl(var(--sf-h) var(--sf-sd) 21% / 0.45));
+  --tab-border: hsl(var(--sf-h) 100% 75% / 0.25);
+  --tab-on: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 37%), hsl(var(--sf-h) var(--sf-sd) 24%));
+  --tab-on-border: hsl(var(--sf-h) var(--sf-sd) 54%);
+  --chip: hsl(var(--sf-h) 100% 75% / 0.12);
+  --chip-border: hsl(var(--sf-h) 100% 75% / 0.3);
+  --badge-ring: hsl(var(--sf-h) var(--sf-sd) 14%);
+  --stat: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 47% / 0.35) 0%, hsl(var(--sf-h) var(--sf-sd) 14% / 0.6) 100%);
+  --stat-border: hsl(var(--sf-h) 100% 75% / 0.25);
+  --addr: hsl(var(--sf-h) var(--sf-sd) 5.5% / 0.6);
+  --aero-top: hsl(var(--sf-h) var(--sf-sd) 24% / 0.99);
+  --aero-bottom: hsl(var(--sf-h) var(--sf-sd) 12% / 0.99);
+  --aero-hi: hsl(var(--sf-h) 100% 74% / 0.28);
+}
+/* SURFACE-DARK:END */
+@media (prefers-color-scheme: dark) {
+  :root[data-surface]:not([data-theme='light']) {
+    --app-bg: radial-gradient(70% 50% at 85% 0%, hsl(var(--sf-h) 90% 60% / 0.2) 0%, hsl(var(--sf-h) 90% 60% / 0) 60%),
+      radial-gradient(80% 60% at 10% 100%, rgba(40, 200, 140, 0.12) 0%, rgba(40, 200, 140, 0) 60%),
+      linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 11%) 0%, hsl(var(--sf-h) var(--sf-sd) 14%) 55%, hsl(var(--sf-h) var(--sf-sd) 10%) 100%);
+    --glass: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 31% / 0.62) 0%, hsl(var(--sf-h) var(--sf-sd) 13.5% / 0.8) 100%);
+    --glass-border: hsl(var(--sf-h) 100% 77% / 0.22);
+    --line: hsl(var(--sf-h) 100% 75% / 0.18);
+    --line-soft: hsl(var(--sf-h) 100% 75% / 0.15);
+    --area: hsl(var(--sf-h) var(--sf-sd) 6.5% / 0.35);
+    --panel: hsl(var(--sf-h) var(--sf-sd) 6.5% / 0.6);
+    --panel-border: hsl(var(--sf-h) 100% 75% / 0.3);
+    --panel-line: hsl(var(--sf-h) 100% 75% / 0.18);
+    --gloss: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 44%) 0%, hsl(var(--sf-h) var(--sf-sd) 31%) 47%, hsl(var(--sf-h) var(--sf-sd) 24%) 50%, hsl(var(--sf-h) var(--sf-sd) 33%) 100%);
+    --gloss-hover: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 51%) 0%, hsl(var(--sf-h) var(--sf-sd) 37%) 47%, hsl(var(--sf-h) var(--sf-sd) 30%) 50%, hsl(var(--sf-h) var(--sf-sd) 39%) 100%);
+    --gloss-border: hsl(var(--sf-h) var(--sf-sd) 54%);
+    --input: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 5% / 0.85), hsl(var(--sf-h) var(--sf-sd) 11.5% / 0.75));
+    --input-border: hsl(var(--sf-h) var(--sf-sd) 41%);
+    --titlebar: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 29%) 0%, hsl(var(--sf-h) var(--sf-sd) 21%) 48%, hsl(var(--sf-h) var(--sf-sd) 15%) 50%, hsl(var(--sf-h) var(--sf-sd) 22%) 100%);
+    --titlebar-border: hsl(var(--sf-h) var(--sf-sd) 7%);
+    --window: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 25%) 0%, hsl(var(--sf-h) var(--sf-sd) 15%) 100%);
+    --window-border: hsl(var(--sf-h) 100% 75% / 0.4);
+    --auth-card: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 25% / 0.92) 0%, hsl(var(--sf-h) var(--sf-sd) 13% / 0.92) 100%);
+    --tab: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 43% / 0.45), hsl(var(--sf-h) var(--sf-sd) 21% / 0.45));
+    --tab-border: hsl(var(--sf-h) 100% 75% / 0.25);
+    --tab-on: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 37%), hsl(var(--sf-h) var(--sf-sd) 24%));
+    --tab-on-border: hsl(var(--sf-h) var(--sf-sd) 54%);
+    --chip: hsl(var(--sf-h) 100% 75% / 0.12);
+    --chip-border: hsl(var(--sf-h) 100% 75% / 0.3);
+    --badge-ring: hsl(var(--sf-h) var(--sf-sd) 14%);
+    --stat: linear-gradient(180deg, hsl(var(--sf-h) var(--sf-sd) 47% / 0.35) 0%, hsl(var(--sf-h) var(--sf-sd) 14% / 0.6) 100%);
+    --stat-border: hsl(var(--sf-h) 100% 75% / 0.25);
+    --addr: hsl(var(--sf-h) var(--sf-sd) 5.5% / 0.6);
+    --aero-top: hsl(var(--sf-h) var(--sf-sd) 24% / 0.99);
+    --aero-bottom: hsl(var(--sf-h) var(--sf-sd) 12% / 0.99);
+    --aero-hi: hsl(var(--sf-h) 100% 74% / 0.28);
+  }
 }

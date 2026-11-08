@@ -4,13 +4,51 @@
 //
 // - Computador: dentro da caixa "Voz conectada" (embaixo, à esquerda), sem cobrir os botões dela.
 // - Celular (chamada minimizada), tablet e as páginas Hostear/Painel: flutuando no canto.
-import { useEffect, useRef } from 'react';
-import { MonitorUp, Volume2 } from 'lucide-react';
+// - Arrastada para outro lugar (clicar, segurar e arrastar), ela fica flutuando onde foi solta, em qualquer
+//   tela, até voltar ao lugar padrão (o botão que aparece ao passar o mouse). A posição fica neste aparelho.
+import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { create } from 'zustand';
+import { MonitorUp, Volume2, RotateCcw } from 'lucide-react';
 import { useStore } from '../store.js';
 import { useVoiceConn } from './conn.jsx';
 import { useLayout } from '../lib/layout.js';
 import { plain } from '../lib/text.js';
 import Avatar from './Avatar.jsx';
+
+const POS_KEY = 'padospeak.miniCallPos';
+/** Antes disto, o ponteiro só tremeu: é um clique. */
+const DRAG_START = 6;
+
+function readPos() {
+  try {
+    const v = JSON.parse(localStorage.getItem(POS_KEY) || 'null');
+    return v && Number.isFinite(v.x) && Number.isFinite(v.y) ? v : null;
+  } catch {
+    return null;
+  }
+}
+/** Onde a pessoa deixou a miniatura (`{x, y}`: o canto de cima à esquerda, em fração da tela), ou null. */
+const usePos = create(() => ({ pos: readPos() }));
+function savePos(pos) {
+  try {
+    if (pos) localStorage.setItem(POS_KEY, JSON.stringify(pos));
+    else localStorage.removeItem(POS_KEY);
+  } catch {
+    /* sem armazenamento: vale até fechar */
+  }
+  usePos.setState({ pos });
+}
+/** A miniatura foi arrastada para um lugar próprio? */
+export const useMiniCallMoved = () => usePos((st) => Boolean(st.pos));
+
+/** A posição guardada, sem sair da tela (a janela pode ter mudado de tamanho). */
+const placeStyle = (pos) => ({
+  left: `clamp(8px, ${(pos.x * 100).toFixed(2)}vw, calc(100vw - 184px))`,
+  top: `clamp(8px, ${(pos.y * 100).toFixed(2)}vh, calc(100vh - 110px))`,
+  right: 'auto',
+  bottom: 'auto',
+});
 
 /** A tela aberta agora é a da chamada? */
 export function useOnCallPage() {
@@ -66,6 +104,10 @@ export default function MiniCall({ floating = false }) {
   const focusId = useStore((s) => s.callFocus);
   const phone = useLayout() === 'phone';
   const lastSpeaker = useRef(null);
+  const pos = usePos((st) => st.pos);
+  const drag = useRef(null);
+  const dragged = useRef(false);
+  const [ghost, setGhost] = useState(null);
   if (!voice) return null;
   const speaking = voice.peers.find((p) => voice.speaking[p.peerId]);
   if (speaking) lastSpeaker.current = speaking.peerId;
@@ -81,14 +123,10 @@ export default function MiniCall({ floating = false }) {
     if (phone) useStore.setState({ callMinimized: false });
     else vc.getState().showVoice();
   };
-  return (
-    <button
-      type="button"
-      className={`mini-call${floating ? ' floating' : ''}${phone ? ' phone' : ''}${tile?.speaking ? ' speaking' : ''}${tile?.stream ? ' has-video' : ''}`}
-      onClick={open}
-      title="Voltar para a chamada"
-      aria-label={`Voltar para a chamada: ${label}`}
-    >
+  const placed = floating && pos;
+  const classes = `mini-call${floating ? ' floating' : ''}${placed ? ' placed' : ''}${phone ? ' phone' : ''}${tile?.speaking ? ' speaking' : ''}${tile?.stream ? ' has-video' : ''}`;
+  const body = (
+    <>
       {tile?.stream ? (
         <MiniVideo stream={tile.stream} mirror={tile.mirror && !tile.screen} />
       ) : (
@@ -100,7 +138,99 @@ export default function MiniCall({ floating = false }) {
         {tile?.screen ? <MonitorUp size={12} /> : voice.dm ? null : <Volume2 size={12} />}
         <span>{label}</span>
       </span>
-    </button>
+    </>
+  );
+
+  // Arrastar: segura e arrasta (um clique sem arrastar abre a chamada). Enquanto arrasta, uma cópia segue o
+  // ponteiro direto no <body>: a caixa "Voz conectada" fica num painel de vidro, e lá dentro "fixo" seria
+  // relativo ao painel, não à tela.
+  const onPointerDown = (e) => {
+    if (e.button !== 0 || e.target.closest('.mini-reset')) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    drag.current = { sx: e.clientX, sy: e.clientY, dx: e.clientX - r.left, dy: e.clientY - r.top, w: r.width, h: r.height, moved: false };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+  };
+  const spot = (e, d) => ({
+    left: Math.min(Math.max(8, e.clientX - d.dx), window.innerWidth - d.w - 8),
+    top: Math.min(Math.max(8, e.clientY - d.dy), window.innerHeight - d.h - 8),
+  });
+  const onPointerMove = (e) => {
+    const d = drag.current;
+    if (!d) return;
+    if (!d.moved && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < DRAG_START) return;
+    d.moved = true;
+    setGhost({ ...spot(e, d), w: d.w, h: d.h });
+  };
+  const onPointerUp = (e) => {
+    const d = drag.current;
+    drag.current = null;
+    if (!d?.moved) return;
+    const at = spot(e, d);
+    savePos({ x: at.left / window.innerWidth, y: at.top / window.innerHeight });
+    setGhost(null);
+    dragged.current = true;
+  };
+  const onClick = () => {
+    // o clique que vem no fim de um arraste não abre a chamada
+    if (dragged.current) {
+      dragged.current = false;
+      return;
+    }
+    open();
+  };
+
+  return (
+    <>
+      <div
+        role="button"
+        tabIndex={0}
+        className={`${classes}${ghost ? ' drag-source' : ''}`}
+        style={placed ? placeStyle(pos) : undefined}
+        onClick={onClick}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            open();
+          }
+        }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={() => {
+          drag.current = null;
+          setGhost(null);
+        }}
+        title="Voltar para a chamada (arraste para mudar de lugar)"
+        aria-label={`Voltar para a chamada: ${label}`}
+      >
+        {body}
+        {placed && (
+          <button
+            type="button"
+            className="mini-reset"
+            title="Voltar a miniatura para o lugar padrão"
+            aria-label="Voltar a miniatura para o lugar padrão"
+            onClick={(e) => {
+              e.stopPropagation();
+              savePos(null);
+            }}
+          >
+            <RotateCcw size={12} />
+          </button>
+        )}
+      </div>
+      {ghost &&
+        createPortal(
+          <div
+            className={`${classes} floating dragging`}
+            style={{ left: ghost.left, top: ghost.top, width: ghost.w, height: ghost.h, right: 'auto', bottom: 'auto' }}
+            aria-hidden="true"
+          >
+            {body}
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }
 
@@ -116,7 +246,9 @@ export function FloatingMiniCall() {
   const phase = useStore((s) => s.phase);
   const minimized = useStore((s) => s.callMinimized);
   const onPage = useOnCallPage();
+  const moved = useMiniCallMoved();
   if (!inCall) return null;
-  const show = layout === 'phone' ? minimized : phase !== 'app' || (layout === 'tablet' && !onPage);
+  // arrastada para um lugar próprio, ela flutua fora da tela da chamada também no computador
+  const show = layout === 'phone' ? minimized : phase !== 'app' || (!onPage && (layout === 'tablet' || moved));
   return show ? <MiniCall floating /> : null;
 }
