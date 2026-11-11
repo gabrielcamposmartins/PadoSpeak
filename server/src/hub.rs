@@ -142,6 +142,8 @@ struct Route {
     epoch: u64,
     /// O nó de antes, ainda de pé, enquanto os apps passam para o novo sem cortar a voz.
     prev: Option<(String, std::time::Instant)>,
+    /// Só a voz vai pelo nó (o modo dele no painel): câmera e tela, direto entre as pessoas.
+    voice_only: bool,
 }
 
 /// Depois de trocar a sala de nó, o de antes continua aceitando os comandos por este tempo.
@@ -415,13 +417,30 @@ impl Hub {
         let min = if always { 1 } else { reg.min_people() };
         let capable = list.iter().filter(|p| p.sfu_ok).count();
         let current = s.voice_route.get(channel_id).map(|r| r.node.clone());
-        let target = match current.clone().filter(|n| reg.alive(n)) {
+        let target = match current.clone().filter(|n| reg.usable_sfu(n)) {
             Some(n) if n == crate::media::registry::LOCAL && reg.overloaded() && reg.has_remote_sfu() => reg.pick_sfu(),
             Some(n) => Some(n),
             None if capable >= min => reg.pick_sfu(),
             None => None,
         };
         if target == current {
+            // Mesmo nó, mas o modo dele mudou no painel (tudo ↔ só voz): os apps passam o vídeo de caminho.
+            if let (Some(node), Some(r)) = (&target, s.voice_route.get(channel_id)) {
+                let voice_only = reg.voice_only(node);
+                if r.voice_only != voice_only {
+                    s.route_epoch += 1;
+                    let epoch = s.route_epoch;
+                    if let Some(r) = s.voice_route.get_mut(channel_id) {
+                        r.voice_only = voice_only;
+                        r.epoch = epoch;
+                    }
+                    eprintln!("[mídia] sala {}: {node} agora {}", channel_id.chars().take(8).collect::<String>(), if voice_only { "só com a voz" } else { "com tudo" });
+                    let msg = event("voice:mode", json!({ "channelId": channel_id, "node": node, "epoch": epoch, "voiceOnly": voice_only }));
+                    for p in list.iter() {
+                        Self::send_to(s, &p.peer_id, msg.clone());
+                    }
+                }
+            }
             return;
         }
         // No log do servidor: dá para conferir quando as chamadas passam pelo nó (e quando voltam para a malha).
@@ -448,7 +467,7 @@ impl Hub {
                 }
                 // O de antes, se ainda está de pé, segura a voz enquanto os apps passam para o novo.
                 let prev = current.filter(|c| reg.alive(c)).map(|c| (c, std::time::Instant::now()));
-                s.voice_route.insert(channel_id.to_string(), Route { node: node.clone(), epoch, prev });
+                s.voice_route.insert(channel_id.to_string(), Route { node: node.clone(), epoch, prev, voice_only: reg.voice_only(node) });
             }
             None => {
                 if let Some(b) = current.as_deref().and_then(|n| reg.backend(n)) {
@@ -463,7 +482,8 @@ impl Hub {
                 }
             }
         }
-        let msg = event("voice:mode", json!({ "channelId": channel_id, "node": target, "epoch": epoch }));
+        let voice_only = target.as_deref().is_some_and(|n| reg.voice_only(n));
+        let msg = event("voice:mode", json!({ "channelId": channel_id, "node": target, "epoch": epoch, "voiceOnly": voice_only }));
         for c in &conns {
             Self::send_to(s, c, msg.clone());
         }
@@ -471,7 +491,7 @@ impl Hub {
 
     /// A rota da sala para a resposta do `voice:join` (`{ node, epoch }` ou nula).
     fn route_json(s: &HubState, channel_id: &str) -> Value {
-        s.voice_route.get(channel_id).map_or(Value::Null, |r| json!({ "node": r.node, "epoch": r.epoch }))
+        s.voice_route.get(channel_id).map_or(Value::Null, |r| json!({ "node": r.node, "epoch": r.epoch, "voiceOnly": r.voice_only }))
     }
 
     /// O SFU do nó `node`, se a sala de quem pede está nele (ou estava, durante a passagem).
@@ -2102,12 +2122,13 @@ impl Hub {
                     // Voltando depois de o servidor reiniciar: a sala continua no nó em que estava (a mídia
                     // pelo nó não parou), e a sessão de antes passa para esta conexão.
                     if let (Some(hint), Some(w)) = (&media_hint, &was) {
-                        if (dm_users.is_none() || reg.sfu_always()) && !s.voice_route.contains_key(&ch_id) && reg.alive(hint) {
+                        if (dm_users.is_none() || reg.sfu_always()) && !s.voice_route.contains_key(&ch_id) && reg.usable_sfu(hint) {
                             s.route_epoch += 1;
                             let epoch = s.route_epoch;
-                            s.voice_route.insert(ch_id.clone(), Route { node: hint.clone(), epoch, prev: None });
+                            let voice_only = reg.voice_only(hint);
+                            s.voice_route.insert(ch_id.clone(), Route { node: hint.clone(), epoch, prev: None, voice_only });
                             // Quem voltou antes (sem a sala no nó ainda) fica sabendo.
-                            let msg = event("voice:mode", json!({ "channelId": ch_id, "node": hint, "epoch": epoch }));
+                            let msg = event("voice:mode", json!({ "channelId": ch_id, "node": hint, "epoch": epoch, "voiceOnly": voice_only }));
                             for p in s.voice.get(&ch_id).into_iter().flatten().filter(|p| p.peer_id != conn_id) {
                                 Self::send_to(&s, &p.peer_id, msg.clone());
                             }

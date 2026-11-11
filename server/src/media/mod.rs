@@ -102,13 +102,15 @@ pub async fn load_settings(app: &App) -> MediaSettings {
         .unwrap_or_default()
 }
 
+/// A prioridade e o modo do SFU de cada nó (do banco para o registro).
 async fn load_priorities(app: &App) {
     let rows = app
         .db
-        .query_all("SELECT id, priority FROM media_nodes", (), |r| Ok((r.get::<String>(0)?, r.get::<i64>(1)?)))
+        .query_all("SELECT id, priority, sfu_mode FROM media_nodes", (), |r| Ok((r.get::<String>(0)?, r.get::<i64>(1)?, r.get::<String>(2)?)))
         .await
         .unwrap_or_default();
-    app.media.set_priorities(rows.into_iter().collect());
+    app.media.set_priorities(rows.iter().map(|(id, p, _)| (id.clone(), *p)).collect());
+    app.media.set_modes(rows.into_iter().map(|(id, _, m)| (id, registry::SfuMode::parse(&m))).collect());
 }
 
 /// Liga o que o servidor principal faz pelos nós: a carga, o SFU embutido (se escolhido), o provedor de
@@ -319,7 +321,7 @@ async fn admin_view(State(app): AppState, AuthUser(me, _): AuthUser) -> ApiResul
 async fn view(app: &App, owner: bool) -> ApiResult<Value> {
     let rows = app
         .db
-        .query_all("SELECT id, name, priority, enabled, created_at, last_seen FROM media_nodes ORDER BY priority, created_at", (), |r| {
+        .query_all("SELECT id, name, priority, enabled, created_at, last_seen, sfu_mode FROM media_nodes ORDER BY priority, created_at", (), |r| {
             Ok((
                 r.get::<String>(0)?,
                 r.get::<String>(1)?,
@@ -327,15 +329,17 @@ async fn view(app: &App, owner: bool) -> ApiResult<Value> {
                 r.get::<i64>(3)?,
                 r.get::<i64>(4)?,
                 r.get::<Option<i64>>(5)?,
+                r.get::<String>(6)?,
             ))
         })
         .await?;
     let live = app.media.live();
     let nodes: Vec<Value> = rows
         .into_iter()
-        .map(|(id, name, priority, enabled, created_at, last_seen)| {
+        .map(|(id, name, priority, enabled, created_at, last_seen, sfu_mode)| {
             let mut v = json!({
                 "id": id, "name": name, "priority": priority, "enabled": enabled != 0,
+                "sfuMode": registry::SfuMode::parse(&sfu_mode).as_str(),
                 "createdAt": created_at, "lastSeen": last_seen, "online": false,
             });
             if let (Some(l), Some(obj)) = (live.get(&id), v.as_object_mut()) {
@@ -450,6 +454,9 @@ struct EditNode {
     name: Option<String>,
     priority: Option<i64>,
     enabled: Option<bool>,
+    /// `all`, `voice` ou `off` (veja `registry::SfuMode`).
+    #[serde(rename = "sfuMode")]
+    sfu_mode: Option<String>,
 }
 
 async fn admin_edit(
@@ -472,6 +479,11 @@ async fn admin_edit(
         if !on {
             app.media.kick(&id);
         }
+    }
+    if let Some(m) = body.sfu_mode.as_deref() {
+        let mode = registry::SfuMode::parse(m);
+        app.db.execute("UPDATE media_nodes SET sfu_mode = ?1 WHERE id = ?2", [mode.as_str(), id.as_str()]).await?;
+        app.logs.info(format!("Mídia: SFU do nó {id} em \"{}\" por {}", mode.as_str(), me.username));
     }
     load_priorities(&app).await;
     app.hub.media_changed();

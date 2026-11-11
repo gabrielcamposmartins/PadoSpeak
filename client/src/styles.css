@@ -13985,6 +13985,27 @@ html[data-touch] .mini-reset {
 button.tile-hand {
   cursor: pointer;
 }
+/* Destaque fixado pelo clique (não troca sozinho para quem fala). */
+.tile-pin {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(10, 40, 80, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+}
+/* no hover os controles do vídeo ocupam o canto */
+.tile:hover .tile-pin {
+  display: none;
+}
 @keyframes tile-hand-in {
   from {
     transform: scale(0.3) rotate(-30deg);

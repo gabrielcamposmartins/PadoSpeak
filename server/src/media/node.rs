@@ -36,6 +36,9 @@ pub struct NodeConfig {
     /// IPs públicos anunciados pelo SFU (além do que o principal vê e dos da rede local).
     pub public_ips: Vec<IpAddr>,
     pub data_dir: PathBuf,
+    /// Receber chamadas no SFU (`MEDIA_SFU=off` desliga: o nó fica só com o token e a música, e as chamadas
+    /// vão para outro nó ou para a malha).
+    pub sfu: bool,
     /// Dar token do YouTube (`POT=off` desliga).
     pub pot: bool,
     /// Buscar a música pelo nó (`MEDIA_MUSIC=off` desliga).
@@ -44,14 +47,22 @@ pub struct NodeConfig {
 
 impl NodeConfig {
     /// `MEDIA_JOIN` (código de pareamento, do Painel → Mídia), `SFU_UDP_PORT` (padrão 3479),
-    /// `SFU_PUBLIC_IP`, `POT=off`, `MEDIA_MUSIC=off`.
+    /// `SFU_PUBLIC_IP`, `MEDIA_SFU=off`, `POT=off`, `MEDIA_MUSIC=off`.
     pub fn from_env(data_dir: PathBuf) -> Result<Self, String> {
         let env = |k: &str| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
         let off = |k: &str| env(k).is_some_and(|v| matches!(v.to_lowercase().as_str(), "0" | "off" | "false" | "no"));
         let code = env("MEDIA_JOIN").ok_or("Defina MEDIA_JOIN com o código do nó (Painel → Mídia → Adicionar nó)")?;
         let sfu = SfuConfig::from_env();
         let public_ips = env("SFU_PUBLIC_IP").map(|v| v.split(',').filter_map(|ip| ip.trim().parse().ok()).collect()).unwrap_or_default();
-        Ok(Self { pairing: Pairing::decode(&code)?, udp_port: sfu.port, public_ips, data_dir, pot: !off("POT"), music: !off("MEDIA_MUSIC") })
+        Ok(Self {
+            pairing: Pairing::decode(&code)?,
+            udp_port: sfu.port,
+            public_ips,
+            data_dir,
+            sfu: !off("MEDIA_SFU"),
+            pot: !off("POT"),
+            music: !off("MEDIA_MUSIC"),
+        })
     }
 
     pub fn new(code: &str, udp_port: Option<u16>, data_dir: PathBuf) -> Result<Self, String> {
@@ -60,6 +71,7 @@ impl NodeConfig {
             udp_port: udp_port.unwrap_or(DEFAULT_UDP_PORT),
             public_ips: Vec::new(),
             data_dir,
+            sfu: true,
             pot: true,
             music: true,
         })
@@ -122,7 +134,11 @@ impl MediaNode {
             pot: if cfg.pot { "preparando".into() } else { "desligado".into() },
             ..Default::default()
         };
-        logs.info(format!("Nó de mídia: SFU na porta UDP {}, ligando para {}", sfu.port, cfg.pairing.url));
+        if cfg.sfu {
+            logs.info(format!("Nó de mídia: SFU na porta UDP {}, ligando para {}", sfu.port, cfg.pairing.url));
+        } else {
+            logs.info(format!("Nó de mídia: SFU desligado (MEDIA_SFU=off), ligando para {}", cfg.pairing.url));
+        }
         let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(15)).build().map_err(|e| e.to_string())?;
         let shared = Arc::new(Shared {
             music: NodeMusic::new(cfg.data_dir.clone(), logs.clone(), http.clone()),
@@ -220,7 +236,10 @@ impl Shared {
             .map_err(|_| format!("o servidor {} não respondeu", self.cfg.pairing.url))?
             .map_err(|e| format!("não deu para ligar para {}: {e}", self.cfg.pairing.url))?;
         let (mut sink, mut stream) = ws.split();
-        let mut caps = vec!["sfu".to_string()];
+        let mut caps = Vec::new();
+        if self.cfg.sfu {
+            caps.push("sfu".to_string());
+        }
         if self.cfg.pot {
             caps.push("pot".into());
         }

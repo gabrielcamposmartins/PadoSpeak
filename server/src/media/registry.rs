@@ -57,6 +57,37 @@ impl MediaSettings {
     }
 }
 
+/// Como um nó recebe as chamadas (Painel → Mídia, em cada nó).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SfuMode {
+    /// Voz, câmera e tela pelo SFU.
+    #[default]
+    All,
+    /// Só a voz pelo SFU: câmera e tela vão direto entre as pessoas (a malha). Serve a um nó com pouca banda de
+    /// envio: a voz pesa ~50 kbps por pessoa, o vídeo dezenas de vezes mais.
+    Voice,
+    /// Nenhuma chamada (o nó fica só com o token e a música).
+    Off,
+}
+
+impl SfuMode {
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "voice" => SfuMode::Voice,
+            "off" => SfuMode::Off,
+            _ => SfuMode::All,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SfuMode::All => "all",
+            SfuMode::Voice => "voice",
+            SfuMode::Off => "off",
+        }
+    }
+}
+
 /// Um nó ligado pelo canal de controle.
 struct Link {
     name: String,
@@ -83,6 +114,8 @@ struct Inner {
     down_at: HashMap<String, Instant>,
     /// Prioridade de cada nó (do banco): menor primeiro.
     priority: HashMap<String, i64>,
+    /// Como cada nó recebe as chamadas (do banco; veja `SfuMode`). Sem registro: tudo.
+    modes: HashMap<String, SfuMode>,
     nonces: Vec<(String, Instant)>,
     /// Músicas buscadas pelo nó: o nó abre `/api/media/stream/{ticket}` e o proxy espera aqui.
     streams: HashMap<String, oneshot::Sender<axum::extract::ws::WebSocket>>,
@@ -186,6 +219,28 @@ impl Registry {
         self.inner.lock().unwrap().priority = map;
     }
 
+    pub fn set_modes(&self, map: HashMap<String, SfuMode>) {
+        self.inner.lock().unwrap().modes = map;
+    }
+
+    /// Como o nó recebe as chamadas (o embutido: tudo).
+    pub fn sfu_mode(&self, id: &str) -> SfuMode {
+        if id == LOCAL {
+            return SfuMode::All;
+        }
+        self.inner.lock().unwrap().modes.get(id).copied().unwrap_or_default()
+    }
+
+    /// O nó está de pé e recebe chamadas (para uma sala ficar ou ir para ele).
+    pub fn usable_sfu(&self, id: &str) -> bool {
+        self.alive(id) && self.sfu_mode(id) != SfuMode::Off
+    }
+
+    /// Só a voz da sala vai pelo nó (câmera e tela, direto entre as pessoas).
+    pub fn voice_only(&self, id: &str) -> bool {
+        self.sfu_mode(id) == SfuMode::Voice
+    }
+
     /// Nonce novo (não repetido) para um `hello`.
     pub fn fresh_nonce(&self, nonce: &str) -> bool {
         let mut s = self.inner.lock().unwrap();
@@ -285,6 +340,8 @@ impl Registry {
             .links
             .iter()
             .filter(|(_, l)| l.last_beat.elapsed() <= DEAD_AFTER && l.caps.iter().any(|c| c == cap))
+            // o SFU desligado no painel não recebe salas
+            .filter(|(id, _)| cap != "sfu" || s.modes.get(*id).copied().unwrap_or_default() != SfuMode::Off)
             .filter(|(_, l)| !eligible || now >= l.eligible_at)
             .collect();
         list.sort_by_key(|(id, _)| (s.priority.get(*id).copied().unwrap_or(0), (*id).clone()));
@@ -462,6 +519,33 @@ mod tests {
             udp_port: 3479,
             lan: vec![],
         }
+    }
+
+    #[tokio::test]
+    async fn modo_do_sfu_de_cada_no() {
+        let reg = Registry::new(MediaSettings::default());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        reg.attach(&hello("a", &["sfu", "pot"]), "A", "1.2.3.4", tx.clone());
+        reg.attach(&hello("b", &["sfu"]), "B", "5.6.7.8", tx.clone());
+        for l in reg.inner.lock().unwrap().links.values_mut() {
+            l.eligible_at = Instant::now();
+        }
+        reg.set_priorities(HashMap::from([("a".to_string(), 0), ("b".to_string(), 1)]));
+        // sem escolha: tudo
+        assert_eq!(reg.sfu_mode("a"), SfuMode::All);
+        assert_eq!(reg.pick_sfu().as_deref(), Some("a"));
+        assert!(!reg.voice_only("a"));
+        // só a voz: continua recebendo salas, avisando que é só a voz
+        reg.set_modes(HashMap::from([("a".to_string(), SfuMode::Voice)]));
+        assert_eq!(reg.pick_sfu().as_deref(), Some("a"));
+        assert!(reg.voice_only("a") && reg.usable_sfu("a"));
+        // desligado: não recebe salas (vai para o próximo), mas segue com o token
+        reg.set_modes(HashMap::from([("a".to_string(), SfuMode::Off)]));
+        assert_eq!(reg.pick_sfu().as_deref(), Some("b"));
+        assert!(!reg.usable_sfu("a") && reg.alive("a"));
+        assert_eq!(reg.pot_node().as_deref(), Some("a"));
+        assert_eq!(SfuMode::parse("qualquer"), SfuMode::All);
+        assert_eq!(SfuMode::parse(SfuMode::Voice.as_str()), SfuMode::Voice);
     }
 
     #[tokio::test]

@@ -20,6 +20,7 @@ import {
   EyeOff,
   WifiOff,
   RefreshCw,
+  Pin,
 } from 'lucide-react';
 import { useStore } from '../store.js';
 import { useConn } from './conn.jsx';
@@ -30,6 +31,7 @@ import { FormattedText } from './Emotes.jsx';
 import { useServerPing } from './hooks.js';
 import { enterFullscreen } from '../lib/fullscreen.js';
 import { useLayout, isTouch } from '../lib/layout.js';
+import { pickAutoFocus } from '../lib/callFocus.js';
 import { MobileBack } from './Mobile.jsx';
 import { InviteButton } from './CallInvite.jsx';
 import VolumeSlider from './Volume.jsx';
@@ -164,7 +166,7 @@ function useShortSide(ref) {
   return side;
 }
 
-function Tile({ tile, focused, grid, onFocus }) {
+function Tile({ tile, focused, pinned, grid, onFocus }) {
   const [rendered, setRendered] = useState(null);
   const [menu, setMenu] = useState(null);
   const voice = useConn()((s) => s.voice);
@@ -215,8 +217,13 @@ function Tile({ tile, focused, grid, onFocus }) {
         e.preventDefault();
         setMenu({ x: e.clientX, y: e.clientY });
       }}
-      title={focused ? 'Clique para voltar à grade' : 'Clique para destacar'}
+      title={focused && pinned ? 'Fixado aqui. Clique para voltar à grade' : 'Clique para fixar o destaque aqui'}
     >
+      {focused && pinned && (
+        <span className="tile-pin" title="Destaque fixado (não troca para quem fala)" aria-label="Destaque fixado">
+          <Pin size={14} aria-hidden="true" />
+        </span>
+      )}
       {menu && (
         <VoiceMemberMenu
           x={menu.x}
@@ -437,14 +444,24 @@ export default function VoiceView({ channel, variant }) {
   const deafened = useStore((s) => s.selfDeafened);
   const layout = useLayout();
   const phone = layout === 'phone';
-  // No celular a chamada já abre destacando quem fala com você (sua câmera vai para o canto).
-  const [focusId, setFocusId] = useState(phone ? 'auto' : null);
+  // Destaque: 'auto' (padrão: a transmissão, ou a câmera de quem fala; veja lib/callFocus.js), 'grid' (clicou em
+  // Grade: fica na grade) ou o id do vídeo que a pessoa clicou (fixado nele). No celular, o automático sem
+  // vídeo destaca quem está com você (sua câmera vai para o canto).
+  const [focusMode, setFocusMode] = useState('auto');
+  // o vídeo fixado tinha imagem (câmera ou tela) quando foi clicado: se ela some, o destaque volta ao automático
+  const pinVideo = useRef(false);
+  const hasVideo = (t) => Boolean(t && (t.kind === 'screen' || t.stream || t.offer));
+  const pin = (t) => {
+    pinVideo.current = hasVideo(t);
+    setFocusMode(t.id);
+  };
+  const autoRef = useRef({ id: null, since: 0 });
+  const [, setFocusTick] = useState(0);
   const stripDrag = useDraggable(phone);
   // Pedido de "assistir a transmissão" (clique em quem está ao vivo): destaca a tela da pessoa assim que chegar.
   const focusRequest = useStore((s) => s.focusRequest);
   const [preset, setPreset] = useState('auto');
   const [showDiag, setShowDiag] = useState(false);
-  const seenScreens = useRef(new Set());
   const store = useC.getState();
   const inCall = voice?.channelId === channel.id;
   const nsOn = useStore((s) => s.prefs.noiseSuppression !== false);
@@ -522,23 +539,27 @@ export default function VoiceView({ channel, variant }) {
     const tile = tiles.find((t) => t.kind === 'screen' && t.user?.id === focusRequest.userId);
     if (tile) {
       if (!tile.watching) store.watchPeer(tile.peerId, 'screen', true);
-      setFocusId(tile.id);
+      pin(tile);
       useStore.setState({ focusRequest: null });
     } else if (Date.now() - focusRequest.at > 20000) useStore.setState({ focusRequest: null });
   });
 
-  // Destaca automaticamente uma tela compartilhada nova.
+  const auto = pickAutoFocus({ tiles, prev: autoRef.current.id, since: autoRef.current.since, now: Date.now(), phone });
   useEffect(() => {
-    for (const t of tiles) {
-      if (t.kind === 'screen' && !t.offer && !seenScreens.current.has(t.id)) {
-        seenScreens.current.add(t.id);
-        if (!t.self) setFocusId(t.id);
-      }
-    }
+    if (auto.id !== autoRef.current.id) autoRef.current = { id: auto.id, since: Date.now() };
+    // alguém começou a falar, mas o destaque ainda não pode trocar: olha de novo quando puder
+    if (!auto.wait) return undefined;
+    const t = setTimeout(() => setFocusTick((n) => n + 1), auto.wait);
+    return () => clearTimeout(t);
   });
-
-  const autoId = (tiles.find((t) => t.kind === 'screen') || tiles.find((t) => !t.self))?.id;
-  const focusedId = inCall ? (focusId === 'auto' ? autoId : focusId) : null;
+  const pinned = focusMode !== 'auto' && focusMode !== 'grid';
+  // o vídeo fixado sumiu (a pessoa saiu, desligou a câmera ou parou de transmitir): volta ao automático
+  const pinTile = pinned ? tiles.find((t) => t.id === focusMode) : null;
+  const pinGone = inCall && pinned && (!pinTile || (pinVideo.current && !hasVideo(pinTile)));
+  useEffect(() => {
+    if (pinGone) setFocusMode('auto');
+  }, [pinGone]);
+  const focusedId = !inCall || focusMode === 'grid' ? null : focusMode === 'auto' || pinGone ? auto.id : focusMode;
   // A miniatura da chamada (fora desta tela, veja MiniCall) mostra o mesmo foco.
   useEffect(() => {
     if (inCall) useStore.setState({ callFocus: focusedId || null });
@@ -560,8 +581,9 @@ export default function VoiceView({ channel, variant }) {
 
   const focused = tiles.find((t) => t.id === focusedId);
   const others = tiles.filter((t) => t !== focused);
-  const pickFocus = () =>
-    setFocusId((tiles.find((t) => t.kind === 'screen') || tiles.find((t) => !t.self) || tiles[0]).id);
+  // "Foco": o automático; sem vídeo para destacar, fixa em alguém (como antes)
+  const pickFocus = () => (auto.id ? setFocusMode('auto') : pin(tiles.find((t) => !t.self) || tiles[0]));
+  const isPinned = pinned && !pinGone;
   const connectedCount = voice.peers.length + 1;
 
   return (
@@ -581,7 +603,7 @@ export default function VoiceView({ channel, variant }) {
             <button aria-pressed={Boolean(focused)} className={focused ? 'on' : ''} onClick={pickFocus}>
               Foco
             </button>
-            <button aria-pressed={!focused} className={focused ? '' : 'on'} onClick={() => setFocusId(null)}>
+            <button aria-pressed={!focused} className={focused ? '' : 'on'} onClick={() => setFocusMode('grid')}>
               Grade
             </button>
           </div>
@@ -592,12 +614,12 @@ export default function VoiceView({ channel, variant }) {
         {focused ? (
           <>
             <div className="voice-focus">
-              <Tile tile={focused} focused onFocus={() => setFocusId(null)} />
+              <Tile tile={focused} focused pinned={isPinned} onFocus={() => (isPinned ? setFocusMode('grid') : pin(focused))} />
             </div>
             {others.length > 0 && (
               <div className={`voice-strip${phone ? ' pip' : ''}`} {...stripDrag}>
                 {others.map((t) => (
-                  <Tile key={t.id} tile={t} onFocus={() => setFocusId(t.id)} />
+                  <Tile key={t.id} tile={t} onFocus={() => pin(t)} />
                 ))}
               </div>
             )}
@@ -605,7 +627,7 @@ export default function VoiceView({ channel, variant }) {
         ) : (
           <div className="voice-grid">
             {tiles.map((t) => (
-              <Tile key={t.id} tile={t} grid={connectedCount > 4} onFocus={() => setFocusId(t.id)} />
+              <Tile key={t.id} tile={t} grid={connectedCount > 4} onFocus={() => pin(t)} />
             ))}
           </div>
         )}

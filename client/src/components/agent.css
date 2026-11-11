@@ -815,3 +815,42 @@
   font-weight: 700;
   color: var(--text);
 }
+
+/* Modo automático: o assistente faz as ações sem o cartão de confirmação. */
+.agent-auto {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--row-sel-border);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.7;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.agent-auto:hover {
+  opacity: 1;
+}
+.agent-auto.on {
+  opacity: 1;
+  color: #fff;
+  border-color: transparent;
+  background: linear-gradient(180deg, #ffb340, #f08a00);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+}
+.agent-confirm-auto {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--link, #2a6fd6);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+}

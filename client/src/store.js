@@ -1018,6 +1018,8 @@ export function createConnStore({ key, kind, base, primary = false }) {
       // uma tarefa agendada terminou e entrou na conversa com o assistente: o balão aberto busca de novo
       rt.on('agent:refresh', () => primary && ui().setState((st) => ({ agentAccess: (st.agentAccess || 0) + 1 })));
       rt.on('agent:status', (d) => primary && ui().setState({ agentStatus: d.busy ? d.label || 'Pensando…' : null }));
+      // o pedido terminou no servidor (ele roda em segundo plano): o balão busca a resposta
+      rt.on('agent:done', () => primary && ui().setState((st) => ({ agentDone: (st.agentDone || 0) + 1 })));
       rt.on('agent:action', (a) => {
         if (primary && a?.type === 'appearance' && a.patch) ui().getState().setAppearance(a.patch);
       });

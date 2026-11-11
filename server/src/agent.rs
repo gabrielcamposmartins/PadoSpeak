@@ -288,7 +288,18 @@ async fn prefs(app: &App, user_id: &str) -> ApiResult<(String, String)> {
     Ok(row.unwrap_or_default())
 }
 
+/// Modo automático (Configurações → Assistente): as ações que pediriam confirmação rodam direto.
+async fn auto_mode(app: &App, user_id: &str) -> bool {
+    app.db
+        .query_one("SELECT auto FROM agent_prefs WHERE user_id = ?1", [user_id], |r| r.get::<i64>(0))
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|v| v != 0)
+}
+
 /// A chave e o modelo de um pedido.
+#[derive(Clone)]
 struct Resolved {
     key: String,
     model: String,
@@ -745,6 +756,7 @@ async fn my_view(app: &App, me: &User) -> ApiResult<Value> {
         // o app tem chave, mas o dono não liberou para esta pessoa
         "appBlocked": app_key(app).await?.is_some() && !app_allowed(app, me).await?,
         "models": suggested(),
+        "auto": auto_mode(app, &me.id).await,
     }))
 }
 
@@ -759,6 +771,8 @@ struct MyBody {
     active: Option<String>,
     /// Modelo com a chave própria; vazio = o do app.
     model: Option<String>,
+    /// Modo automático: fazer as ações sem pedir confirmação.
+    auto: Option<bool>,
 }
 
 async fn save_my_settings(State(app): AppState, AuthUser(me, _): AuthUser, Json(body): Json<MyBody>) -> ApiResult<Json<Value>> {
@@ -780,6 +794,14 @@ async fn save_my_settings(State(app): AppState, AuthUser(me, _): AuthUser, Json(
             [me.id.as_str(), key_id.as_str(), model.as_str()],
         )
         .await?;
+    if let Some(on) = body.auto {
+        app.db
+            .execute(
+                "INSERT INTO agent_prefs (user_id, auto) VALUES (?1, ?2) ON CONFLICT(user_id) DO UPDATE SET auto = excluded.auto",
+                libsql::params![me.id.as_str(), i64::from(on)],
+            )
+            .await?;
+    }
     Ok(Json(my_view(&app, &me).await?))
 }
 
@@ -1003,13 +1025,18 @@ async fn visible(app: &App, user: &User) -> ApiResult<Value> {
             None => items.push(json!({ "role": "assistant", "text": text, "actions": actions, "sources": sources })),
         }
     }
+    let busy = is_busy(&user.id);
+    // Com o assistente trabalhando, as ações já foram aprovadas (ou recusadas) e estão rodando: o cartão não
+    // volta, senão daria para confirmar de novo o que já está sendo feito.
     let mut pending = Vec::new();
-    for c in pending_calls(&turns) {
-        let name = c["name"].as_str().unwrap_or_default();
-        pending.push(json!({ "id": c["id"], "label": describe(app, name, &c["input"]).await, "detail": detail(name, &c["input"]) }));
+    if !busy {
+        for c in pending_calls(&turns) {
+            let name = c["name"].as_str().unwrap_or_default();
+            pending.push(json!({ "id": c["id"], "label": describe(app, name, &c["input"]).await, "detail": detail(name, &c["input"]) }));
+        }
     }
-    let busy = BUSY.lock().unwrap().as_ref().is_some_and(|b| b.contains(&user.id));
     let using = resolve(app, user).await?;
+    let error = if busy { None } else { LAST_ERROR.lock().unwrap().as_ref().and_then(|m| m.get(&user.id).cloned()) };
     Ok(json!({
         "ready": using.is_some(),
         "appBlocked": using.is_none() && app_key(app).await?.is_some() && !app_allowed(app, user).await?,
@@ -1018,6 +1045,8 @@ async fn visible(app: &App, user: &User) -> ApiResult<Value> {
         "items": items,
         "pending": pending,
         "busy": busy,
+        "error": error,
+        "auto": auto_mode(app, &user.id).await,
         "full": turns.len() as i64 >= MAX_TURNS,
     }))
 }
@@ -1034,6 +1063,7 @@ async fn reset(State(app): AppState, AuthUser(me, _): AuthUser) -> ApiResult<Jso
         return Err(ApiError::new(StatusCode::CONFLICT, "Espere o assistente terminar"));
     }
     app.db.execute("DELETE FROM agent_turns WHERE user_id = ?1", [me.id.as_str()]).await?;
+    set_error(&me.id, None);
     Ok(Json(visible(&app, &me).await?))
 }
 
@@ -1087,6 +1117,42 @@ fn is_busy(user_id: &str) -> bool {
     BUSY.lock().unwrap().as_ref().is_some_and(|b| b.contains(user_id))
 }
 
+/// O erro do último pedido de cada pessoa (o trabalho roda em segundo plano: o app lê quando ele termina).
+static LAST_ERROR: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+
+fn set_error(user_id: &str, error: Option<String>) {
+    let mut m = LAST_ERROR.lock().unwrap();
+    let m = m.get_or_insert_with(HashMap::new);
+    match error {
+        Some(e) => {
+            m.insert(user_id.to_string(), e);
+        }
+        None => {
+            m.remove(user_id);
+        }
+    }
+}
+
+/// O resto de um pedido (as ações, as voltas com a API) roda em segundo plano, segurando a vez da pessoa: a
+/// resposta HTTP volta na hora, e o app acompanha pelo `agent:status` até ele terminar (`agent:done`). Antes, o
+/// pedido ficava aberto o tempo todo (uma música do YouTube pode levar minutos), a conexão caía no meio, e o app
+/// mostrava erro e o cartão de confirmação de novo enquanto a ação ainda rodava.
+async fn in_background<F>(app: &Arc<App>, me: &User, guard: BusyGuard, work: F) -> ApiResult<Json<Value>>
+where
+    F: std::future::Future<Output = Result<(), String>> + Send + 'static,
+{
+    set_error(&me.id, None);
+    let (app2, me2) = (app.clone(), me.clone());
+    tokio::spawn(async move {
+        let outcome = work.await;
+        drop(guard);
+        set_error(&me2.id, outcome.err());
+        app2.hub.to_user(&me2.id, "agent:status", json!({ "busy": false }));
+        app2.hub.to_user(&me2.id, "agent:done", json!({}));
+    });
+    Ok(Json(visible(app, me).await?))
+}
+
 fn take_busy(user_id: &str) -> ApiResult<BusyGuard> {
     let mut b = BUSY.lock().unwrap();
     let set = b.get_or_insert_with(HashSet::new);
@@ -1119,10 +1185,9 @@ async fn send(State(app): AppState, AuthUser(me, token): AuthUser, Json(body): J
     content.push(json!({ "type": "text", "text": context_block(&app, &me, &token, &body).await }));
     content.push(json!({ "type": "text", "text": text }));
     save_turn(&app, &me.id, "user", &Value::Array(content)).await?;
-    let outcome = run(&app, &me, &token, &using).await;
-    // solto antes de montar a resposta, para ela não dizer que o assistente ainda está ocupado
-    drop(guard);
-    finish(&app, &me, outcome).await
+    status(&app, &me, "Pensando…");
+    let (app2, me2) = (app.clone(), me.clone());
+    in_background(&app, &me, guard, async move { run(&app2, &me2, &token, &using).await }).await
 }
 
 #[derive(Deserialize)]
@@ -1141,36 +1206,30 @@ async fn confirm(State(app): AppState, AuthUser(me, token): AuthUser, Json(body)
         drop(guard);
         return Ok(Json(visible(&app, &me).await?));
     }
-    let ctx = Ctx::load(&app, &me).await;
-    let mut results = Vec::new();
-    for c in &calls {
-        let name = c["name"].as_str().unwrap_or_default();
-        if !body.approve && needs_confirm(name) {
-            results.push(tool_result(&c["id"], Err("A pessoa recusou esta ação; ela não foi feita.".into())));
-            continue;
+    status(&app, &me, if body.approve { "Fazendo o que você aprovou…" } else { "Pensando…" });
+    let (app2, me2) = (app.clone(), me.clone());
+    let approve = body.approve;
+    in_background(&app, &me, guard, async move {
+        let ctx = Ctx::load(&app2, &me2).await;
+        let mut results = Vec::new();
+        for c in &calls {
+            let name = c["name"].as_str().unwrap_or_default();
+            if !approve && needs_confirm(name) {
+                results.push(tool_result(&c["id"], Err("A pessoa recusou esta ação; ela não foi feita.".into())));
+                continue;
+            }
+            status(&app2, &me2, &describe(&app2, name, &c["input"]).await);
+            let r = execute(&app2, &me2, &token, &ctx, name, &c["input"]).await;
+            results.push(tool_result(&c["id"], r));
         }
-        status(&app, &me, &describe(&app, name, &c["input"]).await);
-        let r = execute(&app, &me, &token, &ctx, name, &c["input"]).await;
-        results.push(tool_result(&c["id"], r));
-    }
-    save_turn(&app, &me.id, "user", &Value::Array(results)).await?;
-    let outcome = run(&app, &me, &token, &using).await;
-    // solto antes de montar a resposta, para ela não dizer que o assistente ainda está ocupado
-    drop(guard);
-    finish(&app, &me, outcome).await
+        save_turn(&app2, &me2.id, "user", &Value::Array(results)).await.map_err(|e| e.1)?;
+        run(&app2, &me2, &token, &using).await
+    })
+    .await
 }
 
 fn not_configured() -> ApiError {
     ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "O assistente ainda não foi configurado: o dono do app precisa pôr a chave da API no painel do administrador")
-}
-
-async fn finish(app: &App, me: &User, outcome: Result<(), String>) -> ApiResult<Json<Value>> {
-    app.hub.to_user(&me.id, "agent:status", json!({ "busy": false }));
-    let mut v = visible(app, me).await?;
-    if let Err(e) = outcome {
-        v["error"] = json!(e);
-    }
-    Ok(Json(v))
 }
 
 /// "O assistente está fazendo X" (aparece embaixo da conversa enquanto ele trabalha).
@@ -1193,8 +1252,15 @@ async fn context_block(app: &App, me: &User, token: &str, body: &SendBody) -> St
     let tz = body.tz_offset;
     let place = page_context(app, me, token, body).await;
     let local = if body.local_time.trim().is_empty() { "desconhecida".to_string() } else { body.local_time.trim().chars().take(80).collect() };
+    // Sem o cartão de confirmação, o assistente pergunta no texto antes do que não tem volta.
+    let auto = if auto_mode(app, &me.id).await {
+        "\nModo automático ligado: as ações rodam na hora, sem o cartão de confirmação. Antes de apagar um servidor, um canal \
+         ou mensagens, ou de tirar alguém, confira no texto se é isso mesmo (a não ser que a pessoa já tenha pedido com clareza)."
+    } else {
+        ""
+    };
     format!(
-        "<contexto>\nQuem pede: {} (@{}, id {}), {role}\nAgora: {local}; fuso UTC{:+}:{:02}; agora em milissegundos desde 1970 (UTC): {}{place}\n</contexto>",
+        "<contexto>\nQuem pede: {} (@{}, id {}), {role}\nAgora: {local}; fuso UTC{:+}:{:02}; agora em milissegundos desde 1970 (UTC): {}{place}{auto}\n</contexto>",
         crate::models::plain_text(&me.display_name),
         me.username,
         me.id,
@@ -1571,8 +1637,8 @@ async fn run(app: &Arc<App>, me: &User, token: &str, using: &Resolved) -> Result
             .filter(|b| b["type"] == "tool_use")
             .map(|b| Call { id: b["id"].clone(), name: b["name"].as_str().unwrap_or_default().to_string(), input: b["input"].clone() })
             .collect();
-        // alguma pede confirmação: para aqui; o app mostra e a pessoa decide (`confirm`)
-        if calls.iter().any(|c| needs_confirm(&c.name)) {
+        // alguma pede confirmação: para aqui; o app mostra e a pessoa decide (`confirm`). No modo automático, segue.
+        if !ctx.auto && calls.iter().any(|c| needs_confirm(&c.name)) {
             return Ok(());
         }
         let mut results = Vec::new();
@@ -1652,6 +1718,8 @@ struct Ctx {
     modules: crate::modules::Modules,
     /// Quem pode agendar tarefas que se repetem (`SETTING_REPEAT`).
     repeat: &'static str,
+    /// Modo automático da pessoa: as ações que pediriam confirmação rodam direto.
+    auto: bool,
 }
 
 impl Ctx {
@@ -1661,6 +1729,7 @@ impl Ctx {
             owner: me.username.to_lowercase() == crate::admin::owner_username(),
             modules: app.hub.modules(),
             repeat: repeat_policy(app).await,
+            auto: auto_mode(app, &me.id).await,
         }
     }
 
@@ -3222,8 +3291,8 @@ mod tests {
 
     #[test]
     fn agendar_qualquer_tarefa_e_repetir_so_admin() {
-        let comum = Ctx { app_admin: false, owner: false, modules: crate::modules::Modules::default(), repeat: "admins" };
-        let admin = Ctx { app_admin: true, owner: false, modules: crate::modules::Modules::default(), repeat: "admins" };
+        let comum = Ctx { app_admin: false, owner: false, modules: crate::modules::Modules::default(), repeat: "admins", auto: false };
+        let admin = Ctx { app_admin: true, owner: false, modules: crate::modules::Modules::default(), repeat: "admins", auto: false };
         // tudo pede confirmação
         assert!(needs_confirm("schedule_action") && needs_confirm("schedule_task") && needs_confirm("schedule_message"));
         assert!(needs_confirm("send_nudge"));
@@ -3271,9 +3340,9 @@ mod tests {
     #[test]
     fn ferramentas_seguem_o_acesso() {
         let names = |ctx: &Ctx| tool_defs(ctx).iter().map(|t| t.name).collect::<Vec<_>>();
-        let user = names(&Ctx { app_admin: false, owner: false, modules: crate::modules::Modules::default(), repeat: "admins" });
+        let user = names(&Ctx { app_admin: false, owner: false, modules: crate::modules::Modules::default(), repeat: "admins", auto: false });
         assert!(user.contains(&"send_message") && user.contains(&"music_add") && !user.contains(&"app_stats"));
-        let admin = names(&Ctx { app_admin: true, owner: false, modules: crate::modules::Modules::default(), repeat: "admins" });
+        let admin = names(&Ctx { app_admin: true, owner: false, modules: crate::modules::Modules::default(), repeat: "admins", auto: false });
         assert!(admin.contains(&"app_stats") && admin.contains(&"app_server_members"));
         // nomes únicos
         let set: HashSet<&str> = admin.iter().copied().collect();
@@ -3282,7 +3351,7 @@ mod tests {
 
     #[test]
     fn toda_acao_com_confirmacao_existe() {
-        let all = tool_defs(&Ctx { app_admin: true, owner: true, modules: crate::modules::Modules::default(), repeat: "admins" });
+        let all = tool_defs(&Ctx { app_admin: true, owner: true, modules: crate::modules::Modules::default(), repeat: "admins", auto: false });
         for name in ["send_message", "send_notification", "update_server", "update_channel", "set_member_permissions", "delete_message", "delete_channel", "delete_server", "leave_server", "delete_file"] {
             assert!(all.iter().any(|t| t.name == name), "{name}");
         }
@@ -3291,7 +3360,7 @@ mod tests {
     #[test]
     fn ferramentas_de_voz_so_com_o_modulo() {
         let mut modules = crate::modules::Modules::none();
-        let names = |m| tool_defs(&Ctx { modules: m, app_admin: false, owner: false, repeat: "admins" }).iter().map(|t| t.name).collect::<Vec<_>>();
+        let names = |m| tool_defs(&Ctx { modules: m, app_admin: false, owner: false, repeat: "admins", auto: false }).iter().map(|t| t.name).collect::<Vec<_>>();
         assert!(names(modules).contains(&"read_server_messages") && !names(modules).contains(&"call_quality") && !names(modules).contains(&"music_add"));
         modules.voice = true;
         modules.music = true;

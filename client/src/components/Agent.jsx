@@ -11,7 +11,7 @@
  * não interrompe o pedido: ao abrir de novo, ele confere de tempos em tempos até o agente terminar.
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Sparkles, SendHorizontal, RotateCcw, Check, X, CircleCheck, CircleAlert, LoaderCircle, KeyRound, ShieldCheck, Eye, Globe, Settings } from 'lucide-react';
+import { Sparkles, SendHorizontal, RotateCcw, Check, X, CircleCheck, CircleAlert, LoaderCircle, KeyRound, ShieldCheck, Eye, Globe, Settings, Zap } from 'lucide-react';
 import { useStore } from '../store.js';
 import { storage } from '../lib/api.js';
 import { RichText } from './Emotes.jsx';
@@ -148,10 +148,13 @@ function saveCached(kind, value) {
 
 export default function AgentPopover() {
   const [data, setDataState] = useState(() => loadCached('Cache'));
-  const setData = (d) => {
-    saveCached('Cache', d);
-    setDataState(d);
-  };
+  // aceita uma função (o estado mais novo), para dois ajustes seguidos não desfazerem um ao outro
+  const setData = (d) =>
+    setDataState((prev) => {
+      const next = typeof d === 'function' ? d(prev) : d;
+      saveCached('Cache', next);
+      return next;
+    });
   const [text, setTextState] = useState(() => loadCached('Draft'));
   const setText = (t) => {
     saveCached('Draft', t);
@@ -174,14 +177,22 @@ export default function AgentPopover() {
   const api = () => useStore.getState().api();
   const close = () => useStore.getState().openAgent(false);
 
-  const load = () =>
+  // `finished`: o pedido acabou de terminar (mostra o erro dele, se houve)
+  const load = (finished = false) =>
     api()
       .get('/api/agent')
       .then((d) => {
         setData(d);
+        if (finished && !d?.busy && d?.error) setError(d.error);
         return d;
       })
       .catch((e) => setError(e.message));
+
+  // O pedido roda no servidor em segundo plano: quando ele termina, chega `agent:done` e a resposta é buscada.
+  const doneTick = useStore((s) => s.agentDone);
+  useEffect(() => {
+    if (doneTick) load(true);
+  }, [doneTick]);
 
   // o dono mudou quem usa a chave do app: confere de novo se dá para pedir
   const accessTick = useStore((s) => s.agentAccess);
@@ -212,10 +223,10 @@ export default function AgentPopover() {
     };
   }, []);
 
-  // voltou com o agente no meio de um pedido: confere até ele terminar
+  // o agente no meio de um pedido: confere até ele terminar (caso o aviso de fim se perca)
   useEffect(() => {
     if (!data?.busy || sending) return undefined;
-    const t = setInterval(load, 2500);
+    const t = setInterval(() => load(true), 2500);
     return () => clearInterval(t);
   }, [data?.busy, sending]);
 
@@ -248,7 +259,20 @@ export default function AgentPopover() {
     setText('');
     act(() => api().post('/api/agent/messages', { text: msg, ...requestContext() }), msg);
   };
-  const confirm = (approve) => act(() => api().post('/api/agent/confirm', { approve }));
+  // O cartão sai na hora: a decisão foi tomada, e o que foi aprovado passa a rodar no servidor.
+  const confirm = (approve) => {
+    if (sending || data?.busy) return;
+    setData((d) => ({ ...d, pending: [], busy: true }));
+    act(() => api().post('/api/agent/confirm', { approve }));
+  };
+  const setAuto = (on) =>
+    api()
+      .put('/api/agent/settings', { auto: on })
+      .then((d) => {
+        setData((cur) => ({ ...cur, auto: Boolean(d?.auto) }));
+        useStore.getState().notify(on ? 'Modo automático ligado: o assistente faz as ações sem perguntar' : 'Modo automático desligado', 'info');
+      })
+      .catch((e) => setError(e.message));
   const reset = () => act(() => api().del('/api/agent'));
   // as configurações abrem numa janela: o balão sai da frente
   const openKeys = () => {
@@ -314,6 +338,22 @@ export default function AgentPopover() {
             )}
           </small>
         </div>
+        {data?.ready && (
+          <button
+            type="button"
+            className={`agent-auto${data.auto ? ' on' : ''}`}
+            onClick={() => setAuto(!data.auto)}
+            aria-pressed={Boolean(data.auto)}
+            title={
+              data.auto
+                ? 'Modo automático: o assistente faz as ações sem pedir confirmação. Clique para voltar a confirmar.'
+                : 'Ligar o modo automático: o assistente faz as ações sem pedir confirmação'
+            }
+          >
+            <Zap size={13} aria-hidden="true" />
+            Auto
+          </button>
+        )}
         <button className="gloss round mini" onClick={reset} disabled={working || !items.length} title="Nova conversa (apaga esta)" aria-label="Nova conversa">
           <RotateCcw size={15} className="ico-blue" />
         </button>
@@ -387,7 +427,7 @@ export default function AgentPopover() {
           <Bubble key={i} item={m} />
         ))}
         {draft && <Bubble item={{ role: 'user', text: draft }} />}
-        {pending.length > 0 && !sending && (
+        {pending.length > 0 && !working && (
           <div className="agent-confirm" role="alertdialog" aria-label="Confirmar as ações do assistente">
             <b>O assistente quer:</b>
             <ul>
@@ -406,6 +446,9 @@ export default function AgentPopover() {
                 <X size={16} /> Recusar
               </button>
             </div>
+            <button type="button" className="agent-confirm-auto" onClick={() => setAuto(true).then(() => confirm(true))}>
+              Confirmar e não perguntar mais (modo automático)
+            </button>
           </div>
         )}
         {working && (

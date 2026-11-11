@@ -1,5 +1,10 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.15.0 — 11/11/2026
+
+### Novidades
+- **Destaque automático nas chamadas**: quando alguém abre a câmera, a chamada sai da grade e destaca o vídeo sozinha. Uma transmissão de tela tem prioridade sobre as câmeras e, entre as câmeras, fica em destaque quem está falando (sem pular a cada palavra). Clicar num vídeo ou numa transmissão fixa o destaque nela (aparece um alfinete); clicar de novo volta para a grade. Quem escolhe “Grade” continua na grade.
+
 ## 1.14.0 — 08/11/2026
 
 ### Novidades

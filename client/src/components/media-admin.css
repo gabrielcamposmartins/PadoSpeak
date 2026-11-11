@@ -124,3 +124,16 @@ input.ma-node-name {
 .ma-steps code {
   font-size: 12px;
 }
+
+/* O SFU de cada nó: usar, e só para a voz (a segunda opção depende da primeira). */
+.ma-node-sfu {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ma-node-sfu .checkbox {
+  margin-bottom: 0;
+}
+.ma-node-sfu .ma-sub {
+  margin-left: 26px;
+}

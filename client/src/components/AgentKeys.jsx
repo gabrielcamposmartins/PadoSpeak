@@ -292,6 +292,28 @@ export default function AgentKeys({ scope = 'me' }) {
             ? 'Vale só para você, com a sua chave.'
             : 'Com a chave do app, o modelo é o que o administrador escolheu. Para escolher, use uma chave sua.'}
       </p>
+      {!admin && (
+        <>
+          <div className="settings-sec">Confirmações</div>
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={Boolean(info.auto)}
+              disabled={busy}
+              onChange={(e) =>
+                run(() => api().put(paths.view, { auto: e.target.checked }), e.target.checked ? 'Modo automático ligado' : 'Modo automático desligado')
+              }
+            />
+            <span>
+              Modo automático
+              <small className="check-hint">
+                O assistente faz as ações sem pedir confirmação: mandar mensagens, pôr música, mudar canais e cargos, agendar e apagar. Antes de apagar
+                algo que não tem volta, ele confere com você no texto.
+              </small>
+            </span>
+          </label>
+        </>
+      )}
       {admin && <AppAccess info={info} canEdit={canEdit} busy={busy} run={run} api={api} />}
       {admin && <AppRepeat info={info} canEdit={canEdit} busy={busy} run={run} api={api} />}
       {admin && <AppUsage api={api} />}

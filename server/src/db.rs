@@ -651,6 +651,21 @@ ALTER TABLE agent_jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'message';
 ALTER TABLE agent_jobs ADD COLUMN tz INTEGER NOT NULL DEFAULT 0;
 "#,
     ),
+    (
+        26,
+        r#"
+-- Modo automático do assistente: as ações que pediriam confirmação rodam direto (escolha de cada pessoa).
+ALTER TABLE agent_prefs ADD COLUMN auto INTEGER NOT NULL DEFAULT 0;
+"#,
+    ),
+    (
+        27,
+        r#"
+-- Como cada nó de mídia recebe as chamadas (Painel → Mídia): `all` (voz, câmera e tela pelo SFU), `voice` (só a
+-- voz pelo SFU; câmera e tela direto entre as pessoas) ou `off` (nenhuma chamada; o nó fica só com o resto).
+ALTER TABLE media_nodes ADD COLUMN sfu_mode TEXT NOT NULL DEFAULT 'all';
+"#,
+    ),
 ];
 
 impl Db {

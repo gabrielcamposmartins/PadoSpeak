@@ -82,6 +82,7 @@ function NodeRow({ node, index, count, ro, onChanged, onCode }) {
     }
   };
   const load = node.load || {};
+  const sfuMode = node.sfuMode || 'all';
   const state = !node.enabled ? 'desativado' : node.online ? (node.ready ? 'no ar' : 'ligando') : 'fora do ar';
   const tone = !node.enabled ? 'off' : node.online ? (node.ready ? 'on' : 'wait') : 'down';
   return (
@@ -134,6 +135,42 @@ function NodeRow({ node, index, count, ro, onChanged, onCode }) {
             {load.rooms ?? 0} {load.rooms === 1 ? 'sala' : 'salas'} · {load.peers ?? 0} {load.peers === 1 ? 'conexão' : 'conexões'} · {load.kbps ?? 0} kbps
           </span>
           {load.pot && <span className="chip">token: {load.pot}</span>}
+          {sfuMode !== 'all' && (node.caps || []).includes('sfu') && <span className="chip">{sfuMode === 'voice' ? 'SFU só para a voz' : 'SFU desligado'}</span>}
+        </div>
+      )}
+      {!ro && (
+        <div className="ma-node-sfu" role="group" aria-label={`Chamadas pelo nó ${node.name}`}>
+          <label className="checkbox">
+            <input
+              type="checkbox"
+              checked={sfuMode !== 'off'}
+              disabled={busy || !node.enabled}
+              onChange={(e) => run(() => st.editMediaNode(node.id, { sfuMode: e.target.checked ? 'all' : 'off' }))}
+            />
+            <span>
+              Usar o SFU
+              <small className="check-hint">
+                As chamadas dos servidores passam por este nó. Desligado, o nó continua com o token e a música, e as chamadas vão por outro nó ou
+                direto entre as pessoas.
+                {node.online && !(node.caps || []).includes('sfu') ? ' Este nó foi iniciado sem o SFU (MEDIA_SFU=off).' : ''}
+              </small>
+            </span>
+          </label>
+          <label className="checkbox ma-sub">
+            <input
+              type="checkbox"
+              checked={sfuMode === 'voice'}
+              disabled={busy || !node.enabled || sfuMode === 'off'}
+              onChange={(e) => run(() => st.editMediaNode(node.id, { sfuMode: e.target.checked ? 'voice' : 'all' }))}
+            />
+            <span>
+              Usar o SFU só para a voz
+              <small className="check-hint">
+                Câmera e tela vão direto entre as pessoas. Bom para um nó com pouca banda de envio: a voz usa uns 50 kbps por pessoa; uma tela em 1080p,
+                até 9 Mbps para cada uma.
+              </small>
+            </span>
+          </label>
         </div>
       )}
       {!ro && (

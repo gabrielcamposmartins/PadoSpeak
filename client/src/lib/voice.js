@@ -253,9 +253,9 @@ export class VoiceClient {
       this.changed();
     });
     // A sala passou para um nó de mídia, trocou de nó ou voltou para a malha.
-    on('voice:mode', ({ channelId, node, epoch }) => {
+    on('voice:mode', ({ channelId, node, epoch, voiceOnly }) => {
       if (channelId !== this.state.channelId || (epoch || 0) <= (this.roomEpoch || 0)) return;
-      this.setRoom(node ? { node, epoch } : null, epoch);
+      this.setRoom(node ? { node, epoch, voiceOnly } : null, epoch);
     });
     on('voice:signal', ({ from, data }) => this.handleSignal(from, data));
     // Uma chamada por conta: entrar por outro aparelho tira este da chamada.
@@ -316,7 +316,7 @@ export class VoiceClient {
     this.state.guildId = res.guildId;
     this.state.dm = Boolean(res.dm);
     // A rota antes dos pares: numa sala grande no SFU, a malha não é montada.
-    this.room = res.media?.node && this.crypt ? { node: res.media.node, epoch: res.media.epoch || 0 } : null;
+    this.room = res.media?.node && this.crypt ? { node: res.media.node, epoch: res.media.epoch || 0, voiceOnly: Boolean(res.media.voiceOnly) } : null;
     // O tamanho da sala conta todos de uma vez (os pares são criados um a um logo abaixo).
     this.joining = res.peers.length;
     for (const p of res.peers) this.ensurePeer(p.peerId, p);
@@ -730,7 +730,7 @@ export class VoiceClient {
     if (!peer.wantDirty || peer.pc?.connectionState !== 'connected') return;
     peer.wantDirty = false;
     // O vídeo de quem chega pelo SFU vem pelo SFU (`sendSfuWants`): pela malha, nada.
-    const want = this.sfuWith(peer) ? NO_VIDEO : peer.watching;
+    const want = this.videoSfu(peer) ? NO_VIDEO : peer.watching;
     peer.sentMeshWant = JSON.stringify(want);
     this.signal(peer.id, { want });
   }
@@ -1004,7 +1004,10 @@ export class VoiceClient {
     if (!force && !drop && (epoch || 0) <= (this.roomEpoch || 0) && (media?.node || null) === (this.room?.node || null)) return;
     this.roomEpoch = Math.max(this.roomEpoch || 0, epoch || 0);
     const node = this.crypt && media?.node ? media.node : null;
-    this.room = node ? { node, epoch: epoch || 0 } : null;
+    const wasVoiceOnly = Boolean(this.room?.voiceOnly);
+    this.room = node ? { node, epoch: epoch || 0, voiceOnly: Boolean(media?.voiceOnly) } : null;
+    // O nó passou a levar só a voz (ou tudo de novo): o som da tela muda de caminho junto com a imagem.
+    if (wasVoiceOnly !== Boolean(this.room?.voiceOnly)) for (const peer of this.peers.values()) this.applyAudio(peer);
     clearTimeout(this.keepTimer);
     if (!node && force && this.sfu?.isReady()) {
       // Voltando para um servidor que reiniciou: o nó ainda não religou a ele, mas a ligação com o nó
@@ -1140,6 +1143,14 @@ export class VoiceClient {
     return link?.isReady() ? link : null;
   }
 
+  /**
+   * A ligação pela qual o vídeo (câmera e tela, com o som dela) de `peer` vem e vai: a do SFU, ou null = a malha.
+   * Com o nó só para a voz (o modo dele no painel), o vídeo vai sempre direto entre as pessoas.
+   */
+  videoSfu(peer) {
+    return this.room?.voiceOnly ? null : this.sfuWith(peer);
+  }
+
   /** Mando a minha voz para `peer` pela malha agora? */
   sendsMesh(peer) {
     const now = Date.now();
@@ -1160,8 +1171,8 @@ export class VoiceClient {
 
   /** A conexão da malha com `peer` precisa existir? */
   meshNeeded(peer) {
-    // Sala em malha (ou este app sem cifragem): a malha de sempre.
-    if (!this.room) return true;
+    // Sala em malha (ou este app sem cifragem): a malha de sempre. Nó só para a voz: a malha leva o vídeo.
+    if (!this.room || this.room.voiceOnly) return true;
     // Sala pequena: a malha fica de pé por baixo, como reserva.
     if (Math.max(this.peers.size, this.joining || 0) + 1 <= STANDBY_MAX) return true;
     // Sala grande: só com quem não está no SFU (depois de dar tempo de a pessoa chegar ao nó), com quem
@@ -1217,7 +1228,7 @@ export class VoiceClient {
         this.peerLog(peer, playing === 'mesh' ? 'tocando pela malha' : 'tocando pelo SFU');
       }
       // O vídeo segue o caminho da pessoa (sem depender de a voz estar chegando agora).
-      const want = JSON.stringify(this.sfuWith(peer) ? NO_VIDEO : peer.watching);
+      const want = JSON.stringify(this.videoSfu(peer) ? NO_VIDEO : peer.watching);
       if (peer.pc && want !== peer.sentMeshWant) {
         peer.wantDirty = true;
         this.sendWant(peer);
@@ -1257,7 +1268,7 @@ export class VoiceClient {
    */
   sendSfuWants() {
     if (!this.sfu) return;
-    const viaSfu = [...this.peers.values()].filter((p) => this.sfuWith(p) === this.sfu);
+    const viaSfu = [...this.peers.values()].filter((p) => this.videoSfu(p) === this.sfu);
     const cams = viaSfu.filter((p) => p.watching.camera && p.info.video).length;
     const quality = cams <= 1 ? 'f' : cams <= 4 ? 'h' : 'q';
     const wants = {};
@@ -1429,10 +1440,12 @@ export class VoiceClient {
     // Toca pelo caminho em uso (malha ou SFU); o outro fica mudo, para não ouvir duas vezes na troca.
     const viaMesh = this.playsMesh(peer);
     peer.playing = viaMesh ? 'mesh' : 'sfu';
+    // nó só para a voz: o som da tela vem com a imagem, pela malha
+    const screenViaMesh = this.room?.voiceOnly ? true : viaMesh;
     for (const [path, els] of [['mesh', peer.audioEls], ['sfu', peer.sfu.audioEls]]) {
-      const inUse = (path === 'mesh') === viaMesh;
       for (const [streamId, el] of els) {
         const isScreen = streamId === peer.info.screenStreamId;
+        const inUse = (path === 'mesh') === (isScreen ? screenViaMesh : viaMesh);
         const off = !inUse || this.state.deafened || (isScreen ? peer.streamMuted : voiceOff);
         const volume = isScreen ? peer.streamVolume : peer.volume;
         const key = path === 'mesh' ? streamId : `sfu:${streamId}`;
@@ -2371,7 +2384,7 @@ export class VoiceClient {
       `local: mudo=${this.state.muted} surdo=${this.state.deafened} silenciado-pelo-mod=${Boolean(this.state.serverMuted)} microfone-ativo=${Boolean(this.mic?.getAudioTracks()[0]?.enabled)} saída=${this.devices.output || 'padrão'}`,
       `local: câmera=${Boolean(this.camera)} tela=${Boolean(this.screen)} preset=${this.state.screenPreset}${this.screenAudio ? ` som-da-tela=${this.screenAudio.mode}${this.screenAudio.source ? `(${this.screenAudio.source})` : ''}` : ''}`,
       `local: microfone-parado=${Boolean(this.state.micStalled)} som-bloqueado=${Boolean(this.state.audioBlocked)} codec-da-placa=${this.videoCodec || 'nenhum'} senha-do-relay-até=${this.iceExpiresAt ? new Date(this.iceExpiresAt).toISOString() : '?'}`,
-      `nó de mídia: sala=${this.room?.node || 'malha'} eu=${this.myRoute} cifragem=${Boolean(this.crypt)} ligação=${this.sfu ? `${this.sfu.state}${this.sfu.isReady() ? '/pronta' : ''}` : '-'} caminho=${this.sfuStats?.route || '-'} ${JSON.stringify(this.sfuStats?.path || null)} banda-de-envio=${this.sfuStats?.upKbps ?? '?'}kbps assistindo-pelo-sfu: câmera=${this.sfuViewers.camera} tela=${this.sfuViewers.screen}`,
+      `nó de mídia: sala=${this.room?.node || 'malha'}${this.room?.voiceOnly ? ' (só voz)' : ''} eu=${this.myRoute} cifragem=${Boolean(this.crypt)} ligação=${this.sfu ? `${this.sfu.state}${this.sfu.isReady() ? '/pronta' : ''}` : '-'} caminho=${this.sfuStats?.route || '-'} ${JSON.stringify(this.sfuStats?.path || null)} banda-de-envio=${this.sfuStats?.upKbps ?? '?'}kbps assistindo-pelo-sfu: câmera=${this.sfuViewers.camera} tela=${this.sfuViewers.screen}`,
     ];
     const limit = (sender) => {
       const e = sender?.track && sender.getParameters().encodings?.[0];
@@ -2450,7 +2463,7 @@ export class VoiceClient {
       peers: [...this.peers.values()].map((p) => {
         // O vídeo vem pelo caminho em que a pessoa está comigo (sem trocar a imagem a cada oscilação da voz).
         const viaSfu = Boolean(this.sfuWith(p));
-        const [first, second] = viaSfu ? [p.sfu.streams, p.streams] : [p.streams, p.sfu.streams];
+        const [first, second] = this.videoSfu(p) ? [p.sfu.streams, p.streams] : [p.streams, p.sfu.streams];
         const pick = (id) => (id ? first.get(id) || second.get(id) || null : null);
         const camera = p.info.video ? pick(p.info.cameraStreamId) : null;
         const screen = p.info.screen ? pick(p.info.screenStreamId) : null;
