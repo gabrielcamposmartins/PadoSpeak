@@ -40,6 +40,11 @@ services:
     restart: unless-stopped
     environment:
       SQLD_NODE: primary
+    # O log de replicação (wallog) só serve para réplicas, e não há nenhuma. Por padrão ele crescia até
+    # 200 MB antes de virar snapshot, e todo esse vaivém passava pelo cache contado nos 192 MB do contêiner:
+    # o banco encostava no limite e ia para o swap. Agora é compactado a cada 20 MB ou a cada hora.
+    # (o entrypoint da imagem acrescenta --db-path e os endereços quando o comando começa com /bin/sqld)
+    command: ["/bin/sqld", "--max-log-size", "20", "--max-log-duration", "3600"]
     volumes:
       - padospeak-db:/var/lib/sqld
     # só o servidor enxerga o banco
