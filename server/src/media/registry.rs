@@ -390,6 +390,11 @@ impl Registry {
         self.remote_with("pot", false).into_iter().next()
     }
 
+    /// Há nós cadastrados (do banco), ligados ou não.
+    pub fn has_known_nodes(&self) -> bool {
+        !self.inner.lock().unwrap().priority.is_empty()
+    }
+
     /// Nó que busca a música no lugar do principal.
     pub fn music_node(&self) -> Option<String> {
         if self.settings().music_relay == "off" {

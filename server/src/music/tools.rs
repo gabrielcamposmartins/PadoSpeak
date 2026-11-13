@@ -156,10 +156,20 @@ impl Tools {
             .await
             .map_err(|_| "o servidor está ocupado buscando outras músicas; tente de novo daqui a pouco".to_string())?
             .map_err(|_| "yt-dlp indisponível".to_string())?;
-        match tokio::time::timeout_at(deadline, cmd.output()).await {
+        // O yt-dlp do Linux é um executável PyInstaller: o processo que abrimos só lança o Python, que abre o
+        // deno. Matar só o primeiro (no tempo limite ou se o pedido for cancelado) deixava o Python e o deno
+        // vivos; cada música nova abria outro deno, e na VM pequena eles estouravam a memória do servidor
+        // (o banco parava de responder). Ele roda num grupo de processos próprio, encerrado inteiro no fim.
+        #[cfg(unix)]
+        cmd.process_group(0);
+        cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+        let child = cmd.spawn().map_err(|e| format!("yt-dlp: {e}"))?;
+        let group = ProcessGroup(child.id());
+        match tokio::time::timeout_at(deadline, child.wait_with_output()).await {
             Ok(out) => out.map_err(|e| format!("yt-dlp: {e}")),
             Err(_) => {
-                // Morto no meio: a cópia descompactada fica para trás.
+                // Morto no meio (o grupo todo antes da limpeza): a cópia descompactada fica para trás.
+                drop(group);
                 if let Some(tmp) = &self.tmp {
                     sweep_extractions(tmp);
                 }
@@ -172,6 +182,23 @@ impl Tools {
         let prog = self.program.display();
         let js = self.js_runtime.as_deref().unwrap_or("nenhum");
         if self.prefix.is_empty() { format!("{prog} (JS: {js})") } else { format!("{prog} -m yt_dlp (JS: {js})") }
+    }
+}
+
+/// Encerra, ao sair de escopo, o grupo de processos aberto com `process_group(0)` (o yt-dlp e os filhos dele).
+/// Depois de um fim normal o grupo já está vazio e o sinal não acha ninguém.
+#[cfg_attr(not(unix), allow(dead_code))]
+struct ProcessGroup(Option<u32>);
+
+impl Drop for ProcessGroup {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(pid) = self.0.and_then(|p| i32::try_from(p).ok()).filter(|p| *p > 1) {
+            // SAFETY: só envia um sinal; o grupo negativo é o do processo que abrimos.
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
+        }
     }
 }
 

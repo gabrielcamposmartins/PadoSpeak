@@ -30,6 +30,8 @@ services:
       db:
         condition: service_started
     mem_limit: 256m
+    # um init como PID 1 recolhe os processos órfãos (o yt-dlp e o deno da música); sem ele, viravam zumbis
+    init: true
     stop_grace_period: 15s
 
   db:

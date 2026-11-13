@@ -19,6 +19,8 @@ use tokio::sync::mpsc::UnboundedReceiver;
 const RELAY_AFTER_BLOCK: Duration = Duration::from_secs(6 * 3600);
 /// O nó resolve com o yt-dlp dele, que pode levar o mesmo que aqui (várias tentativas).
 const NODE_RESOLVE_TIMEOUT: Duration = Duration::from_secs(150);
+/// Quanto esperar pelo nó de música que ainda não voltou (veja `music_relay`).
+const NODE_WAIT: Duration = Duration::from_secs(20);
 
 /// Tamanho máximo da fila de um canal.
 pub const MAX_QUEUE: usize = 500;
@@ -482,14 +484,14 @@ impl MusicManager {
 
     /// Resolve o áudio aqui (`stream::resolve_playable`) ou pelo nó de mídia, que busca do IP dele:
     /// - painel em "sempre": pelo nó;
-    /// - em "automático": pelo nó se o YouTube bloqueou este servidor há pouco (mesmo com token novo)
-    ///   ou se ele está sobrecarregado; senão aqui, e pelo nó se aqui bloquear.
+    /// - em "automático": pelo nó se o YouTube bloqueou este servidor há pouco (mesmo com token novo),
+    ///   se ele está sobrecarregado ou se não tem memória para um yt-dlp; senão aqui, e pelo nó se aqui bloquear.
     async fn resolve_playable(&self, tools: &Tools, track_id: &str, source: &Source) -> Result<Audio, String> {
-        let relay = self.media.get().and_then(|m| m.music_node().map(|n| (m.clone(), n)));
+        let relay = self.music_relay().await;
         if let Some((media, node)) = &relay {
             let mode = media.settings().music_relay;
             let blocked = self.blocked_at.lock().unwrap().is_some_and(|t| t.elapsed() < RELAY_AFTER_BLOCK);
-            if mode == "always" || (mode == "auto" && (blocked || media.overloaded())) {
+            if mode == "always" || (mode == "auto" && (blocked || media.overloaded() || crate::media::load::no_room_for_ytdlp())) {
                 return self.resolve_on_node(media, node, track_id, source).await;
             }
         }
@@ -519,10 +521,10 @@ impl MusicManager {
             Some(Link::YoutubePlaylist(u)) => (u, true),
             _ => return super::resolve::resolve(tools, &self.http, url).await,
         };
-        let relay = self.media.get().and_then(|m| m.music_node().map(|n| (m.clone(), n))).filter(|(m, _)| m.settings().music_relay != "off");
+        let relay = self.music_relay().await.filter(|(m, _)| m.settings().music_relay != "off");
         let blocked = self.blocked_at.lock().unwrap().is_some_and(|t| t.elapsed() < RELAY_AFTER_BLOCK);
         if let Some((media, node)) = &relay {
-            if blocked || media.settings().music_relay == "always" {
+            if blocked || media.settings().music_relay == "always" || crate::media::load::no_room_for_ytdlp() {
                 return self.info_on_node(media, node, &yt, playlist).await;
             }
         }
@@ -552,6 +554,24 @@ impl MusicManager {
             return Err("Nenhuma música disponível nesse link".into());
         }
         Ok(tracks)
+    }
+
+    /// O nó de música. Sem memória aqui para um yt-dlp e com nós cadastrados, mas nenhum ligado ainda (logo
+    /// depois de reiniciar, o nó leva alguns segundos para voltar), espera um pouco por ele antes de buscar aqui:
+    /// começar aqui enchia a memória do servidor, e as tentativas com os outros clientes não paravam mais.
+    async fn music_relay(&self) -> Option<(Arc<Registry>, String)> {
+        let media = self.media.get()?.clone();
+        let deadline = Instant::now() + NODE_WAIT;
+        loop {
+            if let Some(node) = media.music_node() {
+                return Some((media, node));
+            }
+            let wait = media.settings().music_relay != "off" && media.has_known_nodes() && crate::media::load::no_room_for_ytdlp();
+            if !wait || Instant::now() >= deadline {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
     }
 
     /// O nó resolve com o yt-dlp dele e guarda a URL; aqui fica só `node:<nó>:<faixa>` (o proxy pede o

@@ -16,7 +16,7 @@ const ago = (ts, now) => {
 
 const CAP_LABELS = { sfu: 'Chamadas (SFU)', pot: 'Token do YouTube', music: 'Busca da música' };
 const RELAY = [
-  ['auto', 'Automático (quando o YouTube bloquear este servidor, ou ele estiver sobrecarregado)'],
+  ['auto', 'Automático (quando o YouTube bloquear este servidor, ou ele estiver sobrecarregado ou sem memória para buscar a música)'],
   ['always', 'Sempre pelo nó'],
   ['off', 'Nunca'],
 ];

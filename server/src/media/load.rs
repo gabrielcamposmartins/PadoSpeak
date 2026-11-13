@@ -151,6 +151,26 @@ fn memory_percent() -> Option<f64> {
     (limit > 0.0).then(|| (current / limit * 100.0).clamp(0.0, 100.0))
 }
 
+/// Quanto um yt-dlp ocupa com o runtime JS: na VM, o Python dele e o deno passavam de 200 MB juntos.
+const YTDLP_MEM: u64 = 256 * 1024 * 1024;
+
+/// O contêiner (cgroup v2 com limite) não tem folga para um yt-dlp. Num contêiner de 256 MB, rodá-lo aqui
+/// enchia a memória: o servidor ia para o swap, a busca estourava o tempo, e cada nova tentativa abria
+/// outro yt-dlp (o banco parava de responder). Com um nó de música, a busca vai direto para ele.
+/// Sem limite de memória (um PC, ou o nó de mídia), sempre há folga.
+pub fn no_room_for_ytdlp() -> bool {
+    let current = read("/sys/fs/cgroup/memory.current").and_then(|t| t.trim().parse::<u64>().ok());
+    let limit = read("/sys/fs/cgroup/memory.max").and_then(|t| t.trim().parse::<u64>().ok());
+    match (current, limit) {
+        (Some(c), Some(l)) => tight(c, l),
+        _ => false,
+    }
+}
+
+fn tight(current: u64, limit: u64) -> bool {
+    limit.saturating_sub(current) < YTDLP_MEM
+}
+
 fn meminfo_total(text: &str) -> Option<f64> {
     let line = text.lines().find(|l| l.starts_with("MemTotal:"))?;
     let kb: f64 = line.split_whitespace().nth(1)?.parse().ok()?;
@@ -173,5 +193,13 @@ mod tests {
         assert_eq!(cgroup_cpu_quota("25000 100000\n"), Some(0.25));
         assert_eq!(cgroup_cpu_quota("max 100000"), None);
         assert_eq!(meminfo_total("MemTotal:        1000 kB\nMemFree: 1 kB"), Some(1_024_000.0));
+    }
+
+    #[test]
+    fn sem_folga_para_o_yt_dlp_num_conteiner_pequeno() {
+        const MB: u64 = 1024 * 1024;
+        assert!(tight(30 * MB, 256 * MB), "256 MB: nem com o servidor quase vazio");
+        assert!(tight(600 * MB, 800 * MB));
+        assert!(!tight(100 * MB, 1024 * MB));
     }
 }

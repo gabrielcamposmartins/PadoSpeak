@@ -4406,6 +4406,7 @@ dependencies = [
  "futures-util",
  "httpdate",
  "lettre",
+ "libc",
  "libsql",
  "local-ip-address",
  "mime_guess",
