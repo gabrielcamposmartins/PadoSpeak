@@ -1,5 +1,14 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.16.0 — 15/11/2026
+
+### Novidades
+- **Recolher os participantes nas chamadas**: com uma transmissão ou câmera em destaque, o botãozinho entre o destaque e os outros participantes recolhe a faixa de baixo e deixa a tela só para o destaque. No lugar fica uma prévia com os rostos e quem está falando; clicar nela mostra todos de novo. A escolha fica guardada, e no celular funciona igual na coluna do canto.
+
+### Correções
+- **Qualidade da transmissão**: o seletor de qualidade agora aparece só para quem está transmitindo a tela, muda a qualidade na hora e fica guardado para as próximas transmissões.
+- **Músicas mais estáveis**: tocar músicas não deixa mais o servidor lento.
+
 ## 1.15.0 — 11/11/2026
 
 ### Novidades
