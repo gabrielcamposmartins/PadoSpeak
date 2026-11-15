@@ -21,6 +21,8 @@ import {
   WifiOff,
   RefreshCw,
   Pin,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { useStore } from '../store.js';
 import { useConn } from './conn.jsx';
@@ -52,6 +54,8 @@ function useDraggable(enabled) {
   return {
     style: { transform: `translate(${pos.x}px, ${pos.y}px)` },
     onPointerDown: (e) => {
+      // Num botão (recolher, ver câmera…), o toque é dele: capturar o ponteiro mandaria o clique para a faixa.
+      if (e.target.closest?.('button')) return;
       drag.current = { sx: e.clientX, sy: e.clientY, x: pos.x, y: pos.y, moved: false };
       e.currentTarget.setPointerCapture?.(e.pointerId);
     },
@@ -435,6 +439,44 @@ function DiagCard({ onClose }) {
  * Palco da chamada. `variant="call"`: dentro da tela de chamada do celular (CallScreen), que tem o
  * próprio cabeçalho e os próprios botões.
  */
+/**
+ * Os outros participantes recolhidos: uma prévia com as fotos (quem fala ganha o anel verde) e quantos são.
+ * Um clique abre a faixa de novo.
+ */
+function StripPeek({ tiles, onExpand }) {
+  // A câmera e a tela da mesma pessoa contam uma vez só.
+  const people = [];
+  for (const t of tiles) {
+    const id = t.self ? 'me' : t.user?.id || t.peerId;
+    const known = people.find((p) => p.id === id);
+    if (known) known.speaking ||= Boolean(t.speaking);
+    else people.push({ id, user: t.user, speaking: Boolean(t.speaking), video: Boolean(t.stream) });
+  }
+  const shown = people.slice(0, 4);
+  const extra = people.length - shown.length;
+  const talking = people.filter((p) => p.speaking).map((p) => plain(p.user?.displayName) || 'alguém');
+  return (
+    <button
+      className="strip-peek"
+      onClick={onExpand}
+      title="Mostrar os outros participantes"
+      aria-label={`Mostrar os outros participantes (${people.length})`}
+    >
+      <span className="strip-peek-faces">
+        {shown.map((p) => (
+          <span key={p.id} className={`strip-peek-face${p.speaking ? ' speaking' : ''}`}>
+            <Avatar user={p.user} size={28} frame={false} />
+            {p.video && <Video size={10} className="strip-peek-cam" aria-hidden="true" />}
+          </span>
+        ))}
+        {extra > 0 && <span className="strip-peek-more">+{extra}</span>}
+      </span>
+      <span className="strip-peek-text">{talking.length ? `${talking.slice(0, 2).join(', ')} falando` : `${people.length} na chamada`}</span>
+      <ChevronUp size={16} aria-hidden="true" />
+    </button>
+  );
+}
+
 export default function VoiceView({ channel, variant }) {
   const callScreen = variant === 'call';
   const useC = useConn();
@@ -460,7 +502,11 @@ export default function VoiceView({ channel, variant }) {
   const stripDrag = useDraggable(phone);
   // Pedido de "assistir a transmissão" (clique em quem está ao vivo): destaca a tela da pessoa assim que chegar.
   const focusRequest = useStore((s) => s.focusRequest);
-  const [preset, setPreset] = useState('auto');
+  // A qualidade da tela só aparece para quem transmite; a próxima transmissão começa na última escolhida.
+  const screenPreset = useStore((s) => (SCREEN_PRESETS[s.prefs.screenPreset] ? s.prefs.screenPreset : 'auto'));
+  // Com uma tela ou câmera em destaque, os outros podem ficar recolhidos numa prévia (lembrado entre chamadas).
+  const stripCollapsed = useStore((s) => s.prefs.callStripCollapsed === true);
+  const setPrefs = (patch) => useStore.getState().setAppearance(patch);
   const [showDiag, setShowDiag] = useState(false);
   const store = useC.getState();
   const inCall = voice?.channelId === channel.id;
@@ -585,6 +631,8 @@ export default function VoiceView({ channel, variant }) {
   const pickFocus = () => (auto.id ? setFocusMode('auto') : pin(tiles.find((t) => !t.self) || tiles[0]));
   const isPinned = pinned && !pinGone;
   const connectedCount = voice.peers.length + 1;
+  const canCollapse = hasVideo(focused) && others.length > 0;
+  const collapsed = canCollapse && stripCollapsed;
 
   return (
     <div className="voice-view stage">
@@ -617,10 +665,28 @@ export default function VoiceView({ channel, variant }) {
               <Tile tile={focused} focused pinned={isPinned} onFocus={() => (isPinned ? setFocusMode('grid') : pin(focused))} />
             </div>
             {others.length > 0 && (
-              <div className={`voice-strip${phone ? ' pip' : ''}`} {...stripDrag}>
-                {others.map((t) => (
-                  <Tile key={t.id} tile={t} onFocus={() => pin(t)} />
-                ))}
+              <div className={`voice-others${phone ? ' pip' : ''}${collapsed ? ' collapsed' : ''}`} {...stripDrag}>
+                {collapsed ? (
+                  <StripPeek tiles={others} onExpand={() => setPrefs({ callStripCollapsed: false })} />
+                ) : (
+                  <>
+                    {canCollapse && (
+                      <button
+                        className="strip-toggle"
+                        onClick={() => setPrefs({ callStripCollapsed: true })}
+                        title="Recolher os outros participantes (fica só o destaque)"
+                        aria-label="Recolher os outros participantes"
+                      >
+                        <ChevronDown size={14} aria-hidden="true" />
+                      </button>
+                    )}
+                    <div className="voice-strip">
+                      {others.map((t) => (
+                        <Tile key={t.id} tile={t} onFocus={() => pin(t)} />
+                      ))}
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </>
@@ -673,7 +739,7 @@ export default function VoiceView({ channel, variant }) {
           <div className="ctrl-group">
             <button
               className={`ball${voice.screen ? ' on' : ''}`}
-              onClick={() => store.toggleScreen(preset)}
+              onClick={() => store.toggleScreen(screenPreset)}
               title={voice.screen ? 'Parar transmissão' : 'Compartilhar tela'}
               aria-label={voice.screen ? 'Parar transmissão' : 'Compartilhar tela'}
             >
@@ -713,23 +779,25 @@ export default function VoiceView({ channel, variant }) {
                   </button>
                 );
               })()}
-            <label className="quality">
-              Qualidade
-              <select
-                value={voice.screen ? voice.screenPreset : preset}
-                onChange={(e) => {
-                  setPreset(e.target.value);
-                  if (voice.screen) store.setScreenPreset(e.target.value);
-                }}
-                title="Qualidade da transmissão de tela"
-              >
-                {Object.entries(SCREEN_PRESETS).map(([k, p]) => (
-                  <option key={k} value={k}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {voice.screen && (
+              <label className="quality">
+                Qualidade
+                <select
+                  value={voice.screenPreset}
+                  onChange={(e) => {
+                    setPrefs({ screenPreset: e.target.value });
+                    store.setScreenPreset(e.target.value);
+                  }}
+                  title="Qualidade da sua transmissão de tela (muda na hora)"
+                >
+                  {Object.entries(SCREEN_PRESETS).map(([k, p]) => (
+                    <option key={k} value={k}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
           </div>
           )}
           <button

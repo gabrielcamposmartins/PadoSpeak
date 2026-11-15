@@ -3030,9 +3030,102 @@ html:not([data-touch]) .channel:hover .call-timer:has(~ .ch-del) {
   overflow-y: auto;
   padding: 4px;
 }
+/* Com algo em destaque: a faixa dos outros e, ao lado, o botão de recolher (vira uma prévia com as fotos). */
+.voice-others {
+  flex: none;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  min-width: 0;
+}
+.voice-others.collapsed {
+  align-items: center;
+}
+/* Pequeno, por cima do vão entre o destaque e a faixa: fora do fluxo, não muda o tamanho de nenhum dos dois. */
+.strip-toggle {
+  position: absolute;
+  z-index: 2;
+  top: -13px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 44px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--stage-ink);
+  background: var(--stage-dock);
+  border: 1px solid var(--stage-dock-border);
+  box-shadow: var(--stage-dock-shadow);
+  cursor: pointer;
+}
+.strip-toggle:hover,
+.strip-peek:hover {
+  filter: brightness(1.08);
+}
+.strip-peek {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 100%;
+  min-width: 0;
+  margin: 2px 0;
+  padding: 5px 12px 5px 6px;
+  border-radius: 999px;
+  color: var(--stage-ink);
+  background: var(--stage-dock);
+  border: 1px solid var(--stage-dock-border);
+  box-shadow: var(--stage-dock-shadow);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.strip-peek-faces {
+  display: flex;
+  align-items: center;
+}
+.strip-peek-face {
+  position: relative;
+  display: grid;
+  border-radius: 4px;
+  box-shadow: 0 0 0 2px var(--tile-border);
+}
+.strip-peek-face + .strip-peek-face {
+  margin-left: -5px;
+}
+.strip-peek-face.speaking {
+  z-index: 1;
+  box-shadow:
+    0 0 0 2px #7ee35a,
+    0 0 8px 2px rgba(110, 230, 70, 0.7);
+}
+.strip-peek-cam {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  padding: 2px;
+  box-sizing: content-box;
+  border-radius: 50%;
+  color: #fff;
+  background: #2f8fd8;
+}
+.strip-peek-more {
+  margin-left: 4px;
+  font-weight: 600;
+  color: var(--stage-muted);
+}
+.strip-peek-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .voice-strip {
   height: 128px;
   flex: none;
+  min-width: 0;
   display: flex;
   gap: 10px;
   overflow-x: auto;
@@ -6707,20 +6800,52 @@ html[data-touch] .msg .tools .icon-btn {
   width: 46px;
   height: 46px;
 }
-.voice-strip.pip {
+.voice-others.pip {
   position: absolute;
   right: 14px;
   top: 14px;
   z-index: 5;
   height: auto;
   width: 104px;
-  flex-direction: column;
-  overflow: visible;
-  padding: 0;
+  align-items: stretch;
   touch-action: none;
   cursor: grab;
 }
-.voice-strip.pip .tile {
+.voice-others.pip .voice-strip {
+  height: auto;
+  flex-direction: column;
+  overflow: visible;
+  padding: 0;
+}
+.voice-others.pip .strip-toggle {
+  top: -9px;
+  height: 18px;
+}
+.voice-others.pip .strip-toggle svg {
+  transform: rotate(180deg);
+}
+.voice-others.pip.collapsed {
+  width: auto;
+}
+.voice-others.pip .strip-peek {
+  flex-direction: column;
+  padding: 6px;
+  border-radius: 22px;
+}
+.voice-others.pip .strip-peek-faces {
+  flex-direction: column;
+}
+.voice-others.pip .strip-peek-face + .strip-peek-face {
+  margin: -5px 0 0;
+}
+.voice-others.pip .strip-peek-text {
+  display: none;
+}
+.voice-others.pip .strip-peek > svg {
+  transform: rotate(180deg);
+}
+.voice-strip.pip .tile,
+.voice-others.pip .tile {
   width: 104px;
   height: 140px;
   box-shadow: 0 8px 20px rgba(0, 20, 50, 0.45);
