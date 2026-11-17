@@ -1,5 +1,10 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.17.0 — 16/11/2026
+
+### Novidades
+- **Trocar de senha**: em Configurações → Conta → Senha, digite a senha atual e escolha a nova (duas vezes, para conferir). Os outros aparelhos saem da conta e precisam entrar de novo com a senha nova; o aparelho em que você trocou continua conectado.
+
 ## 1.16.0 — 15/11/2026
 
 ### Novidades
