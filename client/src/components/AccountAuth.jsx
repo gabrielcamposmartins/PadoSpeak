@@ -1,8 +1,10 @@
 // Entrar com o Google, "esqueci minha senha" (código por e-mail) e a aba "Conta" das configurações
 // (vincular o e-mail e o Google).
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Mail, Check, X, Send, ShieldCheck, KeyRound, MailCheck, ArrowLeft, AtSign } from 'lucide-react';
 import { useStore, connRegistry } from '../store.js';
+import { TitleBar } from './Aero.jsx';
 import { isDesktop } from '../lib/env.js';
 import { plain } from '../lib/text.js';
 import { googleFlow, authOptions } from '../lib/google.js';
@@ -442,7 +444,102 @@ function HandleSettings({ me }) {
   );
 }
 
-/** Configurações → Conta: e-mail (para entrar e recuperar a senha) e Google. */
+/**
+ * Janela "Trocar de senha", por cima das configurações: a senha atual e a nova duas vezes (as duas
+ * precisam ser iguais). `onDone` é chamado depois da troca.
+ */
+function PasswordModal({ me, onClose, onDone }) {
+  const [current, setCurrent] = useState('');
+  const [pass, setPass] = useState('');
+  const [repeat, setRepeat] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  // Esc fecha só esta janela: as configurações continuam abertas por baixo.
+  useEffect(() => {
+    const onKey = (e) => e.key === 'Escape' && (e.stopPropagation(), onClose());
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [onClose]);
+  const mismatch = repeat.length > 0 && pass !== repeat;
+  const save = async (e) => {
+    e.preventDefault();
+    setError('');
+    if (pass.length < 6) return setError('A senha nova precisa de pelo menos 6 caracteres.');
+    if (pass !== repeat) return setError('As duas senhas novas não são iguais.');
+    if (pass === current) return setError('A senha nova precisa ser diferente da atual.');
+    setBusy(true);
+    try {
+      await useStore.getState().changePassword(current, pass);
+      onDone();
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  };
+  return createPortal(
+    <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && !busy && onClose()}>
+      <div className="modal" role="dialog" aria-modal="true" aria-label="Trocar de senha">
+        <TitleBar title="PadoSpeak — Trocar de senha" onClose={onClose} />
+        <form onSubmit={save}>
+          <div className="modal-body">
+            <h2>Trocar de senha</h2>
+            <p className="sub">Digite a senha atual e escolha a nova. Nos outros aparelhos será preciso entrar de novo.</p>
+            {/* para o gerenciador de senhas saber de qual conta é a senha nova */}
+            <input type="text" name="username" autoComplete="username" value={me.username} readOnly style={{ display: 'none' }} />
+            <label className="field">
+              <span>Senha atual</span>
+              <input type="password" value={current} onChange={(e) => setCurrent(e.target.value)} autoComplete="current-password" required autoFocus />
+            </label>
+            <label className="field">
+              <span>Senha nova</span>
+              <input
+                type="password"
+                value={pass}
+                onChange={(e) => setPass(e.target.value)}
+                autoComplete="new-password"
+                minLength={6}
+                placeholder="Pelo menos 6 caracteres"
+                required
+              />
+            </label>
+            <label className="field">
+              <span>Repita a senha nova</span>
+              <input
+                type="password"
+                value={repeat}
+                onChange={(e) => setRepeat(e.target.value)}
+                autoComplete="new-password"
+                minLength={6}
+                aria-invalid={mismatch || undefined}
+                aria-describedby="pass-match"
+                required
+              />
+              <small id="pass-match" className={`handle-note ${mismatch ? 'taken' : repeat ? 'ok' : ''}`} aria-live="polite">
+                {mismatch ? 'As duas senhas novas não são iguais' : repeat ? '✓ As duas senhas são iguais' : 'Digite a senha nova outra vez para conferir'}
+              </small>
+            </label>
+            {error && (
+              <p className="error-text" role="alert">
+                {error}
+              </p>
+            )}
+          </div>
+          <div className="modal-foot">
+            <button type="button" className="btn ghost" onClick={onClose} disabled={busy}>
+              Cancelar
+            </button>
+            <button className="btn" disabled={busy || !current || !pass || !repeat || mismatch}>
+              <Check size={14} /> {busy ? 'Trocando…' : 'Trocar a senha'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/** Configurações → Conta: o @, a senha, o e-mail (para entrar e recuperar a senha) e o Google. */
 export function AccountSettings() {
   const me = useStore((s) => s.me);
   const base = useStore((s) => s.baseUrl);
@@ -453,6 +550,8 @@ export function AccountSettings() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [note, setNote] = useState('');
+  const [changingPass, setChangingPass] = useState(false);
+  const [passNote, setPassNote] = useState('');
   const st = useStore.getState();
   useEffect(() => {
     if (!me) return;
@@ -481,6 +580,41 @@ export function AccountSettings() {
   return (
     <div className="account-tab">
       <HandleSettings me={me} />
+      <div className="settings-sec">Senha</div>
+      {acc.hasPassword ? (
+        <>
+          <p className="kv">É a senha que você usa para entrar com o seu @ ou com o e-mail.</p>
+          <div className="acc-form">
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                setPassNote('');
+                setChangingPass(true);
+              }}
+            >
+              <KeyRound size={14} /> Trocar de senha
+            </button>
+          </div>
+          {passNote && (
+            <p className="acc-note" role="status">
+              {passNote}
+            </p>
+          )}
+        </>
+      ) : (
+        <p className="kv">Sua conta foi criada pelo Google e não tem senha. Para criar uma, use “Esqueci minha senha” na tela de entrada.</p>
+      )}
+      {changingPass && (
+        <PasswordModal
+          me={me}
+          onClose={() => setChangingPass(false)}
+          onDone={() => {
+            setChangingPass(false);
+            setPassNote('Senha trocada. Nos outros aparelhos, entre de novo com a senha nova.');
+          }}
+        />
+      )}
       <div className="settings-sec">E-mail</div>
       <p className="kv">Com o e-mail confirmado você entra com ele no lugar do usuário e recebe um código se esquecer a senha.</p>
       {!acc.mail && !acc.email && <p className="kv">Este servidor ainda não manda e-mails, então ainda não dá para vincular um.</p>}
@@ -577,7 +711,6 @@ export function AccountSettings() {
       ) : (
         <p className="kv">Este servidor ainda não tem o login com o Google.</p>
       )}
-      {!acc.hasPassword && <p className="kv">Sua conta foi criada pelo Google e não tem senha. Para criar uma, use “Esqueci minha senha” na tela de entrada.</p>}
       {error && (
         <p className="error-text" role="alert">
           {error}

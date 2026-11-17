@@ -5,6 +5,8 @@
 //! - **Esqueci a senha**: o código (ABCD-EFGH) vale 30 min *no lugar* da senha e não troca a senha atual
 //!   (ninguém tranca a conta de outra pessoa pedindo códigos). Entrando com ele, a pessoa cria uma senha
 //!   nova (o mesmo caminho da senha redefinida pelo administrador).
+//! - **Trocar de senha** (`PUT /api/me/password`): estando na conta, com a senha atual. As sessões dos
+//!   outros aparelhos são encerradas, e os erros na senha atual têm limite por conta.
 //! - **Google** (OAuth 2.0, código trocado no servidor): o app abre a página do Google numa janela (no app
 //!   do Windows, no navegador do sistema) e pergunta ao servidor até o login terminar
 //!   (`/api/auth/google/poll`). Conta que já existe é achada pelo Google vinculado ou pelo e-mail
@@ -257,6 +259,7 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/auth/google/callback", get(google_callback))
         .route("/api/auth/google/poll", get(google_poll))
         .route("/api/me/account", get(account))
+        .route("/api/me/password", axum::routing::put(change_password))
         .route("/api/me/email", post(email_start).delete(email_remove))
         .route("/api/me/email/verify", post(email_verify))
         .route("/api/me/google", axum::routing::delete(google_unlink))
@@ -398,6 +401,54 @@ async fn account_of(app: &App, user_id: &str) -> ApiResult<Value> {
 
 async fn account(State(app): AppState, AuthUser(me, _): AuthUser) -> ApiResult<Json<Value>> {
     Ok(Json(account_of(&app, &me.id).await?))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PasswordBody {
+    current: String,
+    new_password: String,
+}
+
+/// Trocar a senha estando na conta: confere a atual, grava a nova e encerra as outras sessões (a que
+/// pediu continua). Senha atual errada responde 403, nunca 401: o app entende 401 como sessão encerrada
+/// e sairia da conta.
+async fn change_password(State(app): AppState, AuthUser(me, token): AuthUser, Json(body): Json<PasswordBody>) -> ApiResult<StatusCode> {
+    if body.new_password.chars().count() < 6 {
+        return Err(bad("A senha deve ter pelo menos 6 caracteres"));
+    }
+    let hash = app
+        .db
+        .query_one("SELECT password_hash FROM users WHERE id = ?1", [me.id.as_str()], |r| r.get::<String>(0))
+        .await?
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Conta não encontrada"))?;
+    if hash == NO_PASSWORD {
+        return Err(bad("Sua conta não tem senha. Para criar uma, use “Esqueci minha senha” na tela de entrada."));
+    }
+    // Quem está com a sessão aberta (um PC esquecido ligado) não descobre a senha por tentativa: o limite
+    // é por conta, venha de onde vier (a chave do limitador leva a conta no lugar do endereço).
+    let who = format!("senha:{}", me.id);
+    let limiter = &crate::ratelimit::LOGIN;
+    let now = crate::now_ms();
+    if let Err(wait) = limiter.check(&who, "", now) {
+        return Err(ApiError::new(StatusCode::TOO_MANY_REQUESTS, format!("Muitas tentativas. Tente de novo em {}.", crate::ratelimit::wait_text(wait))));
+    }
+    if !auth::verify_password(body.current.clone(), hash).await {
+        limiter.fail(&who, "", now);
+        return Err(ApiError::new(StatusCode::FORBIDDEN, "A senha atual não confere"));
+    }
+    limiter.success(&who, "");
+    if body.new_password == body.current {
+        return Err(bad("A senha nova precisa ser diferente da atual"));
+    }
+    let new_hash = auth::hash_password(body.new_password).await;
+    app.db
+        .execute("UPDATE users SET password_hash = ?1, must_reset = 0 WHERE id = ?2", (new_hash.as_str(), me.id.as_str()))
+        .await?;
+    app.db.execute("DELETE FROM sessions WHERE user_id = ?1 AND token <> ?2", [me.id.as_str(), token.as_str()]).await?;
+    clear_reset_code(&app, &me.id).await?;
+    app.logs.info(format!("@{} trocou a senha", me.username));
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
