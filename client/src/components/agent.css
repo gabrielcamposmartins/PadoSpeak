@@ -910,3 +910,75 @@
 .agent-search .agent-key-add-provider {
   margin-top: 2px;
 }
+
+/* Confirmação pedida por outro programa (MCP do app do Windows), por cima de tudo, no canto. */
+.mcp-confirm {
+  position: fixed;
+  right: max(16px, env(safe-area-inset-right, 0px));
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  z-index: 9000;
+  width: min(380px, calc(100vw - 32px));
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.28);
+}
+.mcp-confirm-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mcp-confirm-more {
+  margin-left: auto;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--row-hover);
+  font-size: 12px;
+  font-weight: 600;
+}
+/* Outros apps (MCP) em Configurações → Assistente */
+.agent-mcp-how {
+  margin-top: 6px;
+  padding: 8px 12px;
+  border: 1px solid var(--row-sel-border);
+  border-radius: 10px;
+  background: var(--panel);
+}
+.agent-mcp-how > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.agent-mcp-how[open] > summary {
+  margin-bottom: 8px;
+}
+.agent-mcp-how code {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--row-hover);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.agent-mcp-how ol {
+  margin: 0 0 8px;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-2);
+}
+.agent-mcp-snippet {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+.agent-mcp-snippet pre {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--row-hover);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

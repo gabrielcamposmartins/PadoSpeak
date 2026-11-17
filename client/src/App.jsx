@@ -15,6 +15,7 @@ import CallScreen from './components/CallScreen.jsx';
 import { FloatingMiniCall } from './components/MiniCall.jsx';
 import { CallFxCorner } from './components/CallFx.jsx';
 import AgentFab from './components/AgentFab.jsx';
+import McpConfirm from './components/McpConfirm.jsx';
 import { SoundSprite } from './components/SoundIcons.jsx';
 import Avatar from './components/Avatar.jsx';
 import { TitleBar } from './components/Aero.jsx';
@@ -207,6 +208,7 @@ export default function App() {
       )}
       <Modals />
       {loggedIn && <IncomingCalls />}
+      {loggedIn && !isPanel && <McpConfirm />}
       {loggedIn && <UnreadBadge />}
       <DownloadsIndicator />
       {loggedIn && phase === 'app' && <SharedInbox />}

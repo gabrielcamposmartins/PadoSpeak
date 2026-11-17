@@ -676,6 +676,14 @@ ALTER TABLE agent_keys ADD COLUMN base_url TEXT;
 ALTER TABLE agent_keys ADD COLUMN model TEXT;
 "#,
     ),
+    (
+        29,
+        r#"
+-- O assistente usado por outros programas com IA do computador, pelo MCP do app do Windows (veja
+-- `crate::agent_mcp`): cada pessoa liga em Configurações → Assistente; começa desligado.
+ALTER TABLE agent_prefs ADD COLUMN mcp INTEGER NOT NULL DEFAULT 0;
+"#,
+    ),
 ];
 
 impl Db {

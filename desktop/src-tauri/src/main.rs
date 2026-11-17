@@ -118,6 +118,54 @@ async fn web_search(q: String) -> Result<Value, String> {
     padospeak_server::agent_web::duckduckgo(&q).await.map(Value::Array)
 }
 
+/// O identificador do app (`tauri.conf.json`): a pasta de dados fica em `%APPDATA%\<identificador>`. A ponte do
+/// MCP roda sem o Tauri, por isso ele também mora aqui (o `setup` confere que os dois batem).
+const IDENTIFIER: &str = "dev.padospeak.desktop";
+
+/// O arquivo que o app aberto grava para a ponte do MCP (`padospeak_server::agent_mcp`): o servidor, o login e o
+/// fuso. `PADOSPEAK_MCP_CONFIG` troca o caminho (testes).
+fn mcp_config_path() -> std::path::PathBuf {
+    if let Some(p) = std::env::var_os("PADOSPEAK_MCP_CONFIG") {
+        return p.into();
+    }
+    let base = std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    base.join(IDENTIFIER).join("mcp.json")
+}
+
+/// O comando que os outros programas usam para falar com o assistente pelo MCP (Configurações → Assistente).
+#[tauri::command]
+fn mcp_info() -> Value {
+    let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
+    json!({ "exe": exe, "args": ["--mcp"], "on": mcp_config_path().exists() })
+}
+
+/// Liga (grava o login para a ponte) ou desliga (apaga) o MCP deste computador. Ao desligar com um login, só
+/// apaga se o arquivo for dele (outro perfil pode ter ligado).
+#[tauri::command]
+fn mcp_set(on: bool, base: Option<String>, token: Option<String>, tz: Option<i64>) -> Result<(), String> {
+    let path = mcp_config_path();
+    if on {
+        let (Some(base), Some(token)) = (base.filter(|b| b.starts_with("http")), token.filter(|t| !t.is_empty())) else {
+            return Err("Sem login para o MCP".into());
+        };
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        let body = json!({ "base": base, "token": token, "tz": tz.unwrap_or(0) });
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, body.to_string()).map_err(|e| e.to_string())?;
+        return std::fs::rename(&tmp, &path).map_err(|e| e.to_string());
+    }
+    let mine = || {
+        let current: Value = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(Value::Null);
+        token.as_deref().is_none_or(|t| current["token"].as_str() == Some(t))
+    };
+    if path.exists() && mine() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Abre um endereço http(s) no navegador padrão (links das mensagens, baixar o instalador…).
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
@@ -423,6 +471,11 @@ fn hint_tray_once(app: &AppHandle) {
 }
 
 fn main() {
+    // `--mcp`: outro programa (Claude Desktop, Claude Code…) abriu o app como servidor MCP. Sem janela nem
+    // Tauri: só a ponte entre o stdin/stdout dele e o servidor do PadoSpeak (veja `agent_mcp`).
+    if std::env::args().skip(1).any(|a| a == "--mcp") {
+        std::process::exit(padospeak_server::agent_mcp::bridge(&mcp_config_path()));
+    }
     let app = tauri::Builder::default()
         // Abrir o app de novo (atalho, menu Iniciar) só mostra a janela que já está na bandeja.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
@@ -434,6 +487,7 @@ fn main() {
             // A janela principal é criada aqui (e não pela configuração) para antes esperar o WebView2
             // de uma execução anterior terminar de fechar (veja `wait_previous_webview`).
             wait_previous_webview(&app.config().identifier);
+            debug_assert_eq!(app.config().identifier, IDENTIFIER, "atualize IDENTIFIER (a pasta da ponte do MCP)");
             let main_config = app.config().app.windows.iter().find(|w| w.label == "main").cloned().ok_or("janela principal sem configuração")?;
             tauri::WebviewWindowBuilder::from_config(app.handle(), &main_config)?.build()?;
             // Banco Turso/libSQL e certificados ficam na pasta de dados do app (ou em DATA_DIR).
@@ -483,7 +537,7 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, media_node::media_node_status, media_node::media_node_start, media_node::media_node_stop, media_node::media_node_forget, media_node::media_node_logs, local_node, notify_windows, autostart_get, autostart_set, open_url, web_search_ok, web_search, activity_get, activity_custom_set, activity_programs, solo_keys_set, share_dock_open, share_dock_close, share_bar_hide, overlay_set, overlay_block_set, launched_hidden, screen_audio::screen_audio_start, screen_audio::screen_audio_stop])
+        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, media_node::media_node_status, media_node::media_node_start, media_node::media_node_stop, media_node::media_node_forget, media_node::media_node_logs, local_node, notify_windows, autostart_get, autostart_set, open_url, web_search_ok, web_search, mcp_info, mcp_set, activity_get, activity_custom_set, activity_programs, solo_keys_set, share_dock_open, share_dock_close, share_bar_hide, overlay_set, overlay_block_set, launched_hidden, screen_audio::screen_audio_start, screen_audio::screen_audio_stop])
         .build(tauri::generate_context!())
         .expect("erro ao iniciar o PadoSpeak");
 

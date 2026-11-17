@@ -13,6 +13,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { Eye, EyeOff, Trash2, Copy, Plus, KeyRound, Building2, Server, Cpu, Users, UserPlus, X, Repeat, CalendarClock, RefreshCw, Coins, Loader2, Globe } from 'lucide-react';
+import { isTauri } from '../lib/env.js';
 import Avatar, { UserName } from './Avatar.jsx';
 import { plain } from '../lib/text.js';
 import { useStore } from '../store.js';
@@ -315,6 +316,7 @@ export default function AgentKeys({ scope = 'me' }) {
               </small>
             </span>
           </label>
+          <AgentMcp info={info} busy={busy} run={run} api={api} path={paths.view} />
         </>
       )}
       {admin && <AppAccess info={info} canEdit={canEdit} busy={busy} run={run} api={api} />}
@@ -323,6 +325,110 @@ export default function AgentKeys({ scope = 'me' }) {
       {admin && <AppUsage api={api} />}
       {admin && <AppJobs api={api} />}
     </div>
+  );
+}
+
+/**
+ * Outros apps (MCP): programas com IA do computador (Claude Desktop, Claude Code, Cursor…) usam o assistente pelo
+ * app do Windows, que roda com `--mcp` como servidor MCP (veja `server/src/agent_mcp.rs`). Começa desligado; a
+ * escolha é da conta, e cada app do Windows em que ela está entrada guarda o login para a ponte.
+ */
+function AgentMcp({ info, busy, run, api, path }) {
+  const [app, setApp] = useState(null); // { exe, args } do app do Windows; false = versão sem o MCP
+  useEffect(() => {
+    if (!isTauri) return;
+    import('@tauri-apps/api/core')
+      .then(({ invoke }) => invoke('mcp_info'))
+      .then(setApp, () => setApp(false));
+  }, []);
+  const on = Boolean(info.mcp);
+  // no navegador e no celular a opção só aparece ligada, para desligar
+  if (!isTauri && !on) {
+    return (
+      <>
+        <div className="settings-sec">Outros apps (MCP)</div>
+        <p className="kv">No app do PadoSpeak para Windows, dá para deixar programas com IA do computador (Claude Desktop, Claude Code, Cursor…) usarem o assistente.</p>
+      </>
+    );
+  }
+  const toggle = async (value) => {
+    const ok = await run(() => api().put(path, { mcp: value }), value ? 'Outros apps podem usar o assistente' : 'Outros apps não usam mais o assistente');
+    if (ok) useStore.getState().loadAgentAccess();
+  };
+  const exe = app?.exe || '';
+  const cli = `claude mcp add padospeak -- "${exe}" --mcp`;
+  const config = JSON.stringify({ mcpServers: { padospeak: { command: exe, args: ['--mcp'] } } }, null, 2);
+  // DeepSeek harness (dsh): uma entrada do plugin dsh-mcp-client no cordis.patch.yml (aspas simples: as barras
+  // do caminho ficam como estão). O tempo da ferramenta passa dos 60 s padrão porque a confirmação no PadoSpeak
+  // espera até 3 minutos.
+  const yaml = `- insert:
+    - id: mcp-padospeak
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: padospeak
+        transport: stdio
+        command: '${exe.replace(/'/g, "''")}'
+        args: ['--mcp']
+        toolCallTimeoutMs: 200000`;
+  const snippet = (text, label) => (
+    <div className="agent-mcp-snippet">
+      <pre>{text}</pre>
+      <button type="button" className="icon-btn" onClick={() => copy(text)} title="Copiar" aria-label={label}>
+        <Copy size={16} />
+      </button>
+    </div>
+  );
+  const copy = async (text) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      useStore.getState().notify('Copiado', 'info');
+    } catch {
+      useStore.getState().notify('Não deu para copiar');
+    }
+  };
+  return (
+    <>
+      <div className="settings-sec">Outros apps (MCP)</div>
+      <label className="checkbox">
+        <input type="checkbox" checked={on} disabled={busy || (isTauri && app === false)} onChange={(e) => toggle(e.target.checked)} />
+        <span>
+          Usar o assistente em outros apps
+          <small className="check-hint">
+            Programas com IA deste computador (Claude Desktop, Claude Code, Cursor e outros que aceitam MCP) passam a usar o assistente do PadoSpeak
+            em nome da sua conta, com as mesmas ferramentas e permissões daqui. Quem pensa é a IA do outro programa, então não gasta a chave do
+            assistente. As ações que o assistente confirmaria aparecem no PadoSpeak para você permitir ou recusar.
+          </small>
+        </span>
+      </label>
+      {isTauri && app === false && <p className="kv">Atualize o app do Windows para usar esta opção.</p>}
+      {isTauri && app && on && (
+        <details className="agent-mcp-how">
+          <summary>Como usar</summary>
+          <ol>
+            <li>
+              No <b>Claude Code</b>, rode no terminal:
+              {snippet(cli, 'Copiar o comando do Claude Code')}
+            </li>
+            <li>
+              No <b>Claude Desktop</b>, Cursor e outros: ponha isto no arquivo de servidores MCP do programa (no Claude Desktop, em Configurações →
+              Desenvolvedor → Editar configuração) e reinicie o programa:
+              {snippet(config, 'Copiar a configuração do MCP')}
+            </li>
+            <li>
+              No <b>DeepSeek harness</b> (dsh 0.2): acrescente isto ao <code>cordis.patch.yml</code> do perfil, em{' '}
+              <code>$DSH_HOME/profiles/&lt;perfil&gt;/</code> (ou em <code>$DSH_HOME/cordis.patch.yml</code>, para todos os perfis), sem apagar o que já
+              está no arquivo, e reinicie o dsh. As ferramentas aparecem como <code>mcp__padospeak__…</code>:
+              {snippet(yaml, 'Copiar a configuração do DeepSeek harness')}
+            </li>
+            <li>Peça no outro programa, por exemplo: “resuma o que falaram hoje no PadoSpeak” ou “mande um oi para a Ana no PadoSpeak”.</li>
+          </ol>
+          <small className="kv">
+            Vale para os apps do Windows em que você está com esta conta. Para confirmar as ações, deixe o PadoSpeak aberto (aqui ou no celular). Para
+            parar, desligue a opção ou saia da conta no app. Depois que o app se atualiza, reinicie o outro programa se ele perder o PadoSpeak.
+          </small>
+        </details>
+      )}
+    </>
   );
 }
 

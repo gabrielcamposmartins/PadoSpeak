@@ -23,6 +23,9 @@
 //! escolhido na lista que o provedor dá, e escolhe a que vale. A variável `ANTHROPIC_API_KEY` aparece como mais
 //! uma chave (da Anthropic; modelo padrão `AGENT_MODEL`, senão `claude-opus-5-5`, endereço `ANTHROPIC_BASE_URL`).
 //! Cada pessoa pode pôr as suas em Configurações → Assistente e usar uma delas no lugar da do app.
+//!
+//! As mesmas ferramentas também servem a outros programas com IA do computador da pessoa, pelo MCP do app do
+//! Windows (veja `crate::agent_mcp`), quando ela liga isso em Configurações → Assistente.
 use crate::agent_llm::{self as llm, Resolved};
 use crate::agent_web;
 use crate::api::{ApiError, AuthUser};
@@ -50,7 +53,7 @@ const MAX_STEPS: usize = 16;
 const MAX_TURNS: i64 = 300;
 const MAX_TEXT: usize = 8000;
 /// O que volta de uma ferramenta para o modelo (o resto é cortado com aviso).
-const MAX_RESULT: usize = 24_000;
+pub(crate) const MAX_RESULT: usize = 24_000;
 
 /// Quem está com um pedido em andamento (um por vez por pessoa).
 static BUSY: Mutex<Option<HashSet<String>>> = Mutex::new(None);
@@ -81,6 +84,19 @@ fn recent_tz(user_id: &str) -> i64 {
     RECENT.lock().unwrap().as_ref().and_then(|m| m.get(user_id)).map_or(0, |r| r.tz)
 }
 
+/// O fuso que um pedido de fora do balão (o MCP) informou, sem apagar os dados da chamada guardados.
+pub(crate) fn note_tz(user_id: &str, tz: i64) {
+    let tz = tz.clamp(-14 * 60, 14 * 60);
+    let mut recent = RECENT.lock().unwrap();
+    let map = recent.get_or_insert_with(HashMap::new);
+    match map.get_mut(user_id) {
+        Some(r) => r.tz = tz,
+        None => {
+            map.insert(user_id.to_string(), Recent { at: crate::now_ms(), tz, quality: None });
+        }
+    }
+}
+
 pub fn router() -> Router<Arc<App>> {
     Router::new()
         .route("/api/agent", get(state).delete(reset))
@@ -106,6 +122,7 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/admin/agent/jobs", get(admin_jobs))
         .route("/api/admin/agent/usage", get(admin_usage))
         .route("/api/admin/agent/jobs/{id}", axum::routing::delete(admin_delete_job))
+        .merge(crate::agent_mcp::router())
 }
 
 fn bad(msg: impl Into<String>) -> ApiError {
@@ -151,7 +168,7 @@ async fn has_access(app: &App, me: &User) -> ApiResult<bool> {
 
 /// A conversa e as chaves de cada pessoa só existem com o assistente ligado e liberado para ela (para quem
 /// não foi liberado, ele nem aparece: as rotas respondem como se não existissem).
-async fn require_access(app: &App, me: &User) -> ApiResult<()> {
+pub(crate) async fn require_access(app: &App, me: &User) -> ApiResult<()> {
     if has_access(app, me).await? {
         Ok(())
     } else {
@@ -166,7 +183,9 @@ pub async fn has_access_for(app: &App, me: &User) -> bool {
 
 /// `GET /api/agent/access`: o app pergunta se mostra o assistente para esta pessoa.
 async fn access(State(app): AppState, AuthUser(me, _): AuthUser) -> ApiResult<Json<Value>> {
-    Ok(Json(json!({ "allowed": has_access(&app, &me).await? })))
+    let allowed = has_access(&app, &me).await?;
+    // `mcp`: o app do Windows deixa os outros programas do computador usarem o assistente (veja `agent_mcp`)
+    Ok(Json(json!({ "allowed": allowed, "mcp": allowed && mcp_on(&app, &me.id).await })))
 }
 
 fn env_key() -> Option<String> {
@@ -330,6 +349,17 @@ async fn prefs(app: &App, user_id: &str) -> ApiResult<(String, String)> {
 }
 
 /// Modo automático (Configurações → Assistente): as ações que pediriam confirmação rodam direto.
+/// Outros programas com IA do computador usam o assistente pelo MCP do app do Windows (Configurações →
+/// Assistente; começa desligado).
+pub(crate) async fn mcp_on(app: &App, user_id: &str) -> bool {
+    app.db
+        .query_one("SELECT mcp FROM agent_prefs WHERE user_id = ?1", [user_id], |r| r.get::<i64>(0))
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|v| v != 0)
+}
+
 async fn auto_mode(app: &App, user_id: &str) -> bool {
     app.db
         .query_one("SELECT auto FROM agent_prefs WHERE user_id = ?1", [user_id], |r| r.get::<i64>(0))
@@ -341,7 +371,7 @@ async fn auto_mode(app: &App, user_id: &str) -> bool {
 
 /// Com uma chave própria escolhida, ela e o modelo que a pessoa escolheu (ou o do app); senão, a chave e o
 /// modelo do app (com a chave do app, o modelo é o do dono: é ele quem paga), se o dono liberou para ela.
-async fn resolve(app: &App, me: &User) -> ApiResult<Option<Resolved>> {
+pub(crate) async fn resolve(app: &App, me: &User) -> ApiResult<Option<Resolved>> {
     let (key_id, model) = prefs(app, &me.id).await?;
     if !key_id.is_empty() {
         if let Some(k) = ring(app, Some(&me.id)).await?.into_iter().find(|k| k.id == key_id) {
@@ -944,6 +974,7 @@ async fn my_view(app: &App, me: &User) -> ApiResult<Value> {
         "appBlocked": app_key(app).await?.is_some() && !app_allowed(app, me).await?,
         "models": suggested(),
         "auto": auto_mode(app, &me.id).await,
+        "mcp": mcp_on(app, &me.id).await,
     }))
 }
 
@@ -960,6 +991,8 @@ struct MyBody {
     model: Option<String>,
     /// Modo automático: fazer as ações sem pedir confirmação.
     auto: Option<bool>,
+    /// Deixar outros programas do computador usarem o assistente pelo MCP do app do Windows.
+    mcp: Option<bool>,
 }
 
 async fn save_my_settings(State(app): AppState, AuthUser(me, _): AuthUser, Json(body): Json<MyBody>) -> ApiResult<Json<Value>> {
@@ -1000,6 +1033,17 @@ async fn save_my_settings(State(app): AppState, AuthUser(me, _): AuthUser, Json(
                 libsql::params![me.id.as_str(), i64::from(on)],
             )
             .await?;
+    }
+    if let Some(on) = body.mcp {
+        app.db
+            .execute(
+                "INSERT INTO agent_prefs (user_id, mcp) VALUES (?1, ?2) ON CONFLICT(user_id) DO UPDATE SET mcp = excluded.mcp",
+                libsql::params![me.id.as_str(), i64::from(on)],
+            )
+            .await?;
+        app.logs.info(format!("@{} {} o assistente em outros apps (MCP)", me.username, if on { "ligou" } else { "desligou" }));
+        // os apps do Windows da pessoa ligam (ou desligam) o MCP do computador
+        app.hub.to_user(&me.id, "agent:access", json!({}));
     }
     Ok(Json(my_view(&app, &me).await?))
 }
@@ -1927,7 +1971,7 @@ fn tool_result(id: &Value, r: Result<Value, String>) -> Value {
 // ---------- As ferramentas ----------
 
 /// O que vale para quem pede: se vê as estatísticas do app e se é o dono dele.
-struct Ctx {
+pub(crate) struct Ctx {
     app_admin: bool,
     owner: bool,
     /// Os módulos ligados (sem as chamadas não há ferramentas de voz; sem a música, as dela).
@@ -1935,11 +1979,11 @@ struct Ctx {
     /// Quem pode agendar tarefas que se repetem (`SETTING_REPEAT`).
     repeat: &'static str,
     /// Modo automático da pessoa: as ações que pediriam confirmação rodam direto.
-    auto: bool,
+    pub(crate) auto: bool,
 }
 
 impl Ctx {
-    async fn load(app: &App, me: &User) -> Self {
+    pub(crate) async fn load(app: &App, me: &User) -> Self {
         Ctx {
             app_admin: crate::admin::can_view(app, me).await,
             owner: me.username.to_lowercase() == crate::admin::owner_username(),
@@ -1977,10 +2021,10 @@ pub async fn can_repeat(app: &App, user: &User) -> bool {
     }
 }
 
-struct Tool {
-    name: &'static str,
-    desc: &'static str,
-    schema: Value,
+pub(crate) struct Tool {
+    pub(crate) name: &'static str,
+    pub(crate) desc: &'static str,
+    pub(crate) schema: Value,
 }
 
 impl Tool {
@@ -1994,7 +2038,7 @@ fn obj(props: Value, required: &[&str]) -> Value {
 }
 
 /// Ações que esperam a pessoa confirmar no app.
-fn needs_confirm(name: &str) -> bool {
+pub(crate) fn needs_confirm(name: &str) -> bool {
     matches!(
         name,
         "send_message"
@@ -2028,7 +2072,7 @@ const PERMS_HELP: &str = "Bits de permissão (some os que quiser): 1 administrad
 256 pular a dos outros, 512 tirar da fila a dos outros, 1024 voltar música, 2048 recomeçar a dos outros, 4096 limpar a fila, \
 8192 sons rápidos, 16384 fixar mensagens, 32768 gerenciar cargos.";
 
-fn tool_defs(ctx: &Ctx) -> Vec<Tool> {
+pub(crate) fn tool_defs(ctx: &Ctx) -> Vec<Tool> {
     let mut t = vec![
         Tool {
             name: "get_me",
@@ -2583,7 +2627,7 @@ fn ws_result(v: Value) -> Result<Value, String> {
     }
 }
 
-async fn execute(app: &Arc<App>, me: &User, token: &str, ctx: &Ctx, name: &str, input: &Value) -> Result<Value, String> {
+pub(crate) async fn execute(app: &Arc<App>, me: &User, token: &str, ctx: &Ctx, name: &str, input: &Value) -> Result<Value, String> {
     // uma ferramenta que não foi oferecida (módulo desligado no meio, sem acesso ao painel) não roda
     if !tool_defs(ctx).iter().any(|t| t.name == name) {
         return Err("Esta ferramenta não está disponível para esta pessoa agora".into());
@@ -3338,7 +3382,7 @@ fn quote(s: &str, max: usize) -> String {
 }
 
 /// A ação numa linha ("Mandar mensagem em #geral", "Criar evento “Reunião”").
-async fn describe(app: &App, name: &str, input: &Value) -> String {
+pub(crate) async fn describe(app: &App, name: &str, input: &Value) -> String {
     let s = |k: &str| input.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
     let channel = |id: String| async move {
         match name_of(app, "channels", &id).await {
@@ -3453,7 +3497,7 @@ async fn describe(app: &App, name: &str, input: &Value) -> String {
 }
 
 /// O que a pessoa precisa ver para decidir (o texto da mensagem, o da notificação…).
-fn detail(name: &str, input: &Value) -> Value {
+pub(crate) fn detail(name: &str, input: &Value) -> Value {
     let s = |k: &str| input.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
     match name {
         "send_message" | "schedule_message" => json!(s("content")),

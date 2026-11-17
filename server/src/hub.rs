@@ -706,6 +706,11 @@ impl Hub {
         s.user_conns.get(user_id).into_iter().flatten().any(|id| s.conns.get(id).is_some_and(|c| c.visible))
     }
 
+    /// A pessoa tem o app aberto em algum aparelho (mesmo aparecendo offline).
+    pub fn is_connected(&self, user_id: &str) -> bool {
+        self.state.lock().unwrap().user_conns.get(user_id).is_some_and(|c| !c.is_empty())
+    }
+
     pub fn is_online(&self, user_id: &str) -> bool {
         Self::visible(&self.state.lock().unwrap(), user_id)
     }

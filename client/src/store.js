@@ -325,6 +325,12 @@ export function createConnStore({ key, kind, base, primary = false }) {
   let baseUrl = base;
   // No desktop, o servidor só tem token depois que um perfil local entra (veja `reloadToken`).
   let token = isDesktop && kind === 'server' ? null : loadToken(baseUrl, tokenScope(kind));
+  // O MCP do app do Windows (veja server/src/agent_mcp.rs): o login desta conta fica num arquivo para a ponte
+  // `--mcp` só enquanto a pessoa deixa os outros programas usarem o assistente.
+  const syncMcp = (on) =>
+    import('@tauri-apps/api/core')
+      .then(({ invoke }) => invoke('mcp_set', { on, base: baseUrl, token: token || null, tz: -new Date().getTimezoneOffset() }))
+      .catch(() => {});
   // A abertura instantânea (veja `readSnapshot`) vale só para a conta do navegador e do celular.
   const snapshots = primary && kind === 'server' && !isDesktop;
   // Abriu com o que estava guardado e o servidor ainda não respondeu: a conexão recarrega as listas.
@@ -587,6 +593,8 @@ export function createConnStore({ key, kind, base, primary = false }) {
     async logout() {
       // Este aparelho para de receber notificações da conta que saiu.
       if (primary && !isDesktop) await disablePush(store).catch(() => {});
+      // e os outros programas do computador param de usar o assistente com esta conta
+      if (primary && isTauri && kind === 'server') await syncMcp(false);
       await api.post('/api/auth/logout').catch(() => {});
       // a conversa com o assistente e o rascunho guardados neste aparelho saem junto com a conta
       if (primary) {
@@ -1033,6 +1041,14 @@ export function createConnStore({ key, kind, base, primary = false }) {
           answer({ error: String(e?.message || e || 'erro') });
         }
       });
+      // outro programa do computador (pelo MCP do app do Windows) quer fazer algo que pede confirmação
+      rt.on('agent:mcp-confirm', (d) => {
+        if (!primary || !d?.id) return;
+        ui().setState((st) => ({ mcpAsks: [...(st.mcpAsks || []).filter((a) => a.id !== d.id), d] }));
+        alertSound('message');
+        if (document.visibilityState !== 'visible') systemNotify(`Outro app quer usar o assistente: ${d.label}`, null, '/');
+      });
+      rt.on('agent:mcp-done', ({ id } = {}) => primary && ui().setState((st) => ({ mcpAsks: (st.mcpAsks || []).filter((a) => a.id !== id) })));
       rt.on('agent:status', (d) => primary && ui().setState({ agentStatus: d.busy ? d.label || 'Pensando…' : null }));
       // o pedido terminou no servidor (ele roda em segundo plano): o balão busca a resposta
       rt.on('agent:done', () => primary && ui().setState((st) => ({ agentDone: (st.agentDone || 0) + 1 })));
@@ -1230,14 +1246,21 @@ export function createConnStore({ key, kind, base, primary = false }) {
     /** Pergunta ao servidor se o assistente está liberado para mim (sem ele, o assistente nem aparece). */
     async loadAgentAccess() {
       if (!primary) return;
-      if (!get().config?.agent || !get().me) return set({ agentAllowed: false });
+      if (!get().config?.agent || !get().me) {
+        if (isTauri && kind === 'server') syncMcp(false);
+        return set({ agentAllowed: false });
+      }
       let allowed = false;
+      let mcp = false;
       try {
-        allowed = (await api.get('/api/agent/access')).allowed === true;
+        const d = await api.get('/api/agent/access');
+        allowed = d.allowed === true;
+        mcp = allowed && d.mcp === true;
       } catch {
         allowed = false;
       }
       set({ agentAllowed: allowed });
+      if (isTauri && kind === 'server') syncMcp(mcp);
       if (!allowed && ui().getState().agentOpen) ui().setState({ agentOpen: false });
     },
     /**
