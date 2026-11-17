@@ -101,6 +101,23 @@ fn apply_autostart(cfg: &Autostart) {
     }
 }
 
+/// O app pesquisa na internet para o assistente (o cliente avisa o servidor com `app:search`).
+#[tauri::command]
+fn web_search_ok() -> bool {
+    true
+}
+
+/// Pesquisa no DuckDuckGo pela internet deste computador, quando o servidor pede para o assistente
+/// (`server/src/agent_web.rs`): o DuckDuckGo bloqueia servidores em datacenter, não a casa de quem usa.
+#[tauri::command]
+async fn web_search(q: String) -> Result<Value, String> {
+    let q: String = q.trim().chars().take(300).collect();
+    if q.is_empty() {
+        return Err("Pesquisa vazia".into());
+    }
+    padospeak_server::agent_web::duckduckgo(&q).await.map(Value::Array)
+}
+
 /// Abre um endereço http(s) no navegador padrão (links das mensagens, baixar o instalador…).
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
@@ -466,7 +483,7 @@ fn main() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, media_node::media_node_status, media_node::media_node_start, media_node::media_node_stop, media_node::media_node_forget, media_node::media_node_logs, local_node, notify_windows, autostart_get, autostart_set, open_url, activity_get, activity_custom_set, activity_programs, solo_keys_set, share_dock_open, share_dock_close, share_bar_hide, overlay_set, overlay_block_set, launched_hidden, screen_audio::screen_audio_start, screen_audio::screen_audio_stop])
+        .invoke_handler(tauri::generate_handler![host_status, host_start, host_stop, host_logs, media_node::media_node_status, media_node::media_node_start, media_node::media_node_stop, media_node::media_node_forget, media_node::media_node_logs, local_node, notify_windows, autostart_get, autostart_set, open_url, web_search_ok, web_search, activity_get, activity_custom_set, activity_programs, solo_keys_set, share_dock_open, share_dock_close, share_bar_hide, overlay_set, overlay_block_set, launched_hidden, screen_audio::screen_audio_start, screen_audio::screen_audio_stop])
         .build(tauri::generate_context!())
         .expect("erro ao iniciar o PadoSpeak");
 

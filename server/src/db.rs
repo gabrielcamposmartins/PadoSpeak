@@ -666,6 +666,16 @@ ALTER TABLE agent_prefs ADD COLUMN auto INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE media_nodes ADD COLUMN sfu_mode TEXT NOT NULL DEFAULT 'all';
 "#,
     ),
+    (
+        28,
+        r#"
+-- Chaves do assistente de outros provedores além da Anthropic (veja `crate::agent_llm`): o provedor, o endereço
+-- (só no `custom`, digitado pelo dono) e o modelo escolhido para a chave (vazio nas de antes: vale o do painel).
+ALTER TABLE agent_keys ADD COLUMN provider TEXT NOT NULL DEFAULT 'anthropic';
+ALTER TABLE agent_keys ADD COLUMN base_url TEXT;
+ALTER TABLE agent_keys ADD COLUMN model TEXT;
+"#,
+    ),
 ];
 
 impl Db {

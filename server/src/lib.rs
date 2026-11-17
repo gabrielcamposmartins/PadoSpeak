@@ -5,6 +5,8 @@
 pub mod account;
 pub mod admin;
 pub mod agent;
+pub mod agent_llm;
+pub mod agent_web;
 pub mod agent_jobs;
 pub mod api;
 pub mod audit;

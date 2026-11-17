@@ -20,7 +20,7 @@ export const MODULES = [
   {
     key: 'agent',
     name: 'Assistente',
-    desc: 'Um assistente de IA que faz o que a pessoa pedir, só com o acesso que ela já tem. Usa a chave da API da Anthropic.',
+    desc: 'Um assistente de IA que faz o que a pessoa pedir, só com o acesso que ela já tem. Usa uma chave da API de um provedor de IA (Anthropic, OpenAI, Gemini, DeepSeek, Qwen, Mistral…).',
     off: true,
   },
 ];

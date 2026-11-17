@@ -6,10 +6,13 @@
  * - `scope="me"` (Configurações → Assistente): as chaves da própria pessoa. Sem escolher uma, vale a do app;
  *   o modelo só se escolhe com chave própria (com a do app, é o dono quem paga e escolhe).
  *
+ * Cada chave é de um provedor (Anthropic, OpenAI, Gemini, DeepSeek, Qwen, Mistral…; `server/src/agent_llm.rs`) e
+ * tem o seu modelo. Ao adicionar, escolher o provedor e colar a chave busca a lista de modelos dele.
+ *
  * As chaves aparecem escondidas (início e fim); o olho busca a chave inteira no servidor.
  */
-import { useEffect, useState } from 'react';
-import { Eye, EyeOff, Trash2, Copy, Plus, KeyRound, Building2, Server, Cpu, Users, UserPlus, X, Repeat, CalendarClock, RefreshCw, Coins } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Eye, EyeOff, Trash2, Copy, Plus, KeyRound, Building2, Server, Cpu, Users, UserPlus, X, Repeat, CalendarClock, RefreshCw, Coins, Loader2, Globe } from 'lucide-react';
 import Avatar, { UserName } from './Avatar.jsx';
 import { plain } from '../lib/text.js';
 import { useStore } from '../store.js';
@@ -20,32 +23,48 @@ const PATHS = {
   me: { view: '/api/agent/settings', keys: '/api/agent/keys', models: '/api/agent/models' },
 };
 
+const modelLabel = (m) => (m.name === m.id ? m.id : `${m.name} (${m.id})`);
+
 export default function AgentKeys({ scope = 'me' }) {
   const paths = PATHS[scope];
   const admin = scope === 'admin';
   const [info, setInfo] = useState(null);
   const [models, setModels] = useState([]);
+  const [modelsError, setModelsError] = useState('');
   const [shown, setShown] = useState({}); // id -> chave inteira
-  const [label, setLabel] = useState('');
-  const [key, setKey] = useState('');
   const [model, setModel] = useState('');
   const [busy, setBusy] = useState(false);
   const [custom, setCustom] = useState(false); // digitando um modelo fora da lista
   const st = useStore.getState();
   const api = () => st.api();
 
+  // o modelo em uso: no painel, o do app; com chave própria, o da chave (as de antes guardavam à parte)
+  const currentOf = (d) => {
+    if (admin) return d.model || '';
+    const own = (d.keys || []).find((k) => k.active);
+    return own ? own.model || d.model || '' : '';
+  };
   const apply = (d) => {
     setInfo(d);
-    setModel(d.model || '');
-    setModels((m) => (m.length ? m : d.models || []));
+    setModel(currentOf(d));
   };
   const loadModels = () =>
     api()
       .get(paths.models)
-      .then((d) => d.models?.length && setModels(d.models))
-      .catch(() => {});
+      .then(
+        (d) => {
+          setModels(d.models || []);
+          setModelsError(d.error || '');
+        },
+        () => {},
+      );
   useEffect(() => {
-    api().get(paths.view).then(apply, () => setInfo(null));
+    api()
+      .get(paths.view)
+      .then((d) => {
+        apply(d);
+        setModels(d.models || []);
+      }, () => setInfo(null));
     loadModels();
   }, [scope]);
 
@@ -53,6 +72,9 @@ export default function AgentKeys({ scope = 'me' }) {
   const canEdit = admin ? info.canEdit : true;
   const keys = info.keys || [];
   const ownActive = !admin && Boolean(info.active);
+  const activeKey = keys.find((k) => k.active);
+  // o provedor de onde vem o modelo (a chave em uso)
+  const provider = admin ? info.provider || 'anthropic' : activeKey?.provider || 'anthropic';
 
   const run = async (fn, done) => {
     setBusy(true);
@@ -65,14 +87,6 @@ export default function AgentKeys({ scope = 'me' }) {
       return false;
     } finally {
       setBusy(false);
-    }
-  };
-  const add = async () => {
-    const ok = await run(() => api().post(paths.keys, { label: label.trim(), apiKey: key.trim() }), 'Chave guardada');
-    if (ok) {
-      setKey('');
-      setLabel('');
-      loadModels();
     }
   };
   const choose = async (id) => {
@@ -99,7 +113,7 @@ export default function AgentKeys({ scope = 'me' }) {
   };
   const saveModel = (value) => {
     const m = value.trim();
-    if (m === (info.model || '')) return;
+    if (m === currentOf(info)) return;
     run(() => api().put(paths.view, { model: m }), m ? `Modelo: ${m}` : 'Modelo padrão');
   };
 
@@ -108,6 +122,9 @@ export default function AgentKeys({ scope = 'me' }) {
   // a lista do seletor: os modelos da chave, mais o atual se ele não estiver nela
   const current = admin ? info.model : model;
   const options = current && !models.some((m) => m.id === current) ? [...models, { id: current, name: current }] : models;
+  // "igual ao do app" só tem sentido numa chave própria da Anthropic de antes (sem modelo guardado)
+  const sameAsApp = !admin && (!ownActive || (provider === 'anthropic' && !activeKey?.model));
+  const providerName = admin ? info.providerName : activeKey?.providerName || info.appProvider;
 
   return (
     <div className="agent-keys">
@@ -131,8 +148,8 @@ export default function AgentKeys({ scope = 'me' }) {
       )}
       <p className="kv">
         {admin
-          ? `O assistente usa a chave marcada, cobrada na conta dela pela Anthropic. ${info.access === 'list' ? 'Ela vale para você e para as pessoas que você liberar abaixo.' : 'Ela vale para todo mundo, menos para quem usar uma chave própria.'}`
-          : 'O assistente usa a chave configurada pelo administrador do app. Também dá para usar uma chave própria: nesse caso, os pedidos são cobrados na conta dela e o modelo é escolhido aqui.'}
+          ? `O assistente usa a chave marcada, cobrada pelo provedor dela (Anthropic, OpenAI, DeepSeek, Qwen…). ${info.access === 'list' ? 'Ela vale para você e para as pessoas que você liberar abaixo.' : 'Ela vale para todo mundo, menos para quem usar uma chave própria.'}`
+          : 'O assistente usa a chave configurada pelo administrador do app. Também dá para usar uma chave própria, de qualquer provedor da lista: nesse caso, os pedidos são cobrados na conta dela e o modelo é escolhido aqui.'}
       </p>
 
       <div className="settings-sec">{admin ? 'Chave da API em uso' : 'Qual chave usar'}</div>
@@ -148,7 +165,7 @@ export default function AgentKeys({ scope = 'me' }) {
             tag="padrão"
             sub={
               info.appKey
-                ? `Configurada pelo administrador · ${info.appModel}`
+                ? `Configurada pelo administrador · ${info.appProvider ? `${info.appProvider} · ` : ''}${info.appModel}`
                 : info.appBlocked
                   ? 'O administrador não liberou a chave do app para você'
                   : 'O administrador ainda não pôs uma chave'
@@ -166,6 +183,7 @@ export default function AgentKeys({ scope = 'me' }) {
             title={k.label}
             hint={shown[k.id] || k.hint}
             revealed={Boolean(shown[k.id])}
+            sub={[k.providerName, k.model || (k.active ? current : '') || 'modelo do painel', k.baseUrl].filter(Boolean).join(' · ')}
           >
             {canEdit && (
               <span className="agent-key-tools">
@@ -198,39 +216,21 @@ export default function AgentKeys({ scope = 'me' }) {
       </div>
 
       {canEdit ? (
-        <form
-          className="agent-key-add"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (key.trim()) add();
+        <AddKey
+          providers={info.providers || []}
+          paths={paths}
+          api={api}
+          disabled={busy}
+          onAdded={(d) => {
+            apply(d);
+            loadModels();
           }}
-        >
-          <div className="agent-key-add-head">
-            <Plus size={16} aria-hidden="true" />
-            <b>Adicionar uma chave</b>
-            <small>Crie em console.anthropic.com, em API Keys</small>
-          </div>
-          <div className="agent-key-add-fields">
-            <input placeholder="Nome (opcional)" value={label} maxLength={60} onChange={(e) => setLabel(e.target.value)} disabled={busy} aria-label="Nome da chave" />
-            <input
-              type="password"
-              autoComplete="off"
-              placeholder="sk-ant-…"
-              value={key}
-              onChange={(e) => setKey(e.target.value)}
-              disabled={busy}
-              aria-label="Chave da API da Anthropic"
-            />
-            <button className="btn" type="submit" disabled={busy || !key.trim()}>
-              {busy ? 'Conferindo…' : 'Adicionar'}
-            </button>
-          </div>
-        </form>
+        />
       ) : (
         <p className="kv">Só o dono do app mexe nas chaves.</p>
       )}
 
-      <div className="settings-sec">Modelo</div>
+      <div className="settings-sec">Modelo{providerName ? ` · ${providerName}` : ''}</div>
       <div className="agent-model">
         <Cpu size={18} className="ico-purple" aria-hidden="true" />
         {custom ? (
@@ -242,7 +242,7 @@ export default function AgentKeys({ scope = 'me' }) {
               saveModel(model);
             }}
           >
-            <input autoFocus value={model} placeholder="claude-…" onChange={(e) => setModel(e.target.value)} aria-label="Nome do modelo" disabled={busy} />
+            <input autoFocus value={model} placeholder="nome do modelo" onChange={(e) => setModel(e.target.value)} aria-label="Nome do modelo" disabled={busy} />
             <button className="btn" type="submit" disabled={busy || !model.trim()}>
               Usar
             </button>
@@ -251,7 +251,7 @@ export default function AgentKeys({ scope = 'me' }) {
               type="button"
               onClick={() => {
                 setCustom(false);
-                setModel(info.model || '');
+                setModel(currentOf(info));
               }}
             >
               Cancelar
@@ -272,17 +272,19 @@ export default function AgentKeys({ scope = 'me' }) {
               saveModel(e.target.value);
             }}
           >
-            {!admin && <option value="">Igual ao do app ({info.appModel})</option>}
+            {sameAsApp && <option value="">Igual ao do app ({info.appModel})</option>}
+            {!sameAsApp && !current && <option value="">Escolha um modelo</option>}
             {options.map((m) => (
               <option key={m.id} value={m.id}>
-                {m.name === m.id ? m.id : `${m.name} (${m.id})`}
-                {admin && m.id === info.defaultModel ? ' · padrão' : ''}
+                {modelLabel(m)}
+                {admin && provider === 'anthropic' && m.id === info.defaultModel ? ' · padrão' : ''}
               </option>
             ))}
             <option value={OTHER}>Outro modelo…</option>
           </select>
         )}
       </div>
+      {modelsError && modelEditable && <p className="agent-model-note error-text">Não deu para buscar a lista de modelos: {modelsError}</p>}
       <p className="agent-model-note">
         {admin
           ? info.access === 'list'
@@ -291,6 +293,7 @@ export default function AgentKeys({ scope = 'me' }) {
           : ownActive
             ? 'Vale só para você, com a sua chave.'
             : 'Com a chave do app, o modelo é o que o administrador escolheu. Para escolher, use uma chave sua.'}
+        {(admin || ownActive) && provider !== 'anthropic' && ' Com este provedor, a pesquisa na internet é a do próprio app (Pesquisa na internet, no painel do administrador).'}
       </p>
       {!admin && (
         <>
@@ -316,9 +319,179 @@ export default function AgentKeys({ scope = 'me' }) {
       )}
       {admin && <AppAccess info={info} canEdit={canEdit} busy={busy} run={run} api={api} />}
       {admin && <AppRepeat info={info} canEdit={canEdit} busy={busy} run={run} api={api} />}
+      {admin && info.search && <AppSearch info={info} canEdit={canEdit} busy={busy} run={run} api={api} />}
       {admin && <AppUsage api={api} />}
       {admin && <AppJobs api={api} />}
     </div>
+  );
+}
+
+/**
+ * Adicionar uma chave: o provedor, a chave (e o endereço, no "Outro") e o modelo. Com o provedor escolhido e a chave
+ * colada, a lista de modelos vem do próprio provedor (o que também confere a chave); sem lista, digita-se o nome.
+ */
+function AddKey({ providers, paths, api, disabled, onAdded }) {
+  const [provider, setProvider] = useState('anthropic');
+  const [label, setLabel] = useState('');
+  const [key, setKey] = useState('');
+  const [baseUrl, setBaseUrl] = useState('');
+  // a busca: idle | loading | ok | error
+  const [probe, setProbe] = useState({ state: 'idle', models: [], error: '' });
+  const [model, setModel] = useState('');
+  const [typing, setTyping] = useState(false); // digitando um modelo fora da lista
+  const [busy, setBusy] = useState(false);
+  const seq = useRef(0);
+  const preset = providers.find((p) => p.id === provider) || providers[0] || { id: 'anthropic', name: 'Anthropic' };
+  const needsUrl = Boolean(preset.custom);
+  const ready = key.trim().length >= 8 && (!needsUrl || /^https?:\/\/.{4,}/.test(baseUrl.trim()));
+
+  // escolheu o provedor (ou colou a chave): busca os modelos dele, um pouco depois de parar de digitar
+  useEffect(() => {
+    const n = ++seq.current;
+    setModel('');
+    setTyping(false);
+    if (!ready) {
+      setProbe({ state: 'idle', models: [], error: '' });
+      return;
+    }
+    setProbe((p) => ({ ...p, state: 'loading', error: '' }));
+    const t = setTimeout(() => {
+      api()
+        .post(`${paths.models}/probe`, { provider, apiKey: key.trim(), baseUrl: needsUrl ? baseUrl.trim() : undefined })
+        .then(
+          (d) => {
+            if (n !== seq.current) return;
+            const list = d.models || [];
+            setProbe({ state: 'ok', models: list, error: '' });
+            setModel(list[0]?.id || '');
+            setTyping(list.length === 0);
+          },
+          (e) => n === seq.current && setProbe({ state: 'error', models: [], error: e.message }),
+        );
+    }, 600);
+    return () => clearTimeout(t);
+  }, [provider, key, baseUrl, ready]);
+
+  const add = async () => {
+    setBusy(true);
+    try {
+      const d = await api().post(paths.keys, {
+        label: label.trim(),
+        apiKey: key.trim(),
+        provider,
+        baseUrl: needsUrl ? baseUrl.trim() : undefined,
+        model: model.trim(),
+      });
+      setKey('');
+      setLabel('');
+      setBaseUrl('');
+      onAdded(d);
+      useStore.getState().notify('Chave guardada', 'info');
+    } catch (e) {
+      useStore.getState().notify(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const off = disabled || busy;
+  const canAdd = ready && probe.state === 'ok' && model.trim() && !off;
+
+  return (
+    <form
+      className="agent-key-add"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (canAdd) add();
+      }}
+    >
+      <div className="agent-key-add-head">
+        <Plus size={16} aria-hidden="true" />
+        <b>Adicionar uma chave</b>
+        <small>{preset.custom ? 'O endereço e a chave do serviço (Ollama, vLLM, LM Studio, um proxy…)' : `Crie em ${preset.console}`}</small>
+      </div>
+      <div className="agent-key-add-provider">
+        <label className="agent-key-field">
+          <span>Provedor</span>
+          <select value={provider} onChange={(e) => setProvider(e.target.value)} disabled={off} aria-label="Provedor da chave">
+            {providers.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        {needsUrl && (
+          <label className="agent-key-field grow">
+            <span>Endereço da API</span>
+            <input
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder="http://localhost:11434/v1"
+              disabled={off}
+              inputMode="url"
+              spellCheck={false}
+            />
+          </label>
+        )}
+      </div>
+      <div className="agent-key-add-fields">
+        <input placeholder="Nome (opcional)" value={label} maxLength={60} onChange={(e) => setLabel(e.target.value)} disabled={off} aria-label="Nome da chave" />
+        <input
+          type="password"
+          autoComplete="off"
+          placeholder={preset.placeholder || 'chave da API'}
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+          disabled={off}
+          aria-label={`Chave da API de ${preset.name}`}
+        />
+      </div>
+      {ready && (
+        <div className="agent-key-add-model" aria-live="polite">
+          {probe.state === 'loading' && (
+            <span className="agent-key-probe">
+              <Loader2 size={14} className="spin" aria-hidden="true" /> Buscando os modelos de {preset.name}…
+            </span>
+          )}
+          {probe.state === 'error' && <span className="agent-key-probe error-text">{probe.error}</span>}
+          {probe.state === 'ok' && (
+            <label className="agent-key-field grow">
+              <span>
+                Modelo
+                {probe.models.length > 0 ? ` (${probe.models.length} disponíveis)` : ' (o provedor não lista os modelos: digite o nome)'}
+              </span>
+              {typing ? (
+                <input autoFocus={probe.models.length > 0} value={model} onChange={(e) => setModel(e.target.value)} placeholder="nome do modelo" disabled={off} spellCheck={false} />
+              ) : (
+                <select
+                  value={model}
+                  disabled={off}
+                  onChange={(e) => {
+                    if (e.target.value === OTHER) {
+                      setModel('');
+                      setTyping(true);
+                      return;
+                    }
+                    setModel(e.target.value);
+                  }}
+                >
+                  {probe.models.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {modelLabel(m)}
+                    </option>
+                  ))}
+                  <option value={OTHER}>Outro modelo…</option>
+                </select>
+              )}
+            </label>
+          )}
+          <button className="btn" type="submit" disabled={!canAdd}>
+            {busy ? 'Conferindo…' : 'Adicionar'}
+          </button>
+        </div>
+      )}
+      {!preset.webSearch && <small className="kv">Com este provedor, a pesquisa na internet é a do próprio app (o serviço escolhido no painel do administrador).</small>}
+    </form>
   );
 }
 
@@ -439,6 +612,108 @@ function AppRepeat({ info, canEdit, busy, run, api }) {
         ))}
       </div>
     </div>
+  );
+}
+
+/**
+ * A pesquisa na internet do próprio app (painel), para os modelos sem a da Anthropic: o serviço (DuckDuckGo sem
+ * chave, Brave, Tavily, Exa, Serper ou um SearXNG) e a chave dele. Salvar faz uma pesquisa de teste antes.
+ */
+function AppSearch({ info, canEdit, busy, run, api }) {
+  const s = info.search;
+  const [engine, setEngine] = useState(s.engine);
+  const [key, setKey] = useState('');
+  const [base, setBase] = useState(s.base || '');
+  useEffect(() => {
+    setEngine(s.engine);
+    setBase(s.base || '');
+    setKey('');
+  }, [s.engine, s.base]);
+  const e = s.engines.find((x) => x.id === engine) || s.engines[0];
+  const current = s.engines.find((x) => x.id === s.engine);
+  const stored = s.keys?.[engine];
+  const changed = engine !== s.engine || key.trim() || (e.url && base.trim() !== (s.base || ''));
+  const missing = (e.keyed && !key.trim() && !stored) || (e.url && !base.trim());
+  const off = !canEdit || busy;
+  const save = () =>
+    run(
+      () => api().put('/api/admin/agent', { searchEngine: engine, searchKey: key.trim() || undefined, searchBase: e.url ? base.trim() : undefined }),
+      engine === 'off' ? 'Pesquisa do app desligada' : `Pesquisa na internet: ${e.name}`,
+    );
+  const anthropic = (info.provider || 'anthropic') === 'anthropic';
+  return (
+    <form
+      className="agent-access agent-search"
+      onSubmit={(ev) => {
+        ev.preventDefault();
+        if (changed && !missing && !off) save();
+      }}
+    >
+      <div className="settings-sec">
+        <Globe size={14} aria-hidden="true" /> Pesquisa na internet
+      </div>
+      <small className="kv">
+        Os modelos da Anthropic usam a pesquisa da própria Anthropic. Os outros provedores (e a Anthropic, quando a organização da chave não a
+        liberou) usam este serviço{anthropic ? '' : ', que vale agora para a chave do app'}.
+      </small>
+      <div className="agent-key-add-provider">
+        <label className="agent-key-field">
+          <span>Serviço</span>
+          <select value={engine} onChange={(ev) => setEngine(ev.target.value)} disabled={off} aria-label="Serviço de pesquisa na internet">
+            {s.engines.map((x) => (
+              <option key={x.id} value={x.id}>
+                {x.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        {e.keyed && (
+          <label className="agent-key-field grow">
+            <span>{stored ? `Chave (guardada: ${stored})` : 'Chave'}</span>
+            <input
+              type="password"
+              autoComplete="off"
+              value={key}
+              onChange={(ev) => setKey(ev.target.value)}
+              placeholder={stored ? 'cole outra para trocar' : `chave do ${e.name}`}
+              disabled={off}
+              aria-label={`Chave do ${e.name}`}
+            />
+          </label>
+        )}
+        {e.url && (
+          <label className="agent-key-field grow">
+            <span>Endereço</span>
+            <input value={base} onChange={(ev) => setBase(ev.target.value)} placeholder="https://busca.exemplo.com" disabled={off} inputMode="url" spellCheck={false} />
+          </label>
+        )}
+        {canEdit && (
+          <button className="btn" type="submit" disabled={!changed || missing || off}>
+            {busy ? 'Testando…' : 'Salvar'}
+          </button>
+        )}
+      </div>
+      {e.keyed && e.console && (
+        <small className="kv">
+          Crie a chave em{' '}
+          <a href={e.console} target="_blank" rel="noreferrer">
+            {e.console.replace(/^https:\/\//, '')}
+          </a>
+          .
+        </small>
+      )}
+      {e.note && <small className="kv">{e.note}</small>}
+      {engine === 'duckduckgo' && engine === s.engine && (
+        <small className="kv">
+          {s.device ? 'Neste app do Windows, pela internet deste computador. ' : ''}
+          {s.node ? `Para quem não está no app do Windows: pelo nó de mídia “${s.node}”.` : 'Nenhum nó de mídia ligado agora: quem não está no app do Windows pesquisa por este servidor.'}
+        </small>
+      )}
+      {engine === s.engine && s.blocked && (
+        <small className="error-text">O {current?.name || e.name} bloqueou as pesquisas deste servidor. Escolha outro serviço.</small>
+      )}
+      {engine === s.engine && !s.blocked && !s.ready && s.engine !== 'off' && <small className="error-text">Falta configurar este serviço.</small>}
+    </form>
   );
 }
 

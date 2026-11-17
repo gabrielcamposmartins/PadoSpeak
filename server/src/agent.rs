@@ -18,10 +18,13 @@
 //! modelo, chamadas de ferramenta), selados com a chave das mensagens. Ela é reenviada inteira e sem mudar
 //! nada a cada passo (a API exige o histórico como foi), por isso "Nova conversa" apaga e recomeça.
 //!
-//! Chaves e modelo: o dono guarda uma ou mais chaves da API no painel do administrador (aba Assistente) e escolhe
-//! a que vale e o modelo (padrão `AGENT_MODEL`, senão `claude-opus-5-5`); a variável `ANTHROPIC_API_KEY`
-//! aparece como mais uma chave. Cada pessoa pode pôr as suas em Configurações → Assistente e usar uma delas
-//! (com o modelo que quiser) no lugar da do app. O endereço vem de `ANTHROPIC_BASE_URL` (padrão, a da Anthropic).
+//! Chaves e modelo: o dono guarda uma ou mais chaves da API no painel do administrador (aba Assistente), cada uma
+//! de um provedor (Anthropic, OpenAI, Gemini, DeepSeek, Qwen, Mistral… veja `crate::agent_llm`) e com o modelo
+//! escolhido na lista que o provedor dá, e escolhe a que vale. A variável `ANTHROPIC_API_KEY` aparece como mais
+//! uma chave (da Anthropic; modelo padrão `AGENT_MODEL`, senão `claude-opus-5-5`, endereço `ANTHROPIC_BASE_URL`).
+//! Cada pessoa pode pôr as suas em Configurações → Assistente e usar uma delas no lugar da do app.
+use crate::agent_llm::{self as llm, Resolved};
+use crate::agent_web;
 use crate::api::{ApiError, AuthUser};
 use crate::host::App;
 use crate::models::{user_from_row, User, USER_COLS};
@@ -40,13 +43,6 @@ use tower::ServiceExt;
 type AppState = State<Arc<App>>;
 type ApiResult<T> = Result<T, ApiError>;
 
-/// `ANTHROPIC_BASE_URL` troca o endereço da API (um proxy da empresa, ou um servidor de teste).
-fn base_url() -> String {
-    std::env::var("ANTHROPIC_BASE_URL").ok().map(|u| u.trim().trim_end_matches('/').to_string()).filter(|u| !u.is_empty()).unwrap_or_else(|| "https://api.anthropic.com".into())
-}
-const API_VERSION: &str = "2026-10-21";
-/// Recusa do modelo: a API tenta de novo no modelo que a Anthropic recomenda para o motivo (`fallbacks: "default"`).
-const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
 const DEFAULT_MODEL: &str = "claude-opus-5-5";
 /// Passos (chamadas à API) por pedido, para um pedido não virar um laço sem fim.
 const MAX_STEPS: usize = 16;
@@ -97,11 +93,14 @@ pub fn router() -> Router<Arc<App>> {
         .route("/api/agent/keys/{id}", axum::routing::delete(my_delete_key))
         .route("/api/agent/keys/{id}/reveal", get(my_reveal_key))
         .route("/api/agent/models", get(my_models))
+        .route("/api/agent/models/probe", post(my_probe))
         .route("/api/admin/agent", get(config).put(save_config))
         .route("/api/admin/agent/keys", post(admin_add_key))
         .route("/api/admin/agent/keys/{id}", axum::routing::delete(admin_delete_key))
         .route("/api/admin/agent/keys/{id}/reveal", get(admin_reveal_key))
         .route("/api/admin/agent/models", get(admin_models))
+        .route("/api/admin/agent/models/probe", post(admin_probe))
+        .route("/api/agent/web-search/{id}", post(web_search_result))
         .route("/api/admin/agent/people", post(admin_add_person))
         .route("/api/admin/agent/people/{id}", axum::routing::delete(admin_remove_person))
         .route("/api/admin/agent/jobs", get(admin_jobs))
@@ -178,10 +177,19 @@ fn env_model() -> Option<String> {
     std::env::var("AGENT_MODEL").ok().map(|m| m.trim().to_string()).filter(|m| !m.is_empty())
 }
 
-/// O modelo do app: o escolhido no painel, senão `AGENT_MODEL`, senão o padrão.
-async fn app_model(app: &App) -> String {
+/// O modelo da Anthropic para uma chave sem modelo guardado (a da variável e as de antes dos provedores): o
+/// escolhido no painel, senão `AGENT_MODEL`, senão o padrão.
+async fn anthropic_model(app: &App) -> String {
     let saved = app.db.get_setting(SETTING_MODEL).await.ok().flatten().filter(|m| !m.trim().is_empty());
     saved.or_else(env_model).unwrap_or_else(|| DEFAULT_MODEL.into())
+}
+
+/// O modelo do app: o da chave em uso.
+async fn app_model(app: &App) -> String {
+    match app_key(app).await.ok().flatten() {
+        Some(k) if !k.model.is_empty() => k.model,
+        _ => anthropic_model(app).await,
+    }
 }
 
 /// Um id de modelo plausível (vazio = o padrão).
@@ -200,6 +208,31 @@ struct StoredKey {
     label: String,
     key: String,
     created_at: i64,
+    /// O provedor (`crate::agent_llm::PRESETS`).
+    provider: String,
+    /// O endereço digitado (só no provedor `custom`).
+    base: String,
+    /// O modelo escolhido para esta chave (vazio nas da Anthropic de antes: vale o do painel).
+    model: String,
+}
+
+impl StoredKey {
+    fn resolved(&self, model: String, own: bool) -> Resolved {
+        Resolved { key: self.key.clone(), model, own, provider: self.provider.clone(), base: llm::base_of(&self.provider, &self.base) }
+    }
+}
+
+/// A chave da variável `ANTHROPIC_API_KEY`, como mais uma do chaveiro do app.
+fn env_stored() -> Option<StoredKey> {
+    env_key().map(|key| StoredKey {
+        id: ENV_KEY_ID.into(),
+        label: "Variável ANTHROPIC_API_KEY".into(),
+        key,
+        created_at: 0,
+        provider: llm::ANTHROPIC.into(),
+        base: String::new(),
+        model: String::new(),
+    })
 }
 
 /// "sk-ant-api03…Ab12": dá para reconhecer a chave sem mostrá-la.
@@ -215,22 +248,30 @@ fn hint(key: &str) -> String {
 
 /// As chaves de uma pessoa (`Some(id)`) ou do app (`None`), na ordem em que entraram.
 async fn ring(app: &App, owner: Option<&str>) -> ApiResult<Vec<StoredKey>> {
-    let map = |r: &libsql::Row| Ok((r.get::<String>(0)?, r.get::<String>(1)?, r.get::<String>(2)?, r.get::<i64>(3)?));
+    const COLS: &str = "id, label, secret, created_at, provider, COALESCE(base_url, ''), COALESCE(model, '')";
+    let map = |r: &libsql::Row| {
+        Ok((
+            r.get::<String>(0)?,
+            r.get::<String>(1)?,
+            r.get::<String>(2)?,
+            r.get::<i64>(3)?,
+            r.get::<String>(4)?,
+            r.get::<String>(5)?,
+            r.get::<String>(6)?,
+        ))
+    };
     let rows = match owner {
-        Some(id) => {
-            app.db
-                .query_all("SELECT id, label, secret, created_at FROM agent_keys WHERE user_id = ?1 ORDER BY created_at", [id], map)
-                .await?
-        }
+        Some(id) => app.db.query_all(&format!("SELECT {COLS} FROM agent_keys WHERE user_id = ?1 ORDER BY created_at"), [id], map).await?,
         None => {
             migrate_legacy(app).await?;
-            app.db.query_all("SELECT id, label, secret, created_at FROM agent_keys WHERE user_id IS NULL ORDER BY created_at", (), map).await?
+            app.db.query_all(&format!("SELECT {COLS} FROM agent_keys WHERE user_id IS NULL ORDER BY created_at"), (), map).await?
         }
     };
     Ok(rows
         .into_iter()
-        .map(|(id, label, sealed, created_at)| StoredKey { id, label, key: app.db.cipher.reveal(&sealed), created_at })
-        .filter(|k| k.key.starts_with("sk-"))
+        .map(|(id, label, sealed, created_at, provider, base, model)| StoredKey { id, label, key: app.db.cipher.reveal(&sealed), created_at, provider, base, model })
+        // uma chave que não abre (a chave das mensagens do servidor mudou) não serve para nada
+        .filter(|k| !k.key.is_empty() && k.key != crate::crypto::UNREADABLE)
         .collect())
 }
 
@@ -251,17 +292,17 @@ async fn migrate_legacy(app: &App) -> ApiResult<()> {
 }
 
 /// A chave do app em uso: a escolhida no painel; se ela sumiu, a da variável, senão a primeira guardada.
-async fn app_key(app: &App) -> ApiResult<Option<(String, String)>> {
+async fn app_key(app: &App) -> ApiResult<Option<StoredKey>> {
     let keys = ring(app, None).await?;
     let active = app.db.get_setting(SETTING_ACTIVE).await?.unwrap_or_default();
-    let env = env_key().map(|k| (ENV_KEY_ID.to_string(), k));
+    let env = env_stored();
     if active == ENV_KEY_ID && env.is_some() {
         return Ok(env);
     }
     if let Some(k) = keys.iter().find(|k| k.id == active) {
-        return Ok(Some((k.id.clone(), k.key.clone())));
+        return Ok(Some(k.clone()));
     }
-    Ok(env.or_else(|| keys.first().map(|k| (k.id.clone(), k.key.clone()))))
+    Ok(env.or_else(|| keys.into_iter().next()))
 }
 
 /// Só as pessoas escolhidas usam a chave do app?
@@ -298,30 +339,32 @@ async fn auto_mode(app: &App, user_id: &str) -> bool {
         .is_some_and(|v| v != 0)
 }
 
-/// A chave e o modelo de um pedido.
-#[derive(Clone)]
-struct Resolved {
-    key: String,
-    model: String,
-    /// A chave é da própria pessoa (os avisos de chave recusada mudam).
-    own: bool,
-}
-
 /// Com uma chave própria escolhida, ela e o modelo que a pessoa escolheu (ou o do app); senão, a chave e o
 /// modelo do app (com a chave do app, o modelo é o do dono: é ele quem paga), se o dono liberou para ela.
 async fn resolve(app: &App, me: &User) -> ApiResult<Option<Resolved>> {
     let (key_id, model) = prefs(app, &me.id).await?;
     if !key_id.is_empty() {
         if let Some(k) = ring(app, Some(&me.id)).await?.into_iter().find(|k| k.id == key_id) {
-            let model = if model.is_empty() { app_model(app).await } else { model };
-            return Ok(Some(Resolved { key: k.key, model, own: true }));
+            // o modelo da chave; nas da Anthropic de antes, o escolhido aqui, senão o do app (se for da Anthropic)
+            let model = if !k.model.is_empty() {
+                k.model.clone()
+            } else if !model.is_empty() {
+                model
+            } else {
+                match app_key(app).await? {
+                    Some(a) if a.provider == llm::ANTHROPIC && !a.model.is_empty() => a.model,
+                    _ => anthropic_model(app).await,
+                }
+            };
+            return Ok(Some(k.resolved(model, true)));
         }
     }
     if !app_allowed(app, me).await? {
         return Ok(None);
     }
-    let Some((_, key)) = app_key(app).await? else { return Ok(None) };
-    Ok(Some(Resolved { key, model: app_model(app).await, own: false }))
+    let Some(k) = app_key(app).await? else { return Ok(None) };
+    let model = if k.model.is_empty() { anthropic_model(app).await } else { k.model.clone() };
+    Ok(Some(k.resolved(model, false)))
 }
 
 fn suggested() -> Value {
@@ -329,7 +372,17 @@ fn suggested() -> Value {
 }
 
 fn key_view(k: &StoredKey, active: bool) -> Value {
-    json!({ "id": k.id, "label": k.label, "hint": hint(&k.key), "createdAt": k.created_at, "active": active })
+    json!({
+        "id": k.id,
+        "label": k.label,
+        "hint": hint(&k.key),
+        "createdAt": k.created_at,
+        "active": active,
+        "provider": k.provider,
+        "providerName": llm::name_of(&k.provider),
+        "model": k.model,
+        "baseUrl": k.base,
+    })
 }
 
 fn is_owner(me: &User) -> bool {
@@ -353,10 +406,11 @@ async fn config(State(app): AppState, AuthUser(me, _): AuthUser) -> ApiResult<Js
 }
 
 async fn config_view(app: &App, me: &User) -> ApiResult<Value> {
-    let active = app_key(app).await?.map(|(id, _)| id).unwrap_or_default();
+    let current = app_key(app).await?;
+    let active = current.as_ref().map(|k| k.id.clone()).unwrap_or_default();
+    let provider = current.as_ref().map_or(llm::ANTHROPIC.to_string(), |k| k.provider.clone());
     let mut keys = Vec::new();
-    if let Some(k) = env_key() {
-        let env = StoredKey { id: ENV_KEY_ID.into(), label: "Variável ANTHROPIC_API_KEY".into(), key: k, created_at: 0 };
+    if let Some(env) = env_stored() {
         let mut v = key_view(&env, active == ENV_KEY_ID);
         v["env"] = json!(true);
         keys.push(v);
@@ -376,10 +430,44 @@ async fn config_view(app: &App, me: &User) -> ApiResult<Value> {
         "configured": !active.is_empty(),
         "keys": keys,
         "model": app_model(app).await,
+        "provider": provider,
+        "providerName": llm::name_of(&provider),
+        "providers": llm::presets_view(true),
         "defaultModel": env_model().unwrap_or_else(|| DEFAULT_MODEL.into()),
-        "models": suggested(),
+        "models": if provider == llm::ANTHROPIC { suggested() } else { json!([]) },
         "canEdit": is_owner(me),
+        "search": search_view(app, me).await,
     }))
+}
+
+/// O nome (do Painel → Mídia) do nó que pesquisa pelo DuckDuckGo agora, se houver.
+async fn search_node_name(app: &App, relay: Option<&agent_web::Relay>) -> Option<String> {
+    let id = &relay?.node;
+    let name = app.db.query_one("SELECT name FROM media_nodes WHERE id = ?1", [id.as_str()], |r| r.get::<String>(0)).await.ok().flatten();
+    Some(name.unwrap_or_else(|| id.clone()))
+}
+
+/// A pesquisa do próprio app no painel: o serviço, de quais há chave guardada (só a dica) e o endereço do SearXNG.
+async fn search_view(app: &App, me: &User) -> Value {
+    let cfg = search_config(app, Some(&me.id)).await;
+    let mut hints = serde_json::Map::new();
+    for e in agent_web::ENGINES.iter().filter(|e| e.keyed) {
+        let stored = app.db.get_setting(&agent_web::setting_key(e.id)).await.ok().flatten().map(|k| app.db.cipher.reveal(&k));
+        if let Some(k) = stored.filter(|k| !k.is_empty() && k != crate::crypto::UNREADABLE) {
+            hints.insert(e.id.into(), json!(hint(&k)));
+        }
+    }
+    json!({
+        "engine": cfg.engine,
+        "engines": agent_web::engines_view(),
+        "keys": hints,
+        "base": cfg.base,
+        "ready": cfg.usable(),
+        "blocked": cfg.relay.is_none() && agent_web::blocked(&cfg.engine),
+        "node": search_node_name(app, cfg.relay.as_ref()).await,
+        // este app do Windows (de quem olha o painel) pesquisa pela internet do computador
+        "device": app.hub.search_conn(&me.id).is_some(),
+    })
 }
 
 #[derive(Deserialize)]
@@ -394,6 +482,13 @@ struct ConfigBody {
     access: Option<String>,
     /// Quem agenda tarefas que se repetem: `none`, `admins` ou `all`.
     repeat: Option<String>,
+    /// A pesquisa do app (para os modelos sem a da Anthropic): o serviço, a chave dele e o endereço do SearXNG.
+    #[serde(rename = "searchEngine")]
+    search_engine: Option<String>,
+    #[serde(rename = "searchKey")]
+    search_key: Option<String>,
+    #[serde(rename = "searchBase")]
+    search_base: Option<String>,
 }
 
 async fn save_config(State(app): AppState, AuthUser(me, _): AuthUser, Json(body): Json<ConfigBody>) -> ApiResult<Json<Value>> {
@@ -433,12 +528,62 @@ async fn save_config(State(app): AppState, AuthUser(me, _): AuthUser, Json(body)
             _ => "Assistente: só administradores do app agendam tarefas que se repetem",
         });
     }
+    if let Some(id) = body.search_engine {
+        save_search(&app, &me, &id, body.search_key.as_deref(), body.search_base.as_deref()).await?;
+    }
     if let Some(m) = body.model {
         let m = clean_model(&m)?;
-        app.db.set_setting(SETTING_MODEL, &m).await?;
+        // o modelo é da chave em uso; na da variável (e sem chave), o do painel
+        match app_key(&app).await? {
+            Some(k) if k.id != ENV_KEY_ID => {
+                if m.is_empty() && k.provider != llm::ANTHROPIC {
+                    return Err(bad("Escolha um modelo"));
+                }
+                app.db.execute("UPDATE agent_keys SET model = ?1 WHERE id = ?2 AND user_id IS NULL", [m.as_str(), k.id.as_str()]).await?;
+            }
+            _ => app.db.set_setting(SETTING_MODEL, &m).await?,
+        }
         app.logs.info(&format!("Assistente: modelo do app = {}", if m.is_empty() { "padrão" } else { &m }));
     }
     Ok(Json(config_view(&app, &me).await?))
+}
+
+/// Troca o serviço de pesquisa do app, depois de uma pesquisa de teste dar certo (a chave e o endereço valem).
+async fn save_search(app: &App, me: &User, id: &str, key: Option<&str>, base: Option<&str>) -> ApiResult<()> {
+    let e = agent_web::engine(id).ok_or_else(|| bad("Escolha um serviço de pesquisa da lista"))?;
+    let typed = key.map(str::trim).filter(|k| !k.is_empty()).map(llm::clean_key).transpose().map_err(bad)?;
+    let relay = app.media.search_node().map(|node| agent_web::Relay { registry: app.media.clone(), node });
+    let device = Some(agent_web::Device { hub: app.hub.clone(), user_id: me.id.clone() });
+    let mut cfg = agent_web::Config { engine: e.id.to_string(), relay, device, ..Default::default() };
+    if e.keyed {
+        cfg.key = match &typed {
+            Some(k) => k.clone(),
+            None => {
+                let stored = app.db.get_setting(&agent_web::setting_key(e.id)).await?.map(|k| app.db.cipher.reveal(&k));
+                stored.filter(|k| !k.is_empty() && k != crate::crypto::UNREADABLE).ok_or_else(|| bad(format!("Cole a chave do {}", e.name)))?
+            }
+        };
+    }
+    if e.id == agent_web::SEARXNG {
+        let b = base.unwrap_or_default();
+        cfg.base = llm::clean_base(b).map_err(|_| bad("Digite o endereço do SearXNG inteiro (por exemplo, https://busca.exemplo.com)"))?;
+    }
+    if e.id != agent_web::OFF {
+        agent_web::unblock();
+        let hits = agent_web::search(&cfg, "PadoSpeak").await.map_err(|m| bad(format!("A pesquisa de teste não deu certo: {m}")))?;
+        if hits.is_empty() && e.id != agent_web::SEARXNG {
+            return Err(bad(format!("O {} não devolveu nada na pesquisa de teste", e.name)));
+        }
+    }
+    if let Some(k) = typed.filter(|_| e.keyed) {
+        app.db.set_setting(&agent_web::setting_key(e.id), &app.db.cipher.seal(&k)).await?;
+    }
+    if e.id == agent_web::SEARXNG {
+        app.db.set_setting(agent_web::SETTING_BASE, &cfg.base).await?;
+    }
+    app.db.set_setting(agent_web::SETTING_ENGINE, e.id).await?;
+    app.logs.info(&format!("Assistente: pesquisa na internet = {}", e.name));
+    Ok(())
 }
 
 /// Os números de uso que a API devolve numa resposta.
@@ -465,17 +610,21 @@ fn usage_of(res: &Value) -> Usage {
 
 /// Soma o que uma resposta gastou na conta da pessoa (do dia, por chave). Falhar aqui não atrapalha a resposta.
 async fn record_usage(app: &App, user_id: &str, own: bool, res: &Value) {
-    let u = usage_of(res);
+    add_usage(app, user_id, own, usage_of(res), 1).await;
+}
+
+/// Soma na conta do dia (`requests` pedidos à API; a pesquisa do próprio app conta só em `web_searches`).
+async fn add_usage(app: &App, user_id: &str, own: bool, u: Usage, requests: i64) {
     let day = local_day_utc(crate::now_ms());
     let r = app
         .db
         .execute(
             "INSERT INTO agent_usage (user_id, day, own, requests, input, output, cache_read, cache_write, web_searches) \
-             VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6, ?7, ?8) \
-             ON CONFLICT(user_id, day, own) DO UPDATE SET requests = requests + 1, input = input + excluded.input, \
+             VALUES (?1, ?2, ?3, ?9, ?4, ?5, ?6, ?7, ?8) \
+             ON CONFLICT(user_id, day, own) DO UPDATE SET requests = requests + excluded.requests, input = input + excluded.input, \
              output = output + excluded.output, cache_read = cache_read + excluded.cache_read, \
              cache_write = cache_write + excluded.cache_write, web_searches = web_searches + excluded.web_searches",
-            libsql::params![user_id, day.as_str(), own as i64, u.input, u.output, u.cache_read, u.cache_write, u.web_searches],
+            libsql::params![user_id, day.as_str(), own as i64, u.input, u.output, u.cache_read, u.cache_write, u.web_searches, requests],
         )
         .await;
     if let Err(e) = r {
@@ -635,14 +784,32 @@ async fn admin_remove_person(State(app): AppState, AuthUser(me, _): AuthUser, Pa
 struct NewKey {
     label: Option<String>,
     api_key: String,
+    /// O provedor (padrão: a Anthropic).
+    provider: Option<String>,
+    /// O endereço, no provedor `custom`.
+    base_url: Option<String>,
+    /// O modelo escolhido na lista do provedor.
+    model: Option<String>,
 }
 
-/// Confere com a Anthropic e guarda (selada) uma chave nova no chaveiro de `owner`. Devolve o id.
-async fn add_key(app: &App, owner: Option<&str>, body: NewKey) -> ApiResult<String> {
-    let key = body.api_key.trim().to_string();
-    if !key.starts_with("sk-") || key.len() > 300 || key.chars().any(char::is_whitespace) {
-        return Err(bad("Cole a chave inteira (começa com sk-ant-)"));
+/// O provedor e o endereço de uma chave nova ou de uma consulta à lista de modelos. O provedor `custom` (endereço
+/// digitado) é só do dono, nas chaves do app.
+fn target(provider: Option<&str>, base_url: Option<&str>, custom_ok: bool) -> ApiResult<(String, String)> {
+    let provider = provider.map(str::trim).filter(|p| !p.is_empty()).unwrap_or(llm::ANTHROPIC);
+    let p = llm::preset(provider).ok_or_else(|| bad("Escolha um provedor da lista"))?;
+    if p.id != llm::CUSTOM {
+        return Ok((p.id.to_string(), String::new()));
     }
+    if !custom_ok {
+        return Err(bad("Escolha um provedor da lista"));
+    }
+    Ok((p.id.to_string(), llm::clean_base(base_url.unwrap_or_default()).map_err(bad)?))
+}
+
+/// Confere com o provedor e guarda (selada) uma chave nova no chaveiro de `owner`. Devolve o id.
+async fn add_key(app: &App, owner: Option<&str>, body: NewKey) -> ApiResult<String> {
+    let key = llm::clean_key(&body.api_key).map_err(bad)?;
+    let (provider, base) = target(body.provider.as_deref(), body.base_url.as_deref(), owner.is_none())?;
     let keys = ring(app, owner).await?;
     if keys.len() >= MAX_KEYS {
         return Err(bad(format!("Dá para guardar até {MAX_KEYS} chaves")));
@@ -650,14 +817,21 @@ async fn add_key(app: &App, owner: Option<&str>, body: NewKey) -> ApiResult<Stri
     if keys.iter().any(|k| k.key == key) {
         return Err(bad("Essa chave já está guardada"));
     }
-    check_key(&key).await.map_err(bad)?;
+    // a lista de modelos confere a chave (recusada: erro; provedor sem lista: segue sem conferir)
+    let models = llm::models(&provider, &llm::base_of(&provider, &base), &key).await.map_err(bad)?;
+    let mut model = clean_model(body.model.as_deref().unwrap_or_default())?;
+    if model.is_empty() && provider != llm::ANTHROPIC {
+        model = models.first().and_then(|m| m["id"].as_str()).map(str::to_string).ok_or_else(|| bad("Digite o nome do modelo"))?;
+    }
     let label = body.label.unwrap_or_default().trim().chars().take(60).collect::<String>();
-    let label = if label.is_empty() { format!("Chave {}", keys.len() + 1) } else { label };
+    let label = if label.is_empty() { format!("{} {}", llm::name_of(&provider), keys.len() + 1) } else { label };
     let id = uuid::Uuid::new_v4().to_string();
+    let base = (!base.is_empty()).then_some(base);
+    let model = (!model.is_empty()).then_some(model);
     app.db
         .execute(
-            "INSERT INTO agent_keys (id, user_id, label, secret, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            libsql::params![id.as_str(), owner, label, app.db.cipher.seal(&key), crate::now_ms()],
+            "INSERT INTO agent_keys (id, user_id, label, secret, created_at, provider, base_url, model) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            libsql::params![id.as_str(), owner, label, app.db.cipher.seal(&key), crate::now_ms(), provider, base, model],
         )
         .await?;
     Ok(id)
@@ -706,39 +880,50 @@ async fn admin_reveal_key(State(app): AppState, AuthUser(me, _): AuthUser, Path(
     Ok(Json(json!({ "key": key })))
 }
 
-/// Os modelos que a chave em uso alcança (a lista da Anthropic); sem ela, as sugestões.
-async fn list_models(key: Option<&str>) -> Value {
-    let Some(key) = key else { return suggested() };
-    let fetch = async {
-        let http = reqwest::Client::builder().timeout(Duration::from_secs(15)).build().ok()?;
-        let res = http
-            .get(format!("{}/v1/models?limit=100", base_url()))
-            .header("x-api-key", key)
-            .header("anthropic-version", API_VERSION)
-            .send()
-            .await
-            .ok()?;
-        let bytes = res.error_for_status().ok()?.bytes().await.ok()?;
-        let v: Value = serde_json::from_slice(&bytes).ok()?;
-        let list: Vec<Value> = v["data"]
-            .as_array()?
-            .iter()
-            .filter_map(|m| {
-                let id = m["id"].as_str()?;
-                Some(json!({ "id": id, "name": m["display_name"].as_str().unwrap_or(id) }))
-            })
-            .collect();
-        (!list.is_empty()).then_some(Value::Array(list))
+/// Os modelos que uma chave alcança, na lista do provedor dela (sem chave, as sugestões da Anthropic).
+async fn list_models(key: Option<&StoredKey>) -> Value {
+    let Some(k) = key else { return json!({ "models": suggested(), "provider": llm::ANTHROPIC }) };
+    let anthropic = k.provider == llm::ANTHROPIC;
+    let (models, error) = match llm::models(&k.provider, &llm::base_of(&k.provider, &k.base), &k.key).await {
+        Ok(list) if !list.is_empty() => (Value::Array(list), None),
+        Ok(_) => (if anthropic { suggested() } else { json!([]) }, None),
+        Err(e) => (if anthropic { suggested() } else { json!([]) }, Some(e)),
     };
-    fetch.await.unwrap_or_else(suggested)
+    json!({ "models": models, "provider": k.provider, "error": error })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProbeBody {
+    provider: String,
+    base_url: Option<String>,
+    api_key: String,
+}
+
+/// Os modelos de um provedor com uma chave que ainda não foi guardada (o app mostra a lista ao escolher o provedor).
+async fn probe(body: ProbeBody, custom_ok: bool) -> ApiResult<Json<Value>> {
+    let key = llm::clean_key(&body.api_key).map_err(bad)?;
+    let (provider, base) = target(Some(&body.provider), body.base_url.as_deref(), custom_ok)?;
+    let models = llm::models(&provider, &llm::base_of(&provider, &base), &key).await.map_err(bad)?;
+    let models = if models.is_empty() && provider == llm::ANTHROPIC { suggested() } else { Value::Array(models) };
+    Ok(Json(json!({ "provider": provider, "models": models })))
+}
+
+async fn admin_probe(AuthUser(me, _): AuthUser, Json(body): Json<ProbeBody>) -> ApiResult<Json<Value>> {
+    require_owner(&me)?;
+    probe(body, true).await
+}
+
+async fn my_probe(State(app): AppState, AuthUser(me, _): AuthUser, Json(body): Json<ProbeBody>) -> ApiResult<Json<Value>> {
+    require_access(&app, &me).await?;
+    probe(body, false).await
 }
 
 async fn admin_models(State(app): AppState, AuthUser(me, _): AuthUser) -> ApiResult<Json<Value>> {
     if !crate::admin::can_view(&app, &me).await {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "Não encontrado"));
     }
-    let key = app_key(&app).await?.map(|(_, k)| k);
-    Ok(Json(json!({ "models": list_models(key.as_deref()).await })))
+    Ok(Json(list_models(app_key(&app).await?.as_ref()).await))
 }
 
 // Configurações → Assistente (cada pessoa)
@@ -752,6 +937,8 @@ async fn my_view(app: &App, me: &User) -> ApiResult<Value> {
         "active": active,
         "model": model,
         "appModel": app_model(app).await,
+        "appProvider": app_key(app).await?.map(|k| llm::name_of(&k.provider)),
+        "providers": llm::presets_view(false),
         "appKey": app_key(app).await?.is_some() && app_allowed(app, me).await?,
         // o app tem chave, mas o dono não liberou para esta pessoa
         "appBlocked": app_key(app).await?.is_some() && !app_allowed(app, me).await?,
@@ -785,7 +972,19 @@ async fn save_my_settings(State(app): AppState, AuthUser(me, _): AuthUser, Json(
         key_id = id;
     }
     if let Some(m) = body.model {
-        model = clean_model(&m)?;
+        let m = clean_model(&m)?;
+        // com uma chave própria, o modelo fica nela (o de antes, guardado à parte, sai)
+        if let Some(k) = ring(&app, Some(&me.id)).await?.into_iter().find(|k| k.id == key_id) {
+            if m.is_empty() && k.provider != llm::ANTHROPIC {
+                return Err(bad("Escolha um modelo"));
+            }
+            app.db
+                .execute("UPDATE agent_keys SET model = ?1 WHERE id = ?2 AND user_id = ?3", [m.as_str(), k.id.as_str(), me.id.as_str()])
+                .await?;
+            model = String::new();
+        } else {
+            model = m;
+        }
     }
     app.db
         .execute(
@@ -836,25 +1035,14 @@ async fn my_reveal_key(State(app): AppState, AuthUser(me, _): AuthUser, Path(id)
 /// Os modelos da chave que a pessoa está usando (a própria, se escolheu; senão, a do app).
 async fn my_models(State(app): AppState, AuthUser(me, _): AuthUser) -> ApiResult<Json<Value>> {
     require_access(&app, &me).await?;
-    let key = resolve(&app, &me).await?.map(|r| r.key);
-    Ok(Json(json!({ "models": list_models(key.as_deref()).await })))
-}
-
-/// Uma consulta de graça (a lista de modelos) para saber se a chave vale.
-async fn check_key(key: &str) -> Result<(), String> {
-    let http = reqwest::Client::builder().timeout(Duration::from_secs(15)).build().map_err(|e| e.to_string())?;
-    let res = http
-        .get(format!("{}/v1/models?limit=1", base_url()))
-        .header("x-api-key", key)
-        .header("anthropic-version", API_VERSION)
-        .send()
-        .await
-        .map_err(|_| "Não deu para falar com a Anthropic agora. Tente de novo.".to_string())?;
-    match res.status().as_u16() {
-        200..=299 => Ok(()),
-        401 | 403 => Err("A Anthropic recusou esta chave".into()),
-        s => Err(format!("A Anthropic respondeu com erro {s}")),
-    }
+    let (key_id, _) = prefs(&app, &me.id).await?;
+    let own = ring(&app, Some(&me.id)).await?.into_iter().find(|k| k.id == key_id);
+    let key = match own {
+        Some(k) => Some(k),
+        None if app_allowed(&app, &me).await? => app_key(&app).await?,
+        None => None,
+    };
+    Ok(Json(list_models(key.as_ref()).await))
 }
 
 // ---------- A conversa guardada ----------
@@ -1493,8 +1681,8 @@ Onde você aparece: num balão aberto por cima da tela que a pessoa está usando
 - Para resumir ou se atualizar do que se falou no servidor, leia os canais de texto com read_server_messages (ou um canal só, com read_messages).\n\
 - Chamada travando, com atraso, voz picotando ou vídeo ruim: veja os dados com call_quality e explique em linguagem simples o \
 que eles mostram (conexão direta, pelo SFU ou pelo relay; latência; perda de pacotes; o que limita o envio) e o que a pessoa pode fazer.\n\
-- Para o que está fora do app (notícias, documentação, preços, como fazer algo), pesquise na internet com web_search, quando ela \
-estiver disponível, e diga de onde veio a informação.\n\
+- Para o que está fora do app (notícias, documentação, preços, como fazer algo), pesquise na internet com web_search ou \
+search_internet (a que estiver disponível; open_page lê uma página inteira) e diga de onde veio a informação, com o endereço.\n\
 - Para fazer algo mais tarde (\"daqui a 1 hora\", \"amanhã às 9h\"), com a hora local da pessoa (o contexto traz a hora e o \
 fuso): schedule_message manda uma mensagem; schedule_action roda uma ação exata de outra ferramenta; schedule_task deixa uma \
 instrução para você fazer sozinho na hora (resumir, conferir, avisar). Repetir (\"todo dia\") só aparece para administradores do \
@@ -1557,6 +1745,9 @@ struct Call {
 /// A pesquisa na internet para este modelo (a versão com filtro dinâmico só nos modelos que a aceitam), ou
 /// nada: desligada pela variável, ou recusada antes para esta chave.
 fn web_search_tool(using: &Resolved) -> Option<Value> {
+    if using.kind() != llm::Kind::Anthropic {
+        return None;
+    }
     if std::env::var("AGENT_WEB_SEARCH").is_ok_and(|v| matches!(v.trim().to_lowercase().as_str(), "off" | "0" | "false" | "no" | "nao" | "não")) {
         return None;
     }
@@ -1570,12 +1761,79 @@ fn web_search_tool(using: &Resolved) -> Option<Value> {
     Some(json!({ "type": if dynamic { WEB_SEARCH } else { WEB_SEARCH_BASIC }, "name": "web_search", "max_uses": WEB_SEARCH_MAX_USES }))
 }
 
+#[derive(Deserialize)]
+struct WebSearchResult {
+    results: Option<Vec<Value>>,
+    error: Option<String>,
+}
+
+/// O app do Windows devolve uma pesquisa que o servidor pediu (`agent:web-search`; veja `agent_web.rs`).
+async fn web_search_result(
+    State(app): AppState,
+    AuthUser(me, _): AuthUser,
+    Path(id): Path<String>,
+    Json(body): Json<WebSearchResult>,
+) -> ApiResult<Json<Value>> {
+    let _ = &app;
+    let result = match (body.results, body.error) {
+        (Some(list), _) => Ok(list.into_iter().take(20).collect()),
+        (None, e) => Err(e.unwrap_or_else(|| "sem resultado".into()).chars().take(300).collect()),
+    };
+    if !agent_web::deliver(&me.id, &id, result) {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "Essa pesquisa não está mais esperando"));
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// O serviço de pesquisa do próprio app escolhido no painel (com a chave dele), e por onde vai a pesquisa sem
+/// chave: o app do Windows de `user` (se houver), o nó de mídia, o servidor.
+async fn search_config(app: &App, user: Option<&str>) -> agent_web::Config {
+    let engine = app.db.get_setting(agent_web::SETTING_ENGINE).await.ok().flatten().filter(|e| agent_web::engine(e).is_some());
+    let engine = engine.unwrap_or_else(|| agent_web::DEFAULT_ENGINE.to_string());
+    let key = app.db.get_setting(&agent_web::setting_key(&engine)).await.ok().flatten().map(|k| app.db.cipher.reveal(&k));
+    let key = key.filter(|k| !k.is_empty() && k != crate::crypto::UNREADABLE).unwrap_or_default();
+    let base = app.db.get_setting(agent_web::SETTING_BASE).await.ok().flatten().unwrap_or_default();
+    let relay = app.media.search_node().map(|node| agent_web::Relay { registry: app.media.clone(), node });
+    let device = user.map(|u| agent_web::Device { hub: app.hub.clone(), user_id: u.to_string() });
+    agent_web::Config { engine, key, base, relay, device }
+}
+
+/// Sem a pesquisa da Anthropic (outro provedor, ou a organização da chave não liberou), a do próprio app:
+/// junta as duas ferramentas e devolve a sessão que as roda, ou nada se ela está desligada ou sem chave.
+async fn own_search(app: &App, user_id: &str, tools: &mut Vec<Value>) -> Option<agent_web::Session> {
+    let cfg = search_config(app, Some(user_id)).await;
+    if !cfg.usable() {
+        return None;
+    }
+    tools.retain(|t| !agent_web::is_tool(t["name"].as_str().unwrap_or_default()));
+    tools.extend(agent_web::tool_defs());
+    Some(agent_web::Session::new(cfg))
+}
+
+/// Roda uma ferramenta do modelo: a pesquisa do app aqui; as outras em `execute`.
+#[allow(clippy::too_many_arguments)]
+async fn run_tool(app: &Arc<App>, me: &User, token: &str, ctx: &Ctx, own: bool, web: &mut Option<agent_web::Session>, name: &str, input: &Value) -> Result<Value, String> {
+    if agent_web::is_tool(name) {
+        let Some(session) = web.as_mut() else {
+            return Err("A pesquisa na internet não está disponível agora".into());
+        };
+        let (value, searched) = session.run(name, input).await?;
+        if searched {
+            add_usage(app, &me.id, own, Usage { web_searches: 1, ..Default::default() }, 0).await;
+        }
+        return Ok(value);
+    }
+    execute(app, me, token, ctx, name, input).await
+}
+
 async fn run(app: &Arc<App>, me: &User, token: &str, using: &Resolved) -> Result<(), String> {
     let ctx = Ctx::load(app, me).await;
     let mut tools: Vec<Value> = tool_defs(&ctx).into_iter().map(|t| t.wire()).collect();
     let mut web = web_search_tool(using);
-    if let Some(w) = &web {
-        tools.push(w.clone());
+    let mut own_web = None;
+    match &web {
+        Some(w) => tools.push(w.clone()),
+        None => own_web = own_search(app, &me.id, &mut tools).await,
     }
     let http = reqwest::Client::builder().timeout(Duration::from_secs(600)).build().map_err(|e| e.to_string())?;
     let mut pauses = 0;
@@ -1594,7 +1852,7 @@ async fn run(app: &Arc<App>, me: &User, token: &str, using: &Resolved) -> Result
             "cache_control": { "type": "ephemeral" },
         });
         status(app, me, "Pensando…");
-        let res = match call_claude(&http, using, &body).await {
+        let res = match llm::call(&http, using, &body).await {
             Ok(v) => v,
             // a organização da chave não liberou a pesquisa na internet: segue sem ela (e não tenta mais)
             Err(f) if web.is_some() && f.status == 400 && f.detail.to_lowercase().contains("web_search") => {
@@ -1602,8 +1860,9 @@ async fn run(app: &Arc<App>, me: &User, token: &str, using: &Resolved) -> Result
                 WEB_REFUSED.lock().unwrap().get_or_insert_with(HashSet::new).insert(hint(&using.key));
                 web = None;
                 tools.retain(|t| t["name"] != "web_search");
+                own_web = own_search(app, &me.id, &mut tools).await;
                 body["tools"] = json!(tools);
-                call_claude(&http, using, &body).await.map_err(|f| f.message)?
+                llm::call(&http, using, &body).await.map_err(|f| f.message)?
             }
             Err(f) => return Err(f.message),
         };
@@ -1644,55 +1903,12 @@ async fn run(app: &Arc<App>, me: &User, token: &str, using: &Resolved) -> Result
         let mut results = Vec::new();
         for c in &calls {
             status(app, me, &describe(app, &c.name, &c.input).await);
-            let r = execute(app, me, token, &ctx, &c.name, &c.input).await;
+            let r = run_tool(app, me, token, &ctx, using.own, &mut own_web, &c.name, &c.input).await;
             results.push(tool_result(&c.id, r));
         }
         save_turn(app, &me.id, "user", &Value::Array(results)).await.map_err(|e| e.1)?;
     }
     Err("O assistente parou depois de muitos passos seguidos. Peça para ele continuar, se precisar.".into())
-}
-
-/// Um pedido à API que não deu certo: o código, o motivo que a API deu e o que mostrar à pessoa.
-struct Failure {
-    status: u16,
-    detail: String,
-    message: String,
-}
-
-impl Failure {
-    fn plain(message: &str) -> Self {
-        Failure { status: 0, detail: String::new(), message: message.into() }
-    }
-}
-
-async fn call_claude(http: &reqwest::Client, using: &Resolved, body: &Value) -> Result<Value, Failure> {
-    let res = http
-        .post(format!("{}/v1/messages", base_url()))
-        .header("x-api-key", &using.key)
-        .header("anthropic-version", API_VERSION)
-        .header("anthropic-beta", FALLBACK_BETA)
-        .header("content-type", "application/json")
-        .body(body.to_string())
-        .send()
-        .await
-        .map_err(|e| Failure::plain(if e.is_timeout() { "O assistente demorou demais para responder." } else { "Não deu para falar com o assistente agora. Tente de novo." }))?;
-    let status = res.status();
-    let bytes = res.bytes().await.map_err(|_| Failure::plain("A resposta do assistente chegou incompleta."))?;
-    let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    if status.is_success() {
-        return Ok(v);
-    }
-    let detail = v["error"]["message"].as_str().unwrap_or_default().to_string();
-    eprintln!("assistente: a API respondeu {status}: {detail}");
-    let message = match status.as_u16() {
-        401 | 403 if using.own => "A Anthropic recusou a sua chave da API. Troque em Configurações → Assistente.".into(),
-        401 | 403 => "A chave da API do assistente foi recusada. Avise o dono do app.".into(),
-        404 => format!("O modelo {} não existe ou esta chave não tem acesso a ele.", using.model),
-        429 => "O assistente está com muitos pedidos agora. Tente de novo em instantes.".into(),
-        529 | 500..=599 => "O serviço do assistente está instável agora. Tente de novo em instantes.".into(),
-        _ => format!("O assistente não conseguiu responder (erro {status})."),
-    };
-    Err(Failure { status: status.as_u16(), detail, message })
 }
 
 fn tool_result(id: &Value, r: Result<Value, String>) -> Value {
@@ -2976,8 +3192,10 @@ async fn task_loop(app: &Arc<App>, user: &User, token: &str, using: &Resolved, i
     let mut tools: Vec<Value> =
         tool_defs(&ctx).into_iter().filter(|t| !NOT_SCHEDULABLE.contains(&t.name) && !NOT_IN_TASKS.contains(&t.name)).map(|t| t.wire()).collect();
     let mut web = web_search_tool(using);
-    if let Some(w) = &web {
-        tools.push(w.clone());
+    let mut own_web = None;
+    match &web {
+        Some(w) => tools.push(w.clone()),
+        None => own_web = own_search(app, &user.id, &mut tools).await,
     }
     let now = crate::now_ms();
     let header = format!(
@@ -3005,14 +3223,15 @@ async fn task_loop(app: &Arc<App>, user: &User, token: &str, using: &Resolved, i
             "output_config": { "effort": "medium" },
             "fallbacks": "default",
         });
-        let res = match call_claude(&http, using, &body).await {
+        let res = match llm::call(&http, using, &body).await {
             Ok(v) => v,
             Err(f) if web.is_some() && f.status == 400 && f.detail.to_lowercase().contains("web_search") => {
                 WEB_REFUSED.lock().unwrap().get_or_insert_with(HashSet::new).insert(hint(&using.key));
                 web = None;
                 tools.retain(|t| t["name"] != "web_search");
+                own_web = own_search(app, &user.id, &mut tools).await;
                 body["tools"] = json!(tools);
-                call_claude(&http, using, &body).await.map_err(|f| f.message)?
+                llm::call(&http, using, &body).await.map_err(|f| f.message)?
             }
             Err(f) => return Err(f.message),
         };
@@ -3043,7 +3262,7 @@ async fn task_loop(app: &Arc<App>, user: &User, token: &str, using: &Resolved, i
             let r = if NOT_SCHEDULABLE.contains(&name) || NOT_IN_TASKS.contains(&name) {
                 Err("Numa tarefa agendada esta ação não roda (precisa da pessoa presente). Diga no resumo que ela precisa fazer isso.".to_string())
             } else {
-                execute(app, user, token, &ctx, name, &b["input"]).await
+                run_tool(app, user, token, &ctx, using.own, &mut own_web, name, &b["input"]).await
             };
             results.push(tool_result(&b["id"], r));
         }
@@ -3138,7 +3357,12 @@ async fn describe(app: &App, name: &str, input: &Value) -> String {
         "read_server_messages" => format!("Ler os canais de texto de {}", server(s("server_id")).await),
         "voice_channels" => format!("Ver quem está na voz em {}", server(s("server_id")).await),
         "call_quality" => "Analisar a qualidade da chamada".into(),
-        "web_search" => format!("Pesquisar na internet {}", quote(&s("query"), 50)),
+        "web_search" | "search_internet" => format!("Pesquisar na internet {}", quote(&s("query"), 50)),
+        "open_page" => {
+            let u = s("url");
+            let host = reqwest::Url::parse(&u).ok().and_then(|u| u.host_str().map(|h| h.trim_start_matches("www.").to_string()));
+            format!("Ler a página {}", host.unwrap_or_else(|| "da internet".into()))
+        }
         "send_message" => {
             let to = if !s("channel_id").is_empty() {
                 channel(s("channel_id")).await

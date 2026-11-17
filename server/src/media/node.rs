@@ -43,11 +43,14 @@ pub struct NodeConfig {
     pub pot: bool,
     /// Buscar a música pelo nó (`MEDIA_MUSIC=off` desliga).
     pub music: bool,
+    /// Pesquisar na internet pelo nó para o assistente (`MEDIA_SEARCH=off` desliga): sai pela internet desta
+    /// máquina, que os buscadores sem chave não bloqueiam como bloqueiam os datacenters.
+    pub search: bool,
 }
 
 impl NodeConfig {
     /// `MEDIA_JOIN` (código de pareamento, do Painel → Mídia), `SFU_UDP_PORT` (padrão 3479),
-    /// `SFU_PUBLIC_IP`, `MEDIA_SFU=off`, `POT=off`, `MEDIA_MUSIC=off`.
+    /// `SFU_PUBLIC_IP`, `MEDIA_SFU=off`, `POT=off`, `MEDIA_MUSIC=off`, `MEDIA_SEARCH=off`.
     pub fn from_env(data_dir: PathBuf) -> Result<Self, String> {
         let env = |k: &str| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
         let off = |k: &str| env(k).is_some_and(|v| matches!(v.to_lowercase().as_str(), "0" | "off" | "false" | "no"));
@@ -62,6 +65,7 @@ impl NodeConfig {
             sfu: !off("MEDIA_SFU"),
             pot: !off("POT"),
             music: !off("MEDIA_MUSIC"),
+            search: !off("MEDIA_SEARCH"),
         })
     }
 
@@ -74,6 +78,7 @@ impl NodeConfig {
             sfu: true,
             pot: true,
             music: true,
+            search: true,
         })
     }
 }
@@ -245,6 +250,9 @@ impl Shared {
         }
         if self.cfg.music {
             caps.push("music".into());
+        }
+        if self.cfg.search {
+            caps.push("search".into());
         }
         let lan: Vec<String> = crate::tls::lan_addresses().iter().filter(|ip| ip.is_ipv4()).map(|ip| ip.to_string()).collect();
         // O `hello` vai com a hora do servidor: o relógio deste computador pode estar errado (sem sincronizar),
@@ -430,6 +438,16 @@ impl Shared {
             }
             "music.resolve" if self.cfg.music => self.music.resolve(&d).await,
             "music.info" if self.cfg.music => self.music.info(&d).await,
+            "web.search" if self.cfg.search => {
+                let q: String = d.get("q").and_then(Value::as_str).unwrap_or_default().trim().chars().take(300).collect();
+                if q.is_empty() {
+                    return json!({ "error": "Pesquisa vazia" });
+                }
+                match crate::agent_web::duckduckgo(&q).await {
+                    Ok(results) => json!({ "results": results }),
+                    Err(e) => json!({ "error": e }),
+                }
+            }
             _ => json!({ "error": "Este nó não faz isso" }),
         }
     }

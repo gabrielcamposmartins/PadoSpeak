@@ -716,6 +716,11 @@ export function createConnStore({ key, kind, base, primary = false }) {
           get().lanHello();
           // Para o painel do administrador: onde o app está aberto.
           rt?.send('app:hello', appPlatform());
+          // o app do Windows pesquisa na internet para o assistente pela internet do computador (versões que têm o comando)
+          if (isTauri)
+            import('@tauri-apps/api/core')
+              .then(({ invoke }) => invoke('web_search_ok'))
+              .then(() => rt?.send('app:search', {}), () => {});
         }
       });
       rt.on('lan:nearby', ({ peers }) => {
@@ -1017,6 +1022,17 @@ export function createConnStore({ key, kind, base, primary = false }) {
       });
       // uma tarefa agendada terminou e entrou na conversa com o assistente: o balão aberto busca de novo
       rt.on('agent:refresh', () => primary && ui().setState((st) => ({ agentAccess: (st.agentAccess || 0) + 1 })));
+      // o servidor pede uma pesquisa no DuckDuckGo pela internet deste computador (veja server/src/agent_web.rs)
+      rt.on('agent:web-search', async ({ id, q } = {}) => {
+        if (!isTauri || !id) return;
+        const answer = (body) => api.post(`/api/agent/web-search/${encodeURIComponent(id)}`, body).catch(() => {});
+        try {
+          const { invoke } = await import('@tauri-apps/api/core');
+          answer({ results: await invoke('web_search', { q: String(q || '') }) });
+        } catch (e) {
+          answer({ error: String(e?.message || e || 'erro') });
+        }
+      });
       rt.on('agent:status', (d) => primary && ui().setState({ agentStatus: d.busy ? d.label || 'Pensando…' : null }));
       // o pedido terminou no servidor (ele roda em segundo plano): o balão busca a resposta
       rt.on('agent:done', () => primary && ui().setState((st) => ({ agentDone: (st.agentDone || 0) + 1 })));
@@ -1460,6 +1476,8 @@ export function createConnStore({ key, kind, base, primary = false }) {
     startEmail: (email) => api.post('/api/me/email', { email }),
     verifyEmail: (code) => api.post('/api/me/email/verify', { code }),
     removeEmail: () => api.del('/api/me/email'),
+    /** Troca a senha (o servidor confere a atual e encerra as sessões dos outros aparelhos). */
+    changePassword: (current, newPassword) => api.put('/api/me/password', { current, newPassword }),
     unlinkGoogle: () => api.del('/api/me/google'),
     forgotPassword: (email) => api.post('/api/auth/forgot', { email }),
     sessionToken: () => token,

@@ -44,6 +44,9 @@ struct Conn {
     mobile: bool,
     /// Sessão do app (painel do administrador): conta quanto tempo ficou aberto.
     session: Option<i64>,
+    /// App do Windows que pesquisa na internet para o assistente pela internet do próprio computador
+    /// (`app:search`; veja `agent_web.rs`).
+    web_search: bool,
 }
 
 /// De onde a conexão vem, para achar aparelhos na mesma rede.
@@ -665,6 +668,21 @@ impl Hub {
         Self::send_to_user(&s, user_id, &event(ev, d));
     }
 
+    /// Uma conexão do app do Windows desta pessoa que pesquisa na internet (a que está na tela, se houver).
+    pub fn search_conn(&self, user_id: &str) -> Option<String> {
+        let s = self.state.lock().unwrap();
+        let mut list: Vec<(&String, &Conn)> =
+            s.user_conns.get(user_id).into_iter().flatten().filter_map(|id| s.conns.get(id).map(|c| (id, c))).filter(|(_, c)| c.web_search).collect();
+        list.sort_by_key(|(id, c)| (!c.visible, (*id).clone()));
+        list.first().map(|(id, _)| (*id).clone())
+    }
+
+    /// Um evento para uma conexão só. `false` se ela não existe mais.
+    pub fn to_conn(&self, conn_id: &str, ev: &str, d: impl Serialize) -> bool {
+        let s = self.state.lock().unwrap();
+        s.conns.get(conn_id).is_some_and(|c| c.tx.send(event(ev, d)).is_ok())
+    }
+
     pub fn to_users(&self, user_ids: &[String], ev: &str, d: impl Serialize) {
         let s = self.state.lock().unwrap();
         let msg = event(ev, d);
@@ -1143,6 +1161,7 @@ impl Hub {
                     device: String::new(),
                     mobile,
                     session: None,
+                    web_search: false,
                 },
             );
             if first && Self::visible(&s, &user.id) {
@@ -2566,6 +2585,14 @@ impl Hub {
                 None
             }
 
+            // App do Windows que pesquisa no DuckDuckGo para o assistente (a primeira opção da cascata).
+            "app:search" => {
+                if let Some(c) = self.state.lock().unwrap().conns.get_mut(conn_id) {
+                    c.web_search = true;
+                }
+                None
+            }
+
             // Som rápido: todos no canal de voz (ou na chamada) ouvem.
             "sound:play" => {
                 let sound_id = str_field("soundId");
@@ -2857,6 +2884,7 @@ mod tests {
             device: String::new(),
             mobile: false,
             session: None,
+            web_search: false,
         };
         {
             let mut s = hub.state.lock().unwrap();
@@ -2926,6 +2954,7 @@ mod tests {
                 device: String::new(),
                 mobile: false,
                 session: None,
+                web_search: false,
             },
         );
         s.voice.insert("geral".into(), vec![seat("pc", "ana", false), seat("bia1", "bia", false)]);
@@ -2997,6 +3026,7 @@ mod tests {
                         device: String::new(),
                         mobile: false,
                         session: None,
+                        web_search: false,
                     },
                 );
                 s.conn_voice.insert(conn.into(), ch.into());
@@ -3071,6 +3101,7 @@ mod tests {
             device: String::new(),
             mobile,
             session: None,
+            web_search: false,
         };
         let mut s = hub.state.lock().unwrap();
         s.user_conns.entry("ana".into()).or_default().insert("cel".into());

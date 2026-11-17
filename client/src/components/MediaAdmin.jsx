@@ -14,7 +14,7 @@ const ago = (ts, now) => {
   return `há ${Math.round(s / 86400)} dias`;
 };
 
-const CAP_LABELS = { sfu: 'Chamadas (SFU)', pot: 'Token do YouTube', music: 'Busca da música' };
+const CAP_LABELS = { sfu: 'Chamadas (SFU)', pot: 'Token do YouTube', music: 'Busca da música', search: 'Pesquisa do assistente' };
 const RELAY = [
   ['auto', 'Automático (quando o YouTube bloquear este servidor, ou ele estiver sobrecarregado ou sem memória para buscar a música)'],
   ['always', 'Sempre pelo nó'],

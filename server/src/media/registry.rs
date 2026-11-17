@@ -395,6 +395,11 @@ impl Registry {
         !self.inner.lock().unwrap().priority.is_empty()
     }
 
+    /// Nó que pesquisa na internet para o assistente (o DuckDuckGo sem chave pela internet dele).
+    pub fn search_node(&self) -> Option<String> {
+        self.remote_with("search", false).into_iter().next()
+    }
+
     /// Nó que busca a música no lugar do principal.
     pub fn music_node(&self) -> Option<String> {
         if self.settings().music_relay == "off" {
@@ -549,6 +554,10 @@ mod tests {
         assert_eq!(reg.pick_sfu().as_deref(), Some("b"));
         assert!(!reg.usable_sfu("a") && reg.alive("a"));
         assert_eq!(reg.pot_node().as_deref(), Some("a"));
+        // a pesquisa do assistente: só quem anuncia "search" (logo ao ligar, sem esperar)
+        assert_eq!(reg.search_node(), None);
+        reg.attach(&hello("c", &["search"]), "C", "9.9.9.9", tx.clone());
+        assert_eq!(reg.search_node().as_deref(), Some("c"));
         assert_eq!(SfuMode::parse("qualquer"), SfuMode::All);
         assert_eq!(SfuMode::parse(SfuMode::Voice.as_str()), SfuMode::Voice);
     }
