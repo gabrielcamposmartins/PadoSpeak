@@ -1,5 +1,10 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.18.0 — 16/11/2026
+
+### Correções
+- Pequenos ajustes e correções.
+
 ## 1.17.0 — 16/11/2026
 
 ### Novidades
