@@ -13,7 +13,6 @@ import {
   Settings,
   Volume2,
   Activity,
-  AudioWaveform,
   VolumeX,
   X,
   SwitchCamera,
@@ -510,7 +509,6 @@ export default function VoiceView({ channel, variant }) {
   const [showDiag, setShowDiag] = useState(false);
   const store = useC.getState();
   const inCall = voice?.channelId === channel.id;
-  const nsOn = useStore((s) => s.prefs.noiseSuppression !== false);
   const ping = useServerPing(inCall, useC);
 
   const tiles = [];
@@ -800,15 +798,6 @@ export default function VoiceView({ channel, variant }) {
             )}
           </div>
           )}
-          <button
-            className={`ball${nsOn ? ' aqua' : ''}`}
-            onClick={() => store.setNoiseSuppression(!nsOn)}
-            title={nsOn ? 'Supressão de ruído: ligada' : 'Supressão de ruído: desligada'}
-            aria-label="Supressão de ruído por IA"
-            aria-pressed={nsOn}
-          >
-            <AudioWaveform />
-          </button>
           <button
             className={`ball${showDiag ? ' pressed' : ''}`}
             onClick={() => setShowDiag((v) => !v)}

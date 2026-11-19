@@ -1,19 +1,38 @@
 // Onde este cliente está rodando.
 export const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
+/**
+ * App do Android (pasta `android/`): um WebView que abre o servidor da comunidade, com a ponte `PadoSpeakAndroid`
+ * para o que é do sistema (notificações, chamada em segundo plano, downloads, links de fora). Ver `lib/android.js`.
+ */
+export const isAndroidApp = typeof navigator !== 'undefined' && / PadoSpeakAndroid\/\d/.test(navigator.userAgent);
+
 // Painel de hospedagem do binário (`padospeak-server`), ou /host durante o desenvolvimento.
 export const isPanel =
   typeof window !== 'undefined' &&
   (window.__PADOSPEAK_PANEL__ === true || (import.meta.env.DEV && location.pathname === '/host'));
 
+/** APK da última versão do app do Android (link fixo da release mais recente no GitHub). */
+export const ANDROID_URL = 'https://github.com/gabrielcamposmartins/PadoSpeak/releases/latest/download/PadoSpeak-android.apk';
+
+/** Versão do app do Android em que esta página está aberta (ou null). */
+export const androidAppVersion = typeof navigator !== 'undefined' ? navigator.userAgent.match(/ PadoSpeakAndroid\/([\d.]+)/)?.[1] || null : null;
+
 /** Instalador da última versão do app desktop (link fixo da release mais recente no GitHub). */
 export const DOWNLOAD_URL = 'https://github.com/gabrielcamposmartins/PadoSpeak/releases/latest/download/PadoSpeak-setup.exe';
 
-/** Abre um endereço fora do app: no app desktop, no navegador padrão; no navegador, numa aba nova. */
+/** Links de fora abrem no navegador do sistema (app do Windows e app do Android), não no próprio app. */
+export const opensInBrowser = isTauri || isAndroidApp;
+
+/** Abre um endereço fora do app: nos apps, no navegador padrão; no navegador, numa aba nova. */
 export async function openExternal(url) {
   if (isTauri) {
     const { invoke } = await import('@tauri-apps/api/core');
     return invoke('open_url', { url });
+  }
+  if (isAndroidApp && window.PadoSpeakAndroid) {
+    window.PadoSpeakAndroid.postMessage(JSON.stringify({ type: 'open', url: new URL(url, location.href).href }));
+    return;
   }
   window.open(url, '_blank', 'noopener');
 }

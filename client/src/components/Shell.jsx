@@ -20,7 +20,6 @@ import {
   Users,
   Music,
   ChevronDown,
-  AudioWaveform,
   Activity,
   Link2,
   Menu,
@@ -150,7 +149,6 @@ export function ProfileBar({ onMenu }) {
   const voice = vc((s) => s.voice);
   const muted = useStore((s) => s.selfMuted);
   const deafened = useStore((s) => s.selfDeafened);
-  const nsOn = useStore((s) => s.prefs.noiseSuppression !== false);
   const channel = vc((s) =>
     s.voice && !s.voice.dm ? s.guildData[s.voice.guildId]?.channels.find((c) => c.id === s.voice.channelId) : null,
   );
@@ -158,7 +156,7 @@ export function ProfileBar({ onMenu }) {
   const playing = vc((s) => (s.voice ? s.music[s.voice.channelId]?.current?.track : null));
   const game = prim((s) => gameText(s.activities?.[s.me?.id]));
   if (!me) return null;
-  const { toggleMute, toggleDeafen, openModal, setNoiseSuppression } = useStore.getState();
+  const { toggleMute, toggleDeafen, openModal } = useStore.getState();
 
   const offline = rtStatus !== 'connected';
   const chosen = STATUS_INFO[myStatus] || STATUS_INFO.online;
@@ -236,15 +234,6 @@ export function ProfileBar({ onMenu }) {
           aria-pressed={deafened}
         >
           {deafened ? <HeadphoneOff size={18} /> : <Headphones size={18} />}
-        </button>
-        <button
-          className={`${nsOn ? 'go' : 'gloss'} pill`}
-          aria-pressed={nsOn}
-          onClick={() => setNoiseSuppression(!nsOn)}
-          title={nsOn ? 'Supressão de ruído por IA: ligada' : 'Supressão de ruído por IA: desligada'}
-        >
-          <AudioWaveform size={18} />
-          Ruído IA
         </button>
         <button
           className="gloss round"

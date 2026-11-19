@@ -246,6 +246,11 @@ pub async fn apply(app: &App, m: Modules) -> Result<Modules, libsql::Error> {
     if before.music && !m.music {
         app.music.clear_all();
     }
+    if before.roles != m.roles {
+        if let Err(e) = crate::api::role_channels_changed(app).await {
+            app.logs.error(format!("canais por cargo: {}", e.1));
+        }
+    }
     if before != m {
         app.logs.info(format!("Módulos: {}", m.describe()));
         app.hub.to_all("app:modules", m);

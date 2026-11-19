@@ -454,6 +454,9 @@ pub struct GuildFull {
     /// Canal privado → quem tem acesso (só para administradores).
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub channel_access: std::collections::HashMap<String, Vec<String>>,
+    /// Canal privado → os cargos que o abrem (só para administradores).
+    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub channel_roles: std::collections::HashMap<String, Vec<String>>,
 }
 
 #[cfg(test)]

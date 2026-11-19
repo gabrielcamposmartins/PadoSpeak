@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- As mesmas cores do app instalável (manifest.webmanifest) -->
+    <color name="bar_top">#0D6CC0</color>
+    <color name="bar_bottom">#0A63B8</color>
+    <color name="launch_bg">#0A63B8</color>
+    <color name="icon_bg">#D93F3A</color>
+</resources>

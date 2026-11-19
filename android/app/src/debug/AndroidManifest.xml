@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Só no build de depuração: o teste no emulador manda o "Sair da chamada" pelo adb (o de lançamento não exporta). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <application>
+        <receiver
+            android:name=".CallActionReceiver"
+            android:exported="true"
+            tools:replace="android:exported" />
+    </application>
+</manifest>

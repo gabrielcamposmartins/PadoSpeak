@@ -1,6 +1,7 @@
 // App desktop fora de foco (atrás de outro programa, minimizado ou na bandeja do Windows):
 // os avisos viram notificações do Windows e uma chamada recebida traz a janela de volta.
-import { isTauri } from './env.js';
+import { isTauri, isAndroidApp } from './env.js';
+import { androidPost, androidVisible } from './android.js';
 import { plain } from './text.js';
 
 const appWindow = () => import('@tauri-apps/api/window').then((m) => m.getCurrentWindow());
@@ -37,12 +38,17 @@ async function outOfSight() {
  * Clicar nela traz a janela e abre `url` (ex.: a conversa).
  */
 export async function systemNotify(text, user, url) {
-  if (!isTauri) return;
+  if (!isTauri && !isAndroidApp) return;
+  const name = user ? plain(user.displayName) || user.username : '';
+  let body = plain(text);
+  if (name && body.startsWith(`${name} diz: `)) body = body.slice(name.length + 6);
+  // App do Android: notificação do sistema com o app fora da tela (o app confere de novo antes de mostrar).
+  if (isAndroidApp) {
+    if (!androidVisible()) androidPost('notify', { title: name || 'PadoSpeak', body, url: url || '/', tag: url || '' });
+    return;
+  }
   try {
     if (!(await outOfSight())) return;
-    const name = user ? plain(user.displayName) || user.username : '';
-    let body = plain(text);
-    if (name && body.startsWith(`${name} diz: `)) body = body.slice(name.length + 6);
     const { invoke } = await import('@tauri-apps/api/core');
     await invoke('notify_windows', { title: name || 'PadoSpeak', body, url: url || '/' });
   } catch (e) {

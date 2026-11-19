@@ -733,6 +733,15 @@ input[type='checkbox'] {
   outline: 2px solid var(--input-focus);
   outline-offset: 2px;
 }
+/* Toque no celular: sem o quadrado azul que o Chromium do Android pinta no que foi tocado. */
+html {
+  -webkit-tap-highlight-color: transparent;
+}
+/* Usando com o dedo (`data-input`, ver layout.js): sem o contorno de foco nos botões, que o Chromium do Android
+   passa a mostrar depois de digitar no teclado do celular. Com Tab ou setas (teclado de verdade), volta. */
+:root[data-input='touch'] :focus-visible {
+  outline: none;
+}
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
@@ -3803,9 +3812,14 @@ html:not([data-touch]) .channel:hover .call-timer:has(~ .ch-del) {
 .modal.wide {
   max-width: 720px;
 }
+/* Configurações: a janela cresce para caber todas as abas numa linha (no mínimo 880px, até a largura da tela); o
+   conteúdo das abas não mexe na largura (veja `.settings-pane`). */
 .modal.settings {
-  /* larga o bastante para as oito abas numa linha (sem rolagem para o lado), sem passar da tela */
-  max-width: min(1040px, calc(100vw - 32px));
+  width: fit-content;
+  min-width: min(880px, 100%);
+  max-width: 100%;
+  /* no máximo 70% da altura da tela; o conteúdo da aba rola dentro */
+  max-height: min(70vh, calc(100vh - 32px - var(--frame-h, 0px)));
 }
 .settings-cols {
   display: grid;
@@ -8000,6 +8014,28 @@ html[data-touch] .gs-card-actions {
   border-radius: 8px;
   border: 1px solid var(--row-hover-border);
 }
+.access-list.roles {
+  max-height: 136px;
+}
+/* Canal privado por cargo: os títulos "Cargos" e "Pessoas" das listas. */
+.access-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  margin-top: 12px;
+  font-size: 13px;
+}
+.access-title small {
+  color: var(--muted);
+  font-size: 11px;
+}
+.channel-access > .kv {
+  margin: 6px 0 0;
+}
+.access-row .role-icon {
+  flex: none;
+}
 .access-row {
   display: flex;
   align-items: center;
@@ -8667,6 +8703,9 @@ html[data-touch] [data-tip]::after {
 }
 .settings-pane {
   min-height: 360px;
+  /* não conta na largura da janela: ela segue as abas, e o conteúdo se ajusta a ela */
+  width: 0;
+  min-width: 100%;
 }
 /* Celular: as quatro abas cabem lado a lado (ícone em cima do nome) */
 @media (max-width: 560px) {

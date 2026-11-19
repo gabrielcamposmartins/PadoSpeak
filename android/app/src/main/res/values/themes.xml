@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Claro/escuro segue o sistema (values-night): o WebView passa isso para o prefers-color-scheme -->
+    <style name="Theme.PadoSpeak" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/launch_bg</item>
+        <item name="android:statusBarColor">@color/bar_top</item>
+        <item name="android:navigationBarColor">@color/bar_bottom</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:colorAccent">#2F8FE5</item>
+    </style>
+</resources>

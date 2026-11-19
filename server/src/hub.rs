@@ -199,9 +199,23 @@ struct HubState {
     /// Chamada de uma conversa privada → quem foi chamado para ela sem ser da conversa (`call:invite`). Entra
     /// só na chamada (não vê a conversa) e some daqui quando a chamada acaba.
     call_guests: HashMap<String, HashSet<String>>,
+    /// Quem está sendo chamado agora → as chamadas tocando para ele. Quem conecta durante o toque (o celular
+    /// que estava com a conexão parada, o app aberto pela notificação) recebe o `call:ring` de novo.
+    rings: HashMap<String, Vec<PendingRing>>,
     /// Os módulos ligados (veja `crate::modules`): o que for de um módulo desligado é recusado aqui.
     modules: crate::modules::Modules,
 }
+
+/// Uma chamada tocando para alguém (veja `HubState::rings`).
+struct PendingRing {
+    dm_id: String,
+    from: String,
+    at: std::time::Instant,
+    msg: String,
+}
+
+/// Por quanto tempo uma chamada toca (quem liga desiste sozinho depois de 1 minuto).
+const RING_FOR: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Quantas pessoas cabem numa chamada de conversa privada (os dois da conversa e os convidados).
 pub const CALL_MAX: usize = 10;
@@ -227,6 +241,8 @@ const VOICE_RESUME_GRACE: std::time::Duration = std::time::Duration::from_secs(2
 /// sem isto a pessoa ficaria no canal como fantasma até o TCP desistir (de 15 min a 1 h). Conta como
 /// queda: o lugar fica guardado pela folga de sempre (`VOICE_RESUME_GRACE`).
 const VOICE_SILENCE: std::time::Duration = std::time::Duration::from_secs(45);
+/// Intervalo do ping do WebSocket que o servidor manda a toda conexão (ver o `writer` em `run`).
+const KEEPALIVE_PING: std::time::Duration = std::time::Duration::from_secs(50);
 /// Depois de o servidor subir, quem conecta está voltando (reinício/atualização): sem "ficou online".
 const RESTART_QUIET_MS: i64 = 90_000;
 /// Máximo de "chamar atenção" por usuário a cada minuto.
@@ -655,6 +671,43 @@ impl Hub {
         if let Some(c) = s.conns.get(conn_id) {
             let _ = c.tx.send(msg);
         }
+    }
+
+    /// Guarda a chamada que está tocando para `user_id` (e manda agora para as conexões dele).
+    fn ring(s: &mut HubState, user_id: &str, dm_id: &str, from: &str, msg: String) {
+        Self::send_to_user(s, user_id, &msg);
+        let list = s.rings.entry(user_id.to_string()).or_default();
+        list.retain(|r| r.dm_id != dm_id && r.at.elapsed() < RING_FOR);
+        list.push(PendingRing { dm_id: dm_id.to_string(), from: from.to_string(), at: std::time::Instant::now(), msg });
+    }
+
+    /// Parou de tocar para `user_id` nessa chamada (atendeu, recusou).
+    fn stop_ring(s: &mut HubState, user_id: &str, dm_id: &str) {
+        if let Some(list) = s.rings.get_mut(user_id) {
+            list.retain(|r| r.dm_id != dm_id);
+            if list.is_empty() {
+                s.rings.remove(user_id);
+            }
+        }
+    }
+
+    /// As chamadas ainda tocando para `user_id`: há menos de `RING_FOR`, quem ligou continua na chamada e a
+    /// pessoa ainda não entrou nela.
+    fn pending_rings(s: &mut HubState, user_id: &str) -> Vec<String> {
+        let Some(list) = s.rings.get(user_id) else { return Vec::new() };
+        let live: Vec<&PendingRing> = list
+            .iter()
+            .filter(|r| r.at.elapsed() < RING_FOR)
+            .filter(|r| {
+                let people = s.voice.get(&r.dm_id);
+                people.is_some_and(|v| v.iter().any(|p| p.user.id == r.from) && !v.iter().any(|p| p.user.id == user_id))
+            })
+            .collect();
+        let out: Vec<String> = live.iter().map(|r| r.msg.clone()).collect();
+        if out.is_empty() {
+            s.rings.remove(user_id);
+        }
+        out
     }
 
     fn send_to_user(s: &HubState, user_id: &str, msg: &str) {
@@ -1172,6 +1225,11 @@ impl Hub {
             if first && Self::visible(&s, &user.id) {
                 Self::presence(&s, &user.id, true, guilds.iter().cloned(), &friends);
             }
+            // Chamada que começou a tocar antes desta conexão (o app do celular voltando, aberto pela
+            // notificação): toca aqui também.
+            for msg in Self::pending_rings(&mut s, &user.id) {
+                let _ = tx.send(msg);
+            }
         }
 
         let shutdown = self.shutdown.clone();
@@ -1179,8 +1237,16 @@ impl Hub {
         let privacy = app.privacy.clone();
         let viewer = user.id.clone();
         let writer = tokio::spawn(async move {
+            // Ping do WebSocket (o navegador responde sozinho, sem código no app): mantém viva a conexão
+            // parada no celular — a operadora derruba conexões caladas em minutos e o app do Android em
+            // segundo plano não receberia a chamada — e não deixa o proxy fechar por inatividade.
+            let mut keepalive = tokio::time::interval(KEEPALIVE_PING);
+            keepalive.tick().await;
             loop {
                 tokio::select! {
+                    _ = keepalive.tick() => {
+                        if sink.send(WsMessage::Ping(Vec::new().into())).await.is_err() { break }
+                    }
                     msg = rx.recv() => match msg {
                         Some(text) => {
                             let text = privacy.mask_text(&viewer, text);
@@ -1914,6 +1980,7 @@ impl Hub {
 
             "call:decline" => {
                 let dm_id = str_field("dmId");
+                Self::stop_ring(&mut self.state.lock().unwrap(), &user.id, &dm_id);
                 if let Some(dm) = crate::social::dm_with_access(app, &dm_id, &user.id).await {
                     self.to_user(dm.other(&user.id), "call:declined", json!({ "dmId": dm.id, "by": user }));
                 } else {
@@ -1979,7 +2046,7 @@ impl Hub {
                     let members: Vec<User> = s.voice.get(&dm_id).into_iter().flatten().map(|p| p.user.clone()).collect();
                     let msg = event("call:ring", json!({ "dmId": dm_id, "from": user, "group": true, "members": members }));
                     for id in &ring {
-                        Self::send_to_user(&s, id, &msg);
+                        Self::ring(&mut s, id, &dm_id, &user.id, msg.clone());
                     }
                     members
                 };
@@ -2126,6 +2193,8 @@ impl Hub {
                 let peers = list.clone();
                 list.push(me.clone());
                 s.conn_voice.insert(conn_id.to_string(), ch_id.clone());
+                // Atendeu (por este ou outro aparelho): para de tocar.
+                Self::stop_ring(&mut s, &user.id, &ch_id);
                 // Início da chamada: quem abriu o canal; voltando depois de o servidor reiniciar, o início
                 // que o app já conhecia (a chamada não recomeça do zero).
                 let call_since = resume
@@ -2177,7 +2246,8 @@ impl Hub {
                 if let Some(users) = dm_users.as_ref().filter(|u| u.contains(&user.id)) {
                     let other = users.iter().find(|u| **u != user.id).cloned().unwrap_or_default();
                     if !peers.iter().any(|p| p.user.id == other) {
-                        Self::send_to_user(&s, &other, &event("call:ring", json!({ "dmId": ch_id, "from": user })));
+                        let msg = event("call:ring", json!({ "dmId": ch_id, "from": user }));
+                        Self::ring(&mut s, &other, &ch_id, &user.id, msg);
                         ringing = Some(other);
                     }
                 }
@@ -2572,11 +2642,11 @@ impl Hub {
                 None
             }
 
-            // O app abriu: plataforma (app, pwa, navegador), aparelho e sistema, para o painel do administrador.
+            // O app abriu: plataforma (app, android, pwa, navegador), aparelho e sistema, para o painel do administrador.
             "app:hello" => {
                 let clean = |k: &str| -> String { str_field(k).chars().filter(|c| c.is_alphanumeric() || " .-".contains(*c)).take(24).collect() };
                 let platform = match str_field("platform").as_str() {
-                    p @ ("app" | "pwa" | "navegador") => p.to_string(),
+                    p @ ("app" | "android" | "pwa" | "navegador") => p.to_string(),
                     _ => "navegador".into(),
                 };
                 let started = self.state.lock().unwrap().conns.get(conn_id).is_some_and(|c| c.session.is_some());
@@ -2760,7 +2830,7 @@ async fn private_list(app: &App, channel_id: &str) -> Option<HashSet<String>> {
     }
     let users = app
         .db
-        .query_all("SELECT user_id FROM channel_access WHERE channel_id = ?1", [channel_id], |r| r.get::<String>(0))
+        .query_all(crate::api::LISTED_SQL, [channel_id], |r| r.get::<String>(0))
         .await
         .unwrap_or_default();
     Some(users.into_iter().collect())
@@ -2813,6 +2883,61 @@ pub async fn notify_guild(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chamada_tocando_volta_para_quem_conecta_depois() {
+        let user = |id: &str| -> User {
+            serde_json::from_value(json!({
+                "id": id, "username": id, "displayName": id, "avatarColor": "#000000", "avatarUrl": null, "bio": "",
+                "nameColor": null, "bioColor": null, "bannerColor": null
+            }))
+            .unwrap()
+        };
+        let seat = |who: &str| Participant {
+            peer_id: format!("conn-{who}"),
+            user: user(who),
+            guild_id: String::new(),
+            dm_users: Some(["ana".into(), "bia".into()]),
+            muted: false,
+            deafened: false,
+            video: false,
+            screen: false,
+            camera_stream_id: None,
+            screen_stream_id: None,
+            server_muted: false,
+            joined_at: 1,
+            was: None,
+            away: false,
+            route: "mesh".into(),
+            e2e: None,
+            sfu_ok: false,
+            hand: false,
+        };
+        let mut s = HubState::default();
+        s.voice.insert("dm1".into(), vec![seat("ana")]);
+        Hub::ring(&mut s, "bia", "dm1", "ana", "toque".into());
+        assert_eq!(Hub::pending_rings(&mut s, "bia"), vec!["toque".to_string()], "ana ainda chamando");
+        assert!(Hub::pending_rings(&mut s, "ana").is_empty(), "quem liga não recebe o toque");
+        // Tocar de novo na mesma chamada não duplica
+        Hub::ring(&mut s, "bia", "dm1", "ana", "toque".into());
+        assert_eq!(Hub::pending_rings(&mut s, "bia").len(), 1);
+        // Atendeu (entrou na chamada): não toca mais
+        s.voice.get_mut("dm1").unwrap().push(seat("bia"));
+        assert!(Hub::pending_rings(&mut s, "bia").is_empty());
+        // Quem ligou desistiu (saiu): não toca
+        s.voice.insert("dm1".into(), vec![]);
+        Hub::ring(&mut s, "bia", "dm1", "ana", "toque".into());
+        assert!(Hub::pending_rings(&mut s, "bia").is_empty());
+        // Recusou
+        s.voice.insert("dm1".into(), vec![seat("ana")]);
+        Hub::ring(&mut s, "bia", "dm1", "ana", "toque".into());
+        Hub::stop_ring(&mut s, "bia", "dm1");
+        assert!(Hub::pending_rings(&mut s, "bia").is_empty());
+        // Passou de 1 minuto
+        Hub::ring(&mut s, "bia", "dm1", "ana", "toque".into());
+        s.rings.get_mut("bia").unwrap()[0].at = std::time::Instant::now() - RING_FOR - std::time::Duration::from_secs(1);
+        assert!(Hub::pending_rings(&mut s, "bia").is_empty());
+    }
 
     #[test]
     fn efeitos_da_chamada_tem_intervalo() {

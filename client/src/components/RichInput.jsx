@@ -207,11 +207,17 @@ const RichInput = forwardRef(function RichInput(
       sel.addRange(saved.current);
     } else if (!sel.rangeCount || !box.contains(sel.anchorNode)) caretToEnd();
   };
-  /** Leu o campo: avisa quem usa (e volta atrás se passou do tamanho, ou se quem usa não aceitou). */
-  const emit = () => {
+  /**
+   * Leu o campo: avisa quem usa (e volta atrás se passou do tamanho, ou se quem usa não aceitou).
+   * `composing`: o teclado do celular ainda está montando a palavra (no Android, toda palavra até o espaço).
+   * Avisa assim mesmo — senão o botão de enviar só aparecia depois do espaço —, mas sem mexer no campo,
+   * o que desmancharia a palavra do teclado; o limite e o "não aceitou" ficam para o fim da palavra.
+   */
+  const emit = (composing = false) => {
     const next = read(el.current);
     if (next === shown.current) return;
     if (maxLength && next.length > maxLength) {
+      if (composing) return;
       document.execCommand('undo');
       useStore.getState().notify('Não cabe mais neste campo', 'info');
       return;
@@ -219,6 +225,7 @@ const RichInput = forwardRef(function RichInput(
     shown.current = next;
     el.current.toggleAttribute('data-empty', !next);
     onChange?.(next);
+    if (composing) return;
     // quem usa recusou (ex.: passou do limite visível): o campo volta ao que vale
     requestAnimationFrame(() => {
       if (el.current && latest.current !== shown.current) show(latest.current || '');
@@ -332,7 +339,7 @@ const RichInput = forwardRef(function RichInput(
       style={rows ? { minHeight: `calc(${rows} * 1.45em + 14px)` } : undefined}
       onKeyDown={keyDown}
       onInput={(e) => {
-        if (composing.current) return;
+        if (composing.current) return emit(true);
         if (e.nativeEvent.inputType === 'insertText') emoteAtCaret();
         emit();
       }}

@@ -179,9 +179,22 @@ pub async fn is_member(app: &App, guild_id: &str, user_id: &str) -> ApiResult<bo
         .is_some())
 }
 
-/// Condição SQL "o membro `m` vê o canal `c`" (público, dono, admin ou com acesso).
+/// Condição SQL "o membro `m` vê o canal `c`": público, dono, admin, na lista de pessoas do canal ou com um dos
+/// cargos dele (`channel_roles`; com o módulo Cargos desligado os cargos não contam, como nas permissões).
 const CAN_SEE: &str = "(c.private = 0 OR m.user_id = g.owner_id OR (m.perms & 1) != 0 \
-    OR EXISTS (SELECT 1 FROM channel_access a WHERE a.channel_id = c.id AND a.user_id = m.user_id))";
+    OR EXISTS (SELECT 1 FROM channel_access a WHERE a.channel_id = c.id AND a.user_id = m.user_id) \
+    OR EXISTS (SELECT 1 FROM channel_roles cr JOIN role_members rm ON rm.role_id = cr.role_id \
+      WHERE cr.channel_id = c.id AND rm.user_id = m.user_id \
+        AND COALESCE((SELECT value FROM settings WHERE key = 'module_roles'), '1') <> '0'))";
+
+/// Quem está na lista de um canal privado: as pessoas escolhidas e as que têm os cargos dele (sem o dono e os
+/// admins que só veem o canal para moderar).
+pub const LISTED_SQL: &str = "SELECT user_id FROM channel_access WHERE channel_id = ?1 \
+    UNION SELECT rm.user_id FROM channel_roles cr JOIN role_members rm ON rm.role_id = cr.role_id \
+      WHERE cr.channel_id = ?1 AND COALESCE((SELECT value FROM settings WHERE key = 'module_roles'), '1') <> '0'";
+
+/// Até quantos cargos podem abrir um mesmo canal privado.
+const MAX_CHANNEL_ROLES: usize = 50;
 
 pub async fn channel_with_access(app: &App, channel_id: &str, user_id: &str) -> Option<Channel> {
     let sql = format!(
@@ -330,6 +343,21 @@ async fn guild_full(app: &App, guild_id: &str, viewer: &str) -> ApiResult<Option
             channel_access.entry(ch).or_default().push(user);
         }
     }
+    let mut channel_roles: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    if admin {
+        let rows = app
+            .db
+            .query_all(
+                "SELECT cr.channel_id, cr.role_id FROM channel_roles cr JOIN channels c ON c.id = cr.channel_id \
+                 JOIN roles r ON r.id = cr.role_id WHERE c.guild_id = ?1 AND c.private = 1",
+                [guild_id],
+                |r| Ok((r.get::<String>(0)?, r.get::<String>(1)?)),
+            )
+            .await?;
+        for (ch, role) in rows {
+            channel_roles.entry(ch).or_default().push(role);
+        }
+    }
     let members = app
         .db
         .query_all(
@@ -352,7 +380,7 @@ async fn guild_full(app: &App, guild_id: &str, viewer: &str) -> ApiResult<Option
         .await?
         .into_iter()
         .collect();
-    Ok(Some(GuildFull { guild, channels, members, perms, channel_access }))
+    Ok(Some(GuildFull { guild, channels, members, perms, channel_access, channel_roles }))
 }
 
 /// Recalcula no hub quem pode ver cada canal privado (de um servidor, ou de todos ao subir).
@@ -375,6 +403,41 @@ pub async fn refresh_audiences(app: &App, guild_id: Option<&str>) -> ApiResult<(
     }
     app.hub.set_restricted(guild_id, map);
     Ok(())
+}
+
+/// Mudou quem vê algum canal privado do servidor (a lista do canal, ou quem tem um cargo que o abre):
+/// recalcula as audiências, tira da voz quem perdeu o canal e manda todos recarregarem a lista de canais.
+pub async fn audiences_changed(app: &App, guild_id: &str) -> ApiResult<()> {
+    refresh_audiences(app, Some(guild_id)).await?;
+    app.hub.kick_unallowed_voice();
+    app.hub.to_guild(guild_id, "guild:refresh", json!({ "guildId": guild_id }));
+    Ok(())
+}
+
+/// O módulo Cargos foi ligado ou desligado: os canais privados por cargo abrem ou fecham para quem os tem.
+pub async fn role_channels_changed(app: &App) -> ApiResult<()> {
+    let guilds = app
+        .db
+        .query_all("SELECT DISTINCT c.guild_id FROM channel_roles cr JOIN channels c ON c.id = cr.channel_id", (), |r| r.get::<String>(0))
+        .await?;
+    refresh_audiences(app, None).await?;
+    app.hub.kick_unallowed_voice();
+    for g in guilds {
+        app.hub.to_guild(&g, "guild:refresh", json!({ "guildId": g }));
+    }
+    Ok(())
+}
+
+/// Os nomes dos cargos que abrem um canal privado (para o registro do servidor).
+async fn channel_role_names(app: &App, channel_id: &str) -> ApiResult<Vec<String>> {
+    Ok(app
+        .db
+        .query_all(
+            "SELECT r.name FROM channel_roles cr JOIN roles r ON r.id = cr.role_id WHERE cr.channel_id = ?1 ORDER BY r.created_at, r.id",
+            [channel_id],
+            |r| r.get::<String>(0),
+        )
+        .await?)
 }
 
 // ---------- Rotas ----------
@@ -1241,11 +1304,13 @@ struct CreateChannelBody {
     name: String,
     #[serde(default, rename = "type")]
     kind: Option<String>,
-    /// Já nasce privado: só `users`, o dono e os admins veem (só administradores escolhem).
+    /// Já nasce privado: só `users`, quem tem os `roles`, o dono e os admins veem (só administradores escolhem).
     #[serde(default)]
     private: bool,
     #[serde(default)]
     users: Vec<String>,
+    #[serde(default)]
+    roles: Vec<String>,
 }
 
 async fn create_channel(
@@ -1262,6 +1327,10 @@ async fn create_channel(
     let kind = if body.kind.as_deref() == Some("voice") { "voice" } else { "text" };
     if kind == "voice" && !app.hub.modules().voice {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "As chamadas estão desligadas neste servidor"));
+    }
+    let by_role = body.private && !body.roles.is_empty();
+    if by_role && !app.hub.modules().roles {
+        return Err(bad("O módulo Cargos está desligado neste servidor"));
     }
     let mut name: String = body.name.trim().chars().take(32).collect();
     if kind == "text" {
@@ -1297,19 +1366,31 @@ async fn create_channel(
                 )
                 .await?;
             }
+            for r in body.roles.iter().take(MAX_CHANNEL_ROLES) {
+                // Só cargos deste servidor.
+                tx.execute(
+                    "INSERT OR IGNORE INTO channel_roles (channel_id, role_id) SELECT ?1, id FROM roles WHERE id = ?2 AND guild_id = ?3",
+                    [channel.id.as_str(), r.as_str(), id.as_str()],
+                )
+                .await?;
+            }
         }
         tx.commit().await
     })
     .await?;
+    let roles = if by_role { channel_role_names(&app, &channel.id).await? } else { Vec::new() };
     app.audit(
         crate::audit::Entry::new(&id, "settings.channel_create", &user.id)
             .channel(&channel.id)
-            .detail(json!({ "name": channel.name, "type": channel.kind, "private": body.private })),
+            .detail(json!({ "name": channel.name, "type": channel.kind, "private": body.private, "roles": roles })),
     );
     if body.private {
         // Canal privado: só quem pode ver recebe (recarregando a lista de canais), nunca o aviso para todos.
         refresh_audiences(&app, Some(&id)).await?;
         app.hub.to_guild(&id, "guild:refresh", json!({ "guildId": id }));
+        if !roles.is_empty() {
+            crate::roles::announce(&app, &id).await?;
+        }
     } else {
         app.hub.to_guild(&id, "channel:created", &channel);
     }
@@ -1356,6 +1437,7 @@ async fn delete_channel(State(app): AppState, AuthUser(user, _): AuthUser, Path(
     require_perm(&app, &ch.guild_id, &user.id, perm::CHANNELS, "Você não tem permissão para excluir canais").await?;
     app.hub.close_voice_channel(&ch.id);
     crate::files::delete_files(&app, "SELECT id FROM files WHERE channel_id = ?1", &id).await?;
+    let by_role = !channel_role_names(&app, &id).await?.is_empty();
     crate::db::limited("excluir canal", async {
         let conn = app.db.conn().await?;
         let tx = conn.transaction().await?;
@@ -1363,12 +1445,16 @@ async fn delete_channel(State(app): AppState, AuthUser(user, _): AuthUser, Path(
         tx.execute("DELETE FROM messages WHERE channel_id = ?1", [id.as_str()]).await?;
         tx.execute("DELETE FROM channels WHERE id = ?1", [id.as_str()]).await?;
         tx.execute("DELETE FROM channel_access WHERE channel_id = ?1", [id.as_str()]).await?;
+        tx.execute("DELETE FROM channel_roles WHERE channel_id = ?1", [id.as_str()]).await?;
         tx.commit().await
     })
     .await?;
     app.hub.to_guild(&ch.guild_id, "channel:deleted", json!({ "guildId": ch.guild_id, "channelId": ch.id }));
     app.audit(crate::audit::Entry::new(&ch.guild_id, "settings.channel_delete", &user.id).channel(&ch.id).detail(json!({ "name": ch.name, "type": ch.kind })));
     refresh_audiences(&app, Some(&ch.guild_id)).await?;
+    if by_role && app.hub.modules().roles {
+        crate::roles::announce(&app, &ch.guild_id).await?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1418,9 +1504,13 @@ struct AccessBody {
     private: bool,
     #[serde(default)]
     users: Vec<String>,
+    /// Os cargos que veem o canal. Sem o campo (app antigo, ou módulo Cargos desligado), os que já estavam
+    /// continuam; deixando o canal público, saem todos.
+    roles: Option<Vec<String>>,
 }
 
-/// Torna um canal privado (só as pessoas escolhidas, o dono e os admins veem) ou público de novo.
+/// Torna um canal privado (só as pessoas escolhidas, quem tem os cargos escolhidos, o dono e os admins veem)
+/// ou público de novo.
 async fn set_channel_access(
     State(app): AppState,
     AuthUser(user, _): AuthUser,
@@ -1429,12 +1519,26 @@ async fn set_channel_access(
 ) -> ApiResult<Json<Value>> {
     let ch = channel_with_access(&app, &id, &user.id).await.ok_or_else(|| not_found("Canal não encontrado"))?;
     require_perm(&app, &ch.guild_id, &user.id, perm::ADMIN, "Apenas administradores escolhem quem vê um canal").await?;
+    // os cargos só mudam com o módulo ligado (desligado, ficam como estavam para quando ele voltar)
+    let roles = body.roles.as_ref().filter(|_| app.hub.modules().roles);
+    let before = channel_role_names(&app, &id).await?;
     crate::db::limited("escolher quem vê o canal", async {
         let conn = app.db.conn().await?;
         let tx = conn.transaction().await?;
         tx.execute("UPDATE channels SET private = ?1 WHERE id = ?2", libsql::params![body.private as i64, id.as_str()]).await?;
         tx.execute("DELETE FROM channel_access WHERE channel_id = ?1", [id.as_str()]).await?;
+        if !body.private || roles.is_some() {
+            tx.execute("DELETE FROM channel_roles WHERE channel_id = ?1", [id.as_str()]).await?;
+        }
         if body.private {
+            for r in roles.into_iter().flatten().take(MAX_CHANNEL_ROLES) {
+                // Só cargos deste servidor.
+                tx.execute(
+                    "INSERT OR IGNORE INTO channel_roles (channel_id, role_id) SELECT ?1, id FROM roles WHERE id = ?2 AND guild_id = ?3",
+                    [id.as_str(), r.as_str(), ch.guild_id.as_str()],
+                )
+                .await?;
+            }
             for u in body.users.iter().take(500) {
                 // Só membros do servidor entram na lista.
                 tx.execute(
@@ -1448,15 +1552,17 @@ async fn set_channel_access(
         tx.commit().await
     })
     .await?;
+    let after = channel_role_names(&app, &id).await?;
     app.audit(
         crate::audit::Entry::new(&ch.guild_id, "settings.channel_access", &user.id)
             .channel(&ch.id)
-            .detail(json!({ "name": ch.name, "private": body.private, "people": body.users.len() })),
+            .detail(json!({ "name": ch.name, "private": body.private, "people": body.users.len(), "roles": after })),
     );
-    refresh_audiences(&app, Some(&ch.guild_id)).await?;
-    app.hub.kick_unallowed_voice();
     // Quem ganhou ou perdeu o canal recarrega a lista de canais.
-    app.hub.to_guild(&ch.guild_id, "guild:refresh", json!({ "guildId": ch.guild_id }));
+    audiences_changed(&app, &ch.guild_id).await?;
+    if after != before && app.hub.modules().roles {
+        crate::roles::announce(&app, &ch.guild_id).await?;
+    }
     Ok(Json(json!({ "ok": true })))
 }
 

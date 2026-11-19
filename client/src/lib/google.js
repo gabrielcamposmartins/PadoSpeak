@@ -1,7 +1,7 @@
 // Login (ou vínculo) com o Google: o servidor monta o endereço da página do Google, o app abre numa
 // janela (no app do Windows, no navegador do sistema; no celular, uma aba) e pergunta ao servidor até o
 // login terminar. Assim funciona igual no navegador, no app instalado e no app do Windows.
-import { isTauri, openExternal } from './env.js';
+import { opensInBrowser, openExternal } from './env.js';
 
 const POLL_MS = 1500;
 const GIVE_UP_MS = 10 * 60_000;
@@ -16,7 +16,7 @@ const GIVE_UP_MS = 10 * 60_000;
  */
 export async function googleFlow(base, { purpose = 'login', token, signal, askCode } = {}) {
   // A janela abre já no clique (senão o navegador bloqueia) e recebe o endereço depois.
-  const popup = !isTauri ? window.open('', 'padospeak-google', 'width=480,height=640') : null;
+  const popup = !opensInBrowser ? window.open('', 'padospeak-google', 'width=480,height=640') : null;
   let begin;
   try {
     const res = await fetch(`${base}/api/auth/google/begin`, {
@@ -30,7 +30,7 @@ export async function googleFlow(base, { purpose = 'login', token, signal, askCo
     popup?.close();
     throw e;
   }
-  if (isTauri) await openExternal(begin.url);
+  if (opensInBrowser) await openExternal(begin.url);
   else if (popup && !popup.closed) popup.location.href = begin.url;
   else window.open(begin.url, '_blank');
 

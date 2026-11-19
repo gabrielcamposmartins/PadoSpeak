@@ -3,8 +3,20 @@
 /** Depois do aviso de reinício, tenta reconectar a cada segundo por este tempo. */
 const RESTART_FAST_MS = 60000;
 
+/** Conexões abertas (para `networkChanged`). */
+const open = new Set();
+
+/**
+ * A rede do aparelho mudou ou voltou (aviso do app do Android): reconecta já, sem esperar o próximo
+ * intervalo — com o app em segundo plano, o navegador atrasa os timers em até 1 minuto.
+ */
+export function networkChanged() {
+  for (const rt of open) rt.networkChanged();
+}
+
 export class Realtime {
   constructor(urlFactory) {
+    open.add(this);
     this.urlFactory = urlFactory;
     this.handlers = new Map();
     this.pending = new Map();
@@ -126,7 +138,19 @@ export class Realtime {
 
   close() {
     this.closed = true;
+    open.delete(this);
     clearTimeout(this.retryTimer);
     this.ws?.close();
+  }
+
+  /** Rede nova: a conexão aberta provavelmente morreu (troca na hora); esperando para tentar, tenta já. */
+  networkChanged() {
+    if (this.closed) return;
+    if (this.status === 'connected') return this.reconnectNow();
+    if (this.status === 'reconnecting' && this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+      this.connect();
+    }
   }
 }

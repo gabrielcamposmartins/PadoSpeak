@@ -129,7 +129,7 @@ export default function AgentKeys({ scope = 'me' }) {
 
   return (
     <div className="agent-keys">
-      <h3>Assistente</h3>
+      <h3>{admin ? 'Assistente' : 'Chave e modelo'}</h3>
       {admin && (
         <label className="checkbox">
           <input
@@ -150,7 +150,7 @@ export default function AgentKeys({ scope = 'me' }) {
       <p className="kv">
         {admin
           ? `O assistente usa a chave marcada, cobrada pelo provedor dela (Anthropic, OpenAI, DeepSeek, Qwen…). ${info.access === 'list' ? 'Ela vale para você e para as pessoas que você liberar abaixo.' : 'Ela vale para todo mundo, menos para quem usar uma chave própria.'}`
-          : 'O assistente usa a chave configurada pelo administrador do app. Também dá para usar uma chave própria, de qualquer provedor da lista: nesse caso, os pedidos são cobrados na conta dela e o modelo é escolhido aqui.'}
+          : 'Por padrão, o assistente usa a chave que o administrador configurou. Se quiser, ponha a sua chave da API, de qualquer provedor da lista: aí os pedidos são cobrados na sua conta e você escolhe o modelo.'}
       </p>
 
       <div className="settings-sec">{admin ? 'Chave da API em uso' : 'Qual chave usar'}</div>

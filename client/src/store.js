@@ -4,9 +4,10 @@ import { forgetSticker } from './lib/stickerCache.js';
 import { Realtime } from './lib/realtime.js';
 import { VoiceClient } from './lib/voice.js';
 import { MusicPlayer } from './lib/music.js';
-import { isPanel, isDesktop, isTauri, localNodeUrl } from './lib/env.js';
+import { isPanel, isDesktop, isTauri, isAndroidApp, localNodeUrl } from './lib/env.js';
 import { playSound, loopSound, setSoundsEnabled } from './lib/sounds.js';
 import { haptic, stopHaptic } from './lib/haptics.js';
+import { androidVisible } from './lib/android.js';
 import { playSoundboard, preloadSound, stopSoundboard, setSoundboardOutput } from './lib/soundboard.js';
 import { shakeWindow, flashTaskbar } from './lib/attention.js';
 import { systemNotify, showAppWindow, appHasFocus } from './lib/background.js';
@@ -1832,8 +1833,13 @@ export function createConnStore({ key, kind, base, primary = false }) {
       const roles = await api.del(`/api/roles/${roleId}`);
       set((st) => ({ guildRoles: { ...st.guildRoles, [guildId]: roles } }));
     },
-    async createChannel(guildId, name, type, privateUsers = null) {
-      const ch = await api.post(`/api/guilds/${guildId}/channels`, { name, type, ...(privateUsers ? { private: true, users: privateUsers } : {}) });
+    /**
+     * Cria um canal; `privateUsers` (lista de ids) cria já privado, só para essas pessoas, para quem tem os
+     * cargos de `privateRoles` (ids) e para os admins.
+     */
+    async createChannel(guildId, name, type, privateUsers = null, privateRoles = []) {
+      const access = privateUsers ? { private: true, users: privateUsers, roles: privateRoles } : {};
+      const ch = await api.post(`/api/guilds/${guildId}/channels`, { name, type, ...access });
       set((s) => {
         const g = s.guildData[guildId];
         if (!g || g.channels.some((c) => c.id === ch.id)) return {};
@@ -1867,9 +1873,12 @@ export function createConnStore({ key, kind, base, primary = false }) {
     async setChannelAnnounce(channelId, announceJoin) {
       get()._upsertChannel(await api.patch(`/api/channels/${channelId}`, { announceJoin }));
     },
-    /** Canal privado (só `users`, o dono e os admins veem) ou público. */
-    async setChannelAccess(channelId, isPrivate, users) {
-      await api.put(`/api/channels/${channelId}/access`, { private: isPrivate, users });
+    /**
+     * Canal privado (só `users`, quem tem os `roles`, o dono e os admins veem) ou público. `roles` nulo deixa os
+     * cargos como estão (módulo Cargos desligado).
+     */
+    async setChannelAccess(channelId, isPrivate, users, roles = null) {
+      await api.put(`/api/channels/${channelId}/access`, { private: isPrivate, users, ...(roles ? { roles } : {}) });
       const guildId = Object.entries(get().guildData).find(([, g]) => g.channels.some((c) => c.id === channelId))?.[0];
       if (guildId) await get().loadGuild(guildId);
     },
@@ -2504,13 +2513,17 @@ export function createConnStore({ key, kind, base, primary = false }) {
   store.subscribe((s, prev) => {
     // Chamada recebida: toca até atender, recusar ou quem ligou desistir.
     if (s.incomingCall && !prev.incomingCall) {
-      // No celular, vibra junto com o toque.
-      const stopSound = loopSound('ring', 2200);
-      haptic('ring');
-      const vibe = setInterval(() => haptic('ring'), 2200);
+      // No celular, vibra junto com o toque. App do Android fora da tela (ou com a tela bloqueada): quem toca
+      // e vibra é a notificação de chamada do sistema, com o toque do celular — aqui fica em silêncio.
+      const ring = () => {
+        if (isAndroidApp && !androidVisible()) return;
+        playSound('ring');
+        haptic('ring');
+      };
+      ring();
+      const loop = setInterval(ring, 2200);
       stopRing = () => {
-        stopSound();
-        clearInterval(vibe);
+        clearInterval(loop);
         stopHaptic();
       };
     }
@@ -2808,7 +2821,7 @@ function appPlatform() {
             : '';
   const layout = currentLayout();
   const device = isTauri ? 'computador' : isTouch ? (layout === 'phone' ? 'celular' : 'tablet') : 'computador';
-  return { platform: isTauri ? 'app' : isStandalone ? 'pwa' : 'navegador', device, os };
+  return { platform: isTauri ? 'app' : isAndroidApp ? 'android' : isStandalone ? 'pwa' : 'navegador', device, os };
 }
 
 /** Formatos que já vêm comprimidos (imagem, vídeo, áudio, compactados, Office): não vale comprimir. */
@@ -2869,14 +2882,17 @@ export function roleBits(s, guildId, userId) {
 }
 
 /**
- * Canal privado que eu vejo só por ser dono ou admin (não estou na lista dele): os avisos dele não são para mim.
- * A lista (`channelAccess`) só chega para quem administra; para os outros o canal privado já é da lista.
+ * Canal privado que eu vejo só por ser dono ou admin (não estou na lista dele, nem tenho um cargo dele): os
+ * avisos dele não são para mim. A lista (`channelAccess`) e os cargos (`channelRoles`) só chegam para quem
+ * administra; para os outros o canal privado já é da lista.
  */
 function outsiderOf(s, guildId, channelId) {
   const g = s.guildData[guildId];
   const ch = g?.channels.find((c) => c.id === channelId);
   const list = g?.channelAccess?.[channelId];
-  return Boolean(ch?.private && Array.isArray(list) && !list.includes(s.me?.id));
+  if (!ch?.private || !Array.isArray(list) || list.includes(s.me?.id)) return false;
+  const roles = g.channelRoles?.[channelId] || [];
+  return !(s.guildRoles?.[guildId] || []).some((r) => roles.includes(r.id) && r.members.includes(s.me?.id));
 }
 
 /** O que eu posso fazer num servidor: dono e admin podem tudo. */
@@ -2937,8 +2953,8 @@ export function usePerms(useC, guildId) {
 
 /** Separa a resposta de /api/guilds/{id} em dados do servidor e o resto (canais, membros, permissões). */
 function splitGuild(full) {
-  const { channels, members, perms = {}, channelAccess = {}, ...guild } = full;
-  return { guild, data: { channels, members, perms, channelAccess } };
+  const { channels, members, perms = {}, channelAccess = {}, channelRoles = {}, ...guild } = full;
+  return { guild, data: { channels, members, perms, channelAccess, channelRoles } };
 }
 
 /** Conexão com uma chamada em andamento (só uma por vez), ou o servidor. */

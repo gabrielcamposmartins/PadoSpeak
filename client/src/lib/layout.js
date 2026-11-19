@@ -80,6 +80,22 @@ export function watchViewport() {
   if (isTouch) root.dataset.touch = '1';
   if (isIOS) root.dataset.ios = '1';
   if (isStandalone) root.dataset.standalone = '1';
+  // Último jeito de usar: o dedo esconde o contorno de foco (styles.css); Tab e setas mostram de novo.
+  window.addEventListener(
+    'pointerdown',
+    (e) => {
+      if (e.pointerType === 'touch') root.dataset.input = 'touch';
+      else delete root.dataset.input;
+    },
+    true,
+  );
+  window.addEventListener(
+    'keydown',
+    (e) => {
+      if (e.key === 'Tab' || e.key.startsWith('Arrow')) delete root.dataset.input;
+    },
+    true,
+  );
   update();
   vv?.addEventListener('resize', update);
   window.addEventListener('resize', update);

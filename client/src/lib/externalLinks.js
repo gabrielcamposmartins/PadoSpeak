@@ -1,7 +1,7 @@
-// App do Windows: um link (mensagem, perfil, notas…) abre numa aba do navegador padrão do sistema, em
+// Apps do Windows e do Android: um link (mensagem, perfil, notas…) abre numa aba do navegador padrão do sistema, em
 // vez de uma janela do próprio WebView (ou de nada). Cliques que o app já trata (download de anexos,
 // convites) chegam aqui com `defaultPrevented` e ficam como estão.
-import { isTauri, openExternal } from './env.js';
+import { opensInBrowser, openExternal } from './env.js';
 
 const external = (href) => {
   try {
@@ -23,7 +23,7 @@ function onClick(e) {
 }
 
 export function initExternalLinks() {
-  if (!isTauri) return;
+  if (!opensInBrowser) return;
   // Depois dos cliques do React (que ficam na raiz do app): só o que ninguém tratou.
   window.addEventListener('click', onClick);
   window.addEventListener('auxclick', onClick);

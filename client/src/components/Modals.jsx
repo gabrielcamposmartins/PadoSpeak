@@ -86,7 +86,8 @@ import { setGameOverlay, setOverlayBlocked } from '../lib/gameOverlay.js';
 import { SoundsModal, UserSoundsModal, SoundSettings } from './SoundLibrary.jsx';
 import { GoogleButton, useAuthOptions, AccountSettings } from './AccountAuth.jsx';
 import VolumeSlider from './Volume.jsx';
-import { isDesktop, isTauri, DOWNLOAD_URL, DEFAULT_SERVER, openExternal } from '../lib/env.js';
+import { isDesktop, isTauri, isAndroidApp, androidAppVersion, DOWNLOAD_URL, ANDROID_URL, DEFAULT_SERVER, openExternal } from '../lib/env.js';
+import { androidKeepAlive, setAndroidKeepAlive } from '../lib/android.js';
 import { usePwa, installState, install, pushStatus, enablePush, disablePush } from '../lib/pwa.js';
 import { ConnProvider, useConn } from './conn.jsx';
 import { PollModal } from './Polls.jsx';
@@ -98,7 +99,7 @@ import { FormattedText, Floating, TEXT_COLORS } from './Emotes.jsx';
 import FormatTools, { usePalette, DEFAULT_PALETTE, SHORTCUTS, MOD } from './FormatTools.jsx';
 import RichInput from './RichInput.jsx';
 import { voiceOn, musicOn, soundsOn, rolesOn } from '../modules.js';
-import { RolesManager, RolePills, useUserRoles } from './Roles.jsx';
+import { RolesManager, RolePills, useUserRoles, useRoles, RoleIcon } from './Roles.jsx';
 import { fmtSize, fmtLeft, useNow, DownloadLink, ttlWords } from './Files.jsx';
 import { plain, visibleLength } from '../lib/text.js';
 import changelogMd from '../changelog.md?raw';
@@ -382,25 +383,38 @@ function ChannelModal({ close, guildId, channelType, channelId }) {
   const members = useStore((s) => s.guildData[guildId]?.members) || [];
   const memberPerms = useStore((s) => s.guildData[guildId]?.perms) || {};
   const access = useStore((s) => s.guildData[guildId]?.channelAccess?.[channelId]);
+  const linked = useStore((s) => s.guildData[guildId]?.channelRoles?.[channelId]);
   const ownerId = useStore((s) => s.guilds.find((g) => g.id === guildId)?.ownerId);
   const perms = usePerms(useStore, guildId);
   const editing = Boolean(channel);
   const voiceMod = useStore(voiceOn);
+  // módulo Cargos desligado: o canal privado é só por pessoas (os cargos dele ficam como estavam)
+  const rolesMod = useStore(rolesOn);
+  const roles = useRoles(rolesMod ? guildId : null);
   const [type, setType] = useState(channel?.type || (voiceMod ? channelType : null) || 'text');
   const [name, setName] = useState(channel?.name || '');
   const [isPrivate, setPrivate] = useState(Boolean(channel?.private));
   const [allowed, setAllowed] = useState(() => new Set(access || []));
+  // Os cargos que veem o canal: quem tem o cargo entra (e sai) do canal junto com ele.
+  const [byRole, setByRole] = useState(() => new Set(linked || []));
   // Dono e admins sempre veem; a lista é só para os outros.
   const alwaysSees = (m) => m.id === ownerId || (memberPerms[m.id] & PERM.ADMIN) !== 0;
+  const rolesOf = (m) => roles.filter((r) => byRole.has(r.id) && r.members.includes(m.id));
+  const toggle = (set, setter, id, on) => {
+    const next = new Set(set);
+    if (on) next.add(id);
+    else next.delete(id);
+    setter(next);
+  };
   const { busy, error, run } = useAction(async () => {
     const st = useStore.getState();
-    if (!editing) return st.createChannel(guildId, name, type, perms.admin && isPrivate ? [...allowed] : null);
+    const differs = (before, now) => before.size !== now.size || [...now].some((id) => !before.has(id));
+    if (!editing) return st.createChannel(guildId, name, type, perms.admin && isPrivate ? [...allowed] : null, rolesMod ? [...byRole] : []);
     if (name.trim() !== channel.name) await st.updateChannel(channelId, name);
-    const before = new Set(access || []);
     const changed =
       isPrivate !== Boolean(channel.private) ||
-      (isPrivate && (before.size !== allowed.size || [...allowed].some((id) => !before.has(id))));
-    if (perms.admin && changed) await st.setChannelAccess(channelId, isPrivate, [...allowed]);
+      (isPrivate && (differs(new Set(access || []), allowed) || (rolesMod && differs(new Set(linked || []), byRole))));
+    if (perms.admin && changed) await st.setChannelAccess(channelId, isPrivate, [...allowed], rolesMod ? [...byRole] : null);
   }, close);
   return (
     <form onSubmit={run}>
@@ -441,30 +455,60 @@ function ChannelModal({ close, guildId, channelType, channelId }) {
               <span>
                 <Lock size={13} /> Canal privado
                 <small className="check-hint">
-                  Só as pessoas marcadas abaixo veem este canal (o dono e os administradores sempre veem).
+                  {rolesMod
+                    ? 'Só os cargos e as pessoas marcados abaixo veem este canal (o dono e os administradores sempre veem).'
+                    : 'Só as pessoas marcadas abaixo veem este canal (o dono e os administradores sempre veem).'}
                 </small>
               </span>
             </label>
+            {isPrivate && rolesMod && (
+              <>
+                <div className="access-title">
+                  <b>Cargos</b>
+                  <small>quem ganhar o cargo passa a ver o canal; quem perder deixa de ver</small>
+                </div>
+                {roles.length ? (
+                  <div className="access-list roles" role="group" aria-label="Cargos que veem o canal">
+                    {roles.map((r) => (
+                      <label key={r.id} className="access-row">
+                        <input type="checkbox" checked={byRole.has(r.id)} onChange={(e) => toggle(byRole, setByRole, r.id, e.target.checked)} />
+                        <RoleIcon color={r.color} size={18} />
+                        <span className="access-name">{r.name}</span>
+                        <small>
+                          {r.members.length} {r.members.length === 1 ? 'pessoa' : 'pessoas'}
+                        </small>
+                      </label>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="kv">Este servidor ainda não tem cargos: crie o primeiro na janela Cargos.</p>
+                )}
+                <div className="access-title">
+                  <b>Pessoas</b>
+                  <small>além de quem tem os cargos marcados</small>
+                </div>
+              </>
+            )}
             {isPrivate && (
-              <div className="access-list" role="group" aria-label="Quem pode ver o canal">
+              <div className="access-list" role="group" aria-label="Pessoas que veem o canal">
                 {members.map((m) => {
                   const always = alwaysSees(m);
+                  const via = always ? [] : rolesOf(m);
+                  const fixed = always || via.length > 0;
                   return (
-                    <label key={m.id} className={`access-row${always ? ' always' : ''}`}>
+                    <label key={m.id} className={`access-row${fixed ? ' always' : ''}`}>
                       <input
                         type="checkbox"
-                        checked={always || allowed.has(m.id)}
-                        disabled={always}
-                        onChange={(e) => {
-                          const next = new Set(allowed);
-                          if (e.target.checked) next.add(m.id);
-                          else next.delete(m.id);
-                          setAllowed(next);
-                        }}
+                        checked={fixed || allowed.has(m.id)}
+                        disabled={fixed}
+                        onChange={(e) => toggle(allowed, setAllowed, m.id, e.target.checked)}
                       />
                       <Avatar user={m} size={22} frame={false} />
                       <UserName user={m} className="access-name" />
                       {always && <small>{m.id === ownerId ? 'dono' : 'admin'}</small>}
+                      {via.length > 0 && (
+                        <small title={via.map((r) => r.name).join(', ')}>{via.length === 1 ? `cargo ${via[0].name}` : `${via.length} cargos`}</small>
+                      )}
                     </label>
                   );
                 })}
@@ -870,6 +914,34 @@ function BlockedUsers() {
 }
 
 /** Notificações com o PadoSpeak fechado (app instalado / navegador com push). */
+/** App do Android: ficar conectado em segundo plano para tocar e avisar com o app fora da tela. */
+function AndroidBackground() {
+  const [on, setOn] = useState(androidKeepAlive);
+  if (!isAndroidApp) return null;
+  return (
+    <>
+      <div className="settings-sec">Neste celular</div>
+      <label className="checkbox">
+        <input
+          type="checkbox"
+          checked={on}
+          onChange={(e) => {
+            setOn(e.target.checked);
+            setAndroidKeepAlive(e.target.checked);
+          }}
+        />
+        <span>
+          Receber chamadas e mensagens com o app em segundo plano
+          <small className="check-hint">
+            O app fica conectado (com a notificação discreta “PadoSpeak conectado”): as chamadas tocam com a tela bloqueada, como
+            nas outras ligações, e as mensagens chegam como notificação. Gasta um pouco mais de bateria.
+          </small>
+        </span>
+      </label>
+    </>
+  );
+}
+
 function PushToggle() {
   usePwa();
   const status = pushStatus();
@@ -1002,6 +1074,34 @@ function AppsTab() {
           <Download size={15} /> Baixar para Windows
         </a>
       </div>
+      <div className="settings-sec">PadoSpeak para Android</div>
+      <div className="app-offer">
+        <Smartphone size={30} className="ico-blue" aria-hidden="true" />
+        <div className="install-text">
+          <b>App para Android</b>
+          <span>
+            {isAndroidApp
+              ? `Você está usando o app do Android${androidAppVersion ? ` (versão ${androidAppVersion})` : ''}. Ele se atualiza sozinho.`
+              : 'Toca as chamadas com a tela bloqueada, como as outras ligações, avisa das mensagens com som e vibração e se atualiza sozinho.'}
+          </span>
+        </div>
+        {!isAndroidApp && (
+          <a
+            className="btn"
+            href={ANDROID_URL}
+            onClick={(e) => {
+              if (!isTauri) return;
+              e.preventDefault();
+              openExternal(ANDROID_URL).catch((err) => useStore.getState().notify(String(err?.message || err)));
+            }}
+          >
+            <Download size={15} /> Baixar o APK
+          </a>
+        )}
+      </div>
+      {!isAndroidApp && (
+        <p className="kv">No celular, abra o arquivo baixado e permita instalar apps desta fonte quando o Android pedir.</p>
+      )}
       <div className="settings-sec">App instalável (celular, tablet e computador)</div>
       <div className="app-offer">
         <Smartphone size={30} className="ico-green" aria-hidden="true" />
@@ -1753,6 +1853,7 @@ function SettingsModal({ close, tab: startTab, focus }) {
   const notifications = (
     <div className="settings-cols">
       <section className="settings-col">
+        <AndroidBackground />
         <PushToggle />
         <p className="kv busy-hint">
           <Orb status="busy" />

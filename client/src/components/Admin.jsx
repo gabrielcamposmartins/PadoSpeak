@@ -39,7 +39,7 @@ import { plain } from '../lib/text.js';
 const HOUR = 3600 * 1000;
 const WEEKDAYS = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
 const SHORT_DAYS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
-const PLATFORM = { app: 'App do Windows', pwa: 'App instalado (PWA)', navegador: 'Navegador' };
+const PLATFORM = { app: 'App do Windows', android: 'App do Android', pwa: 'App instalado (PWA)', navegador: 'Navegador' };
 
 /** "3 h 20 min", "45 min", "agora há pouco". */
 function fmtTime(ms) {

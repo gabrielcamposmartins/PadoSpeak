@@ -9,7 +9,8 @@
 //  - iPhone: a página fica por baixo das duas barras (status "black-translucent" + safe area), então
 //    a própria borda do app aparece nelas.
 import { currentLayout } from './layout.js';
-import { isTauri } from './env.js';
+import { isTauri, isAndroidApp } from './env.js';
+import { androidPost } from './android.js';
 
 let last = '';
 let meta = null;
@@ -17,7 +18,8 @@ let meta = null;
 const rootVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 function apply() {
-  if (document.hidden || currentLayout() !== 'phone') return;
+  // App do Android: as barras acompanham também no tablet (no navegador, só o celular tem a cor da borda).
+  if (document.hidden || (currentLayout() !== 'phone' && !isAndroidApp)) return;
   const atTop = document.elementFromPoint(window.innerWidth / 2, 1);
   const atBottom = document.elementFromPoint(window.innerWidth / 2, window.innerHeight - 1);
   // Telas por cima do app (chamada, faixa da chamada) dizem a própria cor: data-sysbar="--variavel".
@@ -38,6 +40,7 @@ function apply() {
   meta ||= document.querySelector('meta[name="theme-color"]');
   if (meta) meta.content = top;
   navigator.serviceWorker?.controller?.postMessage({ type: 'bars', top, bottom, background: bottom });
+  androidPost('bars', { top, bottom });
 }
 
 /** Acompanha a tela (troca de tema, de cena ou de tela) e atualiza as barras do sistema. */

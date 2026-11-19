@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PadoSpeak</string>
+    <string name="channel_messages">Mensagens</string>
+    <string name="channel_messages_desc">Mensagens e menções que chegam com o app fechado ou em segundo plano</string>
+    <string name="channel_ring">Chamadas recebidas</string>
+    <string name="channel_ring_desc">Alguém está chamando você</string>
+    <string name="channel_call">Chamada em andamento</string>
+    <string name="channel_call_desc">Mantém a chamada ligada com a tela apagada ou com outro app aberto</string>
+    <string name="call_title">Em chamada no PadoSpeak</string>
+    <string name="call_leave">Sair da chamada</string>
+    <string name="ring_answer">Atender</string>
+    <string name="ring_decline">Recusar</string>
+    <string name="offline_title">Sem conexão com o PadoSpeak</string>
+    <string name="offline_text">Confira a internet do celular e tente de novo.</string>
+    <string name="offline_retry">Tentar de novo</string>
+    <string name="download_started">Baixando %1$s…</string>
+    <string name="download_saved">%1$s salvo em Downloads</string>
+    <string name="download_failed">Não deu para baixar o arquivo</string>
+    <string name="permission_denied">Sem permissão: libere em Configurações → Apps → PadoSpeak → Permissões</string>
+    <string name="no_app_to_open">Nenhum app para abrir este endereço</string>
+    <string name="channel_conn">Conectado em segundo plano</string>
+    <string name="channel_conn_desc">Aviso discreto enquanto o app fica conectado para receber chamadas e mensagens</string>
+    <string name="conn_title">PadoSpeak conectado</string>
+    <string name="conn_text">Pronto para receber chamadas e mensagens</string>
+    <string name="me">Você</string>
+    <string name="reply">Responder</string>
+    <string name="reply_hint">Mensagem</string>
+    <string name="reply_failed">Não deu para enviar a resposta. Abra o PadoSpeak e tente de novo.</string>
+    <string name="ring_text">Chamada de voz do PadoSpeak</string>
+    <string name="ring_group">Chamou você para a chamada do grupo</string>
+    <string name="channel_update">Atualizações do app</string>
+    <string name="channel_update_desc">Versão nova do PadoSpeak pronta para instalar</string>
+    <string name="update_title">Atualização do PadoSpeak pronta</string>
+    <string name="update_text">Toque para instalar a versão nova</string>
+    <string name="camera_title">Câmera</string>
+    <string name="camera_photo">Tirar foto</string>
+    <string name="camera_video">Gravar vídeo</string>
+</resources>

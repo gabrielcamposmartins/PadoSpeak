@@ -1,7 +1,7 @@
 // PadoSpeak como app instalado (PWA): service worker, convite para instalar (botão no Android e no
 // computador, passo a passo no iPhone e no iPad), notificações push e número no ícone.
 import { useSyncExternalStore } from 'react';
-import { isTauri, isPanel, isDesktop } from './env.js';
+import { isTauri, isPanel, isDesktop, isAndroidApp } from './env.js';
 import { isStandalone } from './layout.js';
 import { storage } from './api.js';
 
@@ -9,6 +9,7 @@ import { storage } from './api.js';
 export const pwaCapable =
   typeof window !== 'undefined' &&
   !isTauri &&
+  !isAndroidApp &&
   !isPanel &&
   !isDesktop &&
   'serviceWorker' in navigator &&
@@ -57,7 +58,7 @@ export function installMode({ ignoreDismiss = false } = {}) {
  */
 export function installState() {
   if (isTauri || isDesktop) return { mode: 'desktop' };
-  if (installed) return { mode: 'installed' };
+  if (installed || isAndroidApp) return { mode: 'installed' };
   if (pwaCapable && deferredPrompt) return { mode: 'prompt' };
   if (ios) return { mode: ipad ? 'ipad' : 'ios' };
   const browser = /Firefox\//.test(ua)

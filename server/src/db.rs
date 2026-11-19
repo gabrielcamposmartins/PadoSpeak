@@ -684,6 +684,19 @@ ALTER TABLE agent_keys ADD COLUMN model TEXT;
 ALTER TABLE agent_prefs ADD COLUMN mcp INTEGER NOT NULL DEFAULT 0;
 "#,
     ),
+    (
+        30,
+        r#"
+-- Canal privado por cargo: quem tem um destes cargos vê o canal (além das pessoas de channel_access, do dono
+-- e dos admins). Ganhou o cargo, passa a ver; perdeu, deixa de ver.
+CREATE TABLE IF NOT EXISTS channel_roles (
+  channel_id TEXT NOT NULL,
+  role_id TEXT NOT NULL,
+  PRIMARY KEY (channel_id, role_id)
+);
+CREATE INDEX IF NOT EXISTS idx_channel_roles_role ON channel_roles(role_id);
+"#,
+    ),
 ];
 
 impl Db {

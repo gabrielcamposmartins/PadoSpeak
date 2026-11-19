@@ -50,15 +50,24 @@ pub struct Role {
     perms: i64,
     /// Quem tem o cargo (só quem ainda é membro do servidor).
     members: Vec<String>,
+    /// Quantos canais privados o cargo abre para quem o tem (`channel_roles`; quais são, só os administradores
+    /// sabem, pelo servidor).
+    channels: i64,
 }
+
+/// Canais privados que um cargo abre: enquanto abrir algum, só administradores mudam quem o tem.
+const ROLE_CHANNELS_SQL: &str = "SELECT COUNT(*) FROM channel_roles cr JOIN channels c ON c.id = cr.channel_id \
+    WHERE cr.role_id = r.id AND c.private = 1";
 
 /// Os cargos do servidor, na ordem em que foram criados.
 pub async fn roles_of(app: &App, guild_id: &str) -> ApiResult<Vec<Role>> {
     let mut roles: Vec<Role> = app
         .db
-        .query_all("SELECT id, name, color, perms FROM roles WHERE guild_id = ?1 ORDER BY created_at, id", [guild_id], |r| {
-            Ok(Role { id: r.get(0)?, name: r.get(1)?, color: r.get(2)?, perms: r.get(3)?, members: Vec::new() })
-        })
+        .query_all(
+            &format!("SELECT r.id, r.name, r.color, r.perms, ({ROLE_CHANNELS_SQL}) FROM roles r WHERE r.guild_id = ?1 ORDER BY r.created_at, r.id"),
+            [guild_id],
+            |r| Ok(Role { id: r.get(0)?, name: r.get(1)?, color: r.get(2)?, perms: r.get(3)?, members: Vec::new(), channels: r.get(4)? }),
+        )
         .await?;
     let rows = app
         .db
@@ -80,7 +89,7 @@ pub async fn roles_of(app: &App, guild_id: &str) -> ApiResult<Vec<Role>> {
 }
 
 /// Avisa todos do servidor da lista nova de cargos.
-async fn announce(app: &App, guild_id: &str) -> ApiResult<Vec<Role>> {
+pub async fn announce(app: &App, guild_id: &str) -> ApiResult<Vec<Role>> {
     let roles = roles_of(app, guild_id).await?;
     app.hub.to_guild(guild_id, "roles:update", json!({ "guildId": guild_id, "roles": roles }));
     Ok(roles)
@@ -99,6 +108,7 @@ pub async fn forget_member(app: &App, guild_id: &str, user_id: &str) -> ApiResul
 
 /// Servidor excluído: os cargos dele também.
 pub async fn forget_guild(app: &App, guild_id: &str) -> ApiResult<()> {
+    app.db.execute("DELETE FROM channel_roles WHERE role_id IN (SELECT id FROM roles WHERE guild_id = ?1)", [guild_id]).await?;
     app.db.execute("DELETE FROM role_members WHERE role_id IN (SELECT id FROM roles WHERE guild_id = ?1)", [guild_id]).await?;
     app.db.execute("DELETE FROM roles WHERE guild_id = ?1", [guild_id]).await?;
     Ok(())
@@ -168,26 +178,41 @@ async fn create_role(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): 
     Ok(Json(announce(&app, &id).await?))
 }
 
-/// O servidor do cargo e as permissões que ele dá, se quem pede pode gerenciar os cargos dele. Cargo que dá
-/// permissões: só administradores mexem.
-async fn managed_role(app: &App, role_id: &str, user_id: &str) -> ApiResult<(String, i64, bool)> {
-    let (guild, bits) = app
+/// Um cargo que quem pede pode gerenciar.
+struct Managed {
+    guild: String,
+    /// As permissões que o cargo dá.
+    bits: i64,
+    /// O cargo abre canais privados (`channel_roles`).
+    gated: bool,
+    /// Quem pede é administrador. Cargo que dá permissões ou abre canais privados: só administradores mexem
+    /// em quem o tem (senão quem gerencia cargos se daria as permissões, ou entraria nos canais).
+    admin: bool,
+}
+
+async fn managed_role(app: &App, role_id: &str, user_id: &str) -> ApiResult<Managed> {
+    let (guild, bits, channels) = app
         .db
-        .query_one("SELECT guild_id, perms FROM roles WHERE id = ?1", [role_id], |r| Ok((r.get::<String>(0)?, r.get::<i64>(1)?)))
+        .query_one(&format!("SELECT r.guild_id, r.perms, ({ROLE_CHANNELS_SQL}) FROM roles r WHERE r.id = ?1"), [role_id], |r| {
+            Ok((r.get::<String>(0)?, r.get::<i64>(1)?, r.get::<i64>(2)?))
+        })
         .await?
         .ok_or_else(|| not_found("Cargo não encontrado"))?;
     let mine = require_perm(app, &guild, user_id, perm::ROLES, "Você não pode mudar os cargos deste servidor").await?;
-    Ok((guild, bits, perm::has(mine, perm::ADMIN)))
+    Ok(Managed { guild, bits, gated: channels > 0, admin: perm::has(mine, perm::ADMIN) })
 }
 
 async fn update_role(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): Path<String>, Json(body): Json<RoleBody>) -> ApiResult<Json<Vec<Role>>> {
-    let (guild, bits, admin) = managed_role(&app, &id, &me.id).await?;
+    let Managed { guild, bits, gated, admin } = managed_role(&app, &id, &me.id).await?;
     let next = body.perms.map(role_perms);
     if next.is_some_and(|n| n != bits) && !admin {
         return Err(forbidden("Só administradores mudam as permissões de um cargo"));
     }
     if body.members.is_some() && bits != 0 && !admin {
         return Err(forbidden("Este cargo dá permissões: só administradores escolhem quem o tem"));
+    }
+    if body.members.is_some() && gated && !admin {
+        return Err(forbidden("Este cargo dá acesso a canais privados: só administradores escolhem quem o tem"));
     }
     if let Some(name) = &body.name {
         app.db.execute("UPDATE roles SET name = ?1 WHERE id = ?2", [role_name(name)?.as_str(), id.as_str()]).await?;
@@ -200,6 +225,10 @@ async fn update_role(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): 
     }
     if let Some(members) = &body.members {
         set_members(&app, &guild, &id, members).await?;
+        // quem ganhou o cargo passa a ver os canais privados dele; quem perdeu deixa de ver (e sai da voz deles)
+        if gated {
+            crate::api::audiences_changed(&app, &guild).await?;
+        }
     }
     if let Some(n) = next.filter(|n| *n != bits) {
         app.db.execute("UPDATE roles SET perms = ?1 WHERE id = ?2", libsql::params![n, id.as_str()]).await?;
@@ -212,13 +241,21 @@ async fn update_role(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): 
 }
 
 async fn delete_role(State(app): AppState, AuthUser(me, _): AuthUser, Path(id): Path<String>) -> ApiResult<Json<Vec<Role>>> {
-    let (guild, bits, admin) = managed_role(&app, &id, &me.id).await?;
+    let Managed { guild, bits, gated, admin } = managed_role(&app, &id, &me.id).await?;
     if bits != 0 && !admin {
         return Err(forbidden("Este cargo dá permissões: só administradores o apagam"));
     }
+    if gated && !admin {
+        return Err(forbidden("Este cargo dá acesso a canais privados: só administradores o apagam"));
+    }
     let name = role_label(&app, &id).await;
+    // os canais privados do cargo continuam privados: quem os via só pelo cargo deixa de ver
+    app.db.execute("DELETE FROM channel_roles WHERE role_id = ?1", [id.as_str()]).await?;
     app.db.execute("DELETE FROM role_members WHERE role_id = ?1", [id.as_str()]).await?;
     app.db.execute("DELETE FROM roles WHERE id = ?1", [id.as_str()]).await?;
+    if gated {
+        crate::api::audiences_changed(&app, &guild).await?;
+    }
     app.audit(crate::audit::Entry::new(&guild, "settings.role_delete", &me.id).detail(json!({ "name": name })));
     Ok(Json(announce(&app, &guild).await?))
 }

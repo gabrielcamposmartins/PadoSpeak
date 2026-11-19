@@ -18,6 +18,7 @@ como banco — por padrão um arquivo local, sem nada para instalar.
 | `server/`            | Crate `padospeak-server`: biblioteca (`HostManager`) + binário headless/VM                     |
 | `client/`            | Interface React (Vite), usada no navegador, no app desktop e no painel de hospedagem      |
 | `desktop/src-tauri/` | App desktop Tauri que embute o servidor — a página **Hostear** liga/desliga ele           |
+| `android/`           | App Android (Kotlin): WebView com o servidor da comunidade + notificações, chamada em segundo plano e downloads |
 | `deploy/`            | Serviço systemd, `.env` de exemplo e script de instalação em VM                           |
 
 ## App desktop: perfil local, rede local e servidor de comunidade
@@ -46,6 +47,35 @@ gaveta; no iPad na horizontal, o layout completo.
 - **Notificações push:** com o app fechado ou em segundo plano, chegam mensagens diretas, chamadas, "chamar
   atenção" e pedidos de amizade (Web Push com VAPID; no iPhone/iPad, iOS 16.4+ com o app instalado). O
   servidor só envia quando a pessoa não está com o PadoSpeak na tela.
+
+## App Android
+
+`android/` é um app nativo (Kotlin, sem dependências além do AndroidX) que abre https://padospeak.padoru.org num
+WebView — a interface é a mesma do celular e se atualiza junto com o servidor, sem precisar de APK novo. Por fora
+da página, o app cuida do que é do sistema (ponte `PadoSpeakAndroid`, ver `client/src/lib/android.js`):
+
+- microfone e câmera pedidos ao Android na hora em que a página pede; o botão Câmera da conversa abre a câmera
+  do celular (foto ou vídeo);
+- conectado em segundo plano (opção em Notificações, ligada por padrão): o `ConnectionService` mantém a página
+  viva com a tela bloqueada e até com o app fechado pelos recentes (o `WebHost` guarda o WebView), e o servidor
+  pinga o WebSocket a cada 50 s para a operadora não derrubar a conexão;
+- chamada recebida como nos outros apps de ligação: toque e vibração do celular e tela cheia por cima da tela
+  bloqueada, com Atender/Recusar;
+- mensagens em notificação de conversa (empilhadas, com som, vibração e "Responder" sem abrir o app);
+- chamada que continua com a tela apagada ou com outro app aberto (serviço com o tempo da chamada na barra de
+  status e "Desligar");
+- anexos pelo gerenciador de downloads, escolher arquivos, links de fora no navegador, tela cheia dos vídeos;
+- barras do sistema na cor das bordas do app e o "voltar" que volta uma tela.
+
+Sem o Firebase (FCM), com o app parado à força ou com "receber em segundo plano" desligado não há notificações.
+Compartilhar a tela também não (o WebView do Android não tem `getDisplayMedia`).
+
+Build (JDK 17+ e Android SDK com a plataforma 35): `npm run android` → `android/app/build/outputs/apk/release/`.
+A versão vem do `package.json`. A chave de assinatura fica fora do repositório, em
+`~/.android-keys/padospeak-release.properties` (`storeFile`, `storePassword`, `keyAlias`, `keyPassword`) ou no
+caminho de `PADOSPEAK_ANDROID_SIGNING` — guarde uma cópia: sem ela, as próximas versões não instalam por cima.
+Para testar contra um servidor local: `gradlew assembleDebug -PpadospeakBase=http://localhost:8090` e
+`adb reverse tcp:8090 tcp:8090` (o build de depuração libera HTTP só para localhost).
 
 ## Página “Hostear”
 
@@ -253,7 +283,9 @@ nó** e recebe um código (`psm1.…`) que o nó usa para ligar para o servidor.
   aparece embaixo do nome, junto da mensagem pessoal (não no lugar dela). Um cargo pode dar permissões, somadas
   às da pessoa (nunca administrador); essas, e quem tem um cargo que as dá, só administradores mudam. A lista de
   membros pode ser agrupada por cargo, e quem tem **Gerenciar cargos** abre a janela pelo botão ao lado de
-  Convidar.
+  Convidar. Um canal privado pode valer para cargos (Editar canal → Canal privado → Cargos): quem ganha o cargo
+  passa a ver o canal, quem perde deixa de ver (e sai da voz dele). Quem tem um cargo que abre canais privados,
+  só administradores mudam; com o módulo Cargos desligado, os canais ficam só para a lista de pessoas.
 - **Assistente** (precisa de uma chave da API da Anthropic): abre num balão por cima da tela, pelo ícone no pé do
   trilho dos servidores ou por um botão flutuante no canto inferior direito (Configurações → Assistente), e pelo
   atalho (padrão Ctrl + Alt + A). Cada pedido leva o que está na tela (o servidor, os canais, quem está na voz, o

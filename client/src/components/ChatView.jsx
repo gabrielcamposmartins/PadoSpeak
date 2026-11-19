@@ -37,6 +37,7 @@ import { useConn, useConnKey } from './conn.jsx';
 import Avatar, { UserName, Orb, usePresence, useUser, colorClass, colorStyle } from './Avatar.jsx';
 import { RichText, FormattedText, plain, EmojiText, EmojiPicker, Floating, EMOTES, mentionsUser } from './Emotes.jsx';
 import { useLayout, isTouch, isAndroid } from '../lib/layout.js';
+import { isAndroidApp } from '../lib/env.js';
 
 /** Abre o perfil de alguém desta conexão (servidor ou PC da rede). */
 function useOpenProfile() {
@@ -789,9 +790,10 @@ export default function ChatView({ channel, variant = 'channel' }) {
   const toggleNsfw = (i) => setAttach((a) => a.map((it, j) => (j === i ? { ...it, nsfw: !it.nsfw } : it)));
   const [camera, setCamera] = useState(false);
   const cameraInput = useRef(null);
-  // iPhone e iPad: a câmera do próprio aparelho (com o zoom, o flash e a tela cheia dele). No Android o
-  // seletor do sistema abria a galeria em vez da câmera, então lá (e no computador) é a câmera do PadoSpeak.
-  const nativeCamera = isTouch && !isAndroid;
+  // iPhone, iPad e o app do Android: a câmera do próprio aparelho (com o zoom, o flash e a tela cheia dele).
+  // No navegador do Android o seletor do sistema abria a galeria em vez da câmera, então lá (e no
+  // computador) é a câmera do PadoSpeak; o app do Android abre a câmera do celular direto (MainActivity.kt).
+  const nativeCamera = isTouch && (!isAndroid || isAndroidApp);
   const openCamera = () => (nativeCamera ? cameraInput.current?.click() : setCamera(true));
   const [recording, setRecording] = useState(false);
   const connKey = useConnKey();

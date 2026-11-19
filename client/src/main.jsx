@@ -7,7 +7,9 @@ import { watchViewport } from './lib/layout.js';
 import { initPwa } from './lib/pwa.js';
 import { unlockAudio } from './lib/sounds.js';
 import { unlockSoundboard, setSoundboardOutput } from './lib/soundboard.js';
-import { openFromUrl, initBackNavigation, setMyActivity, useStore } from './store.js';
+import { openFromUrl, initBackNavigation, setMyActivity, useStore, connRegistry } from './store.js';
+import { initAndroid } from './lib/android.js';
+import { networkChanged } from './lib/realtime.js';
 import { watchActivity, setCustomPrograms } from './lib/activity.js';
 import { setGameOverlay, setOverlayBlocked } from './lib/gameOverlay.js';
 import { watchForUpdates } from './lib/update.js';
@@ -35,6 +37,8 @@ watchSystemBars();
 initExternalLinks();
 initBackNavigation();
 onNotificationClick(openFromUrl);
+// App do Android: notificações, chamada em segundo plano e o botão "Sair da chamada".
+initAndroid({ connRegistry, openFromUrl, useStore, networkChanged });
 // App do Windows: o jogo em foco vai para o status ("Jogando …").
 setCustomPrograms(useStore.getState().prefs.customGames);
 watchActivity(setMyActivity);

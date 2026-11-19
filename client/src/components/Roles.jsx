@@ -3,7 +3,7 @@
 // Convidar), onde quem tem a permissão cria, edita e apaga os cargos. Como em Membros e permissões: à
 // esquerda os cargos, à direita quem tem o escolhido e as permissões que ele dá.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Plus, Trash2, Search, X, Users, ShieldCheck } from 'lucide-react';
+import { Plus, Trash2, Search, X, Users, ShieldCheck, Lock } from 'lucide-react';
 import { useStore } from '../store.js';
 import Avatar, { UserName } from './Avatar.jsx';
 import { plain } from '../lib/text.js';
@@ -13,6 +13,7 @@ import { rolesOn } from '../modules.js';
 export const ROLE_COLORS = ['#1a8fd6', '#18aab2', '#2b9a4a', '#7cb518', '#e39a1c', '#c2410c', '#d9534f', '#db2777', '#7b44c8', '#5b7690'];
 
 const NONE = [];
+const NO_CHANNELS = [];
 const nameOf = (u) => plain(u.displayName) || u.username;
 const byName = (a, b) => nameOf(a).localeCompare(nameOf(b), 'pt-BR', { sensitivity: 'base' });
 
@@ -304,6 +305,7 @@ export function RolesManager({ guildId, perms, renderPerms }) {
               <small>
                 {t.members.length} {t.members.length === 1 ? 'pessoa' : 'pessoas'}
                 {t.perms ? ` · ${countBits(t.perms)} ${countBits(t.perms) === 1 ? 'permissão' : 'permissões'}` : ''}
+                {t.channels ? ` · ${t.channels} ${t.channels === 1 ? 'canal privado' : 'canais privados'}` : ''}
               </small>
             </span>
           </button>
@@ -342,8 +344,13 @@ function RoleDetail({ guildId, role, members, perms, renderPerms }) {
     }
   };
   const save = (patch) => run(() => st.updateRole(guildId, role.id, patch));
-  // cargo que dá permissões: só administradores mexem em quem o tem (senão quem gerencia se daria permissões)
-  const locked = Boolean(role.perms) && !perms.admin;
+  // cargo que dá permissões ou abre canais privados: só administradores mexem em quem o tem (senão quem
+  // gerencia cargos se daria as permissões, ou entraria nos canais)
+  const locked = Boolean(role.perms || role.channels) && !perms.admin;
+  // os canais privados que o cargo abre: os nomes só chegam para quem administra (`channelRoles`)
+  const channels = useStore((s) => s.guildData[guildId]?.channels) || NO_CHANNELS;
+  const channelRoles = useStore((s) => s.guildData[guildId]?.channelRoles);
+  const opened = channels.filter((c) => channelRoles?.[c.id]?.includes(role.id));
   const canEdit = perms.roles;
   const canPeople = canEdit && !locked;
   const withRole = members.filter((m) => role.members.includes(m.id)).sort(byName);
@@ -403,7 +410,13 @@ function RoleDetail({ guildId, role, members, perms, renderPerms }) {
               />
             )}
           </div>
-          {locked && <p className="kv">Este cargo dá permissões: só administradores escolhem quem o tem.</p>}
+          {locked && (
+            <p className="kv">
+              {role.perms
+                ? 'Este cargo dá permissões: só administradores escolhem quem o tem.'
+                : 'Este cargo dá acesso a canais privados: só administradores escolhem quem o tem.'}
+            </p>
+          )}
           {withRole.length ? (
             <div className="role-people">
               {withRole.map((m) => (
@@ -432,6 +445,19 @@ function RoleDetail({ guildId, role, members, perms, renderPerms }) {
             <p className="kv">Ninguém com este cargo ainda{canPeople ? ': use o + para adicionar.' : '.'}</p>
           )}
         </div>
+        {role.channels > 0 && (
+          <div className="role-block">
+            <div className="role-block-head">
+              <Lock size={14} aria-hidden="true" />
+              <b>Canais privados do cargo ({role.channels})</b>
+            </div>
+            <p className="kv">
+              Quem tem o cargo vê {role.channels === 1 ? 'este canal privado' : 'estes canais privados'}
+              {opened.length ? `: ${opened.map((c) => (c.type === 'text' ? `#${c.name}` : c.name)).join(', ')}` : ''}. Ganhou o cargo, passa a
+              ver; perdeu, deixa de ver.
+            </p>
+          </div>
+        )}
         <div className="role-block">
           <div className="role-block-head">
             <ShieldCheck size={14} aria-hidden="true" />

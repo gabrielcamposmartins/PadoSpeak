@@ -2,6 +2,8 @@
 // depois entrega ao navegador para salvar. Arquivos enormes vão direto pelo navegador (não cabem na memória).
 import { useSyncExternalStore } from 'react';
 import { isTouch } from './layout.js';
+import { isAndroidApp } from './env.js';
+import { androidPost } from './android.js';
 
 const MAX_IN_MEMORY = (isTouch ? 300 : 1536) * 1024 * 1024;
 
@@ -36,6 +38,8 @@ const save = (href, name) => {
 /** Baixa `url` como `name` (`size`: tamanho esperado, para o progresso). */
 export async function startDownload(url, name, size = 0) {
   if (active.has(url)) return;
+  // App do Android: o gerenciador de downloads do sistema baixa direto (com a notificação de andamento).
+  if (isAndroidApp && androidPost('download', { url: new URL(url, location.href).href, name })) return;
   if (size > MAX_IN_MEMORY || typeof ReadableStream === 'undefined') return save(url, name);
   active.set(url, { name, loaded: 0, total: size });
   emit();
