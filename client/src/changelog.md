@@ -1,5 +1,15 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.19.1 — 19/11/2026
+
+### Novidades
+- **Arrastar para atender**: no celular, arraste o botão da chamada recebida para a direita para atender ou para a esquerda para recusar.
+- **Chamadas não atendidas na conversa**: quando ninguém atende, fica na conversa o aviso “Você ligou para…” e, para quem foi chamado, “Chamada não atendida de…”.
+
+### Correções
+- **Chamadas privadas**: quando uma das duas pessoas sai, a chamada acaba para as duas.
+- **App para Android**: o áudio da chamada continua com a tela apagada; aproximar o rosto do celular apaga a tela; mensagens e “chamar atenção” avisam com som e vibração, também na tela bloqueada; virar a câmera na tela cheia não sai mais da tela cheia; e em Configurações → Notificações aparece o que pode estar bloqueando os avisos, com o botão para liberar. O aviso de que o app está conectado ficou discreto.
+
 ## 1.19.0 — 19/11/2026
 
 ### Novidades
