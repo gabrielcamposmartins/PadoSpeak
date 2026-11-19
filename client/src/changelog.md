@@ -1,5 +1,16 @@
 <!-- Notas de atualização mostradas no app (botão "!" no Início). A versão mais nova fica no topo. -->
 
+## 1.19.0 — 19/11/2026
+
+### Novidades
+- **App para Android**: baixe em Configurações → Apps. As chamadas tocam com a tela bloqueada, como as outras ligações, com o toque e a vibração do celular; as mensagens chegam como notificação, empilhadas por conversa, com som, vibração e “Responder”; a chamada continua com a tela apagada ou com outro app aberto; e o botão Câmera da conversa abre a câmera do celular. O app fica conectado em segundo plano (dá para desligar em Configurações → Notificações) e se atualiza sozinho.
+
+### Correções
+- **Celular**: o botão de enviar aparece assim que você começa a digitar (antes, só depois do espaço), e tocar nos botões não deixa mais um quadrado azul.
+- **Chamadas**: quem abre o app enquanto a chamada está tocando passa a ver a chamada.
+- **Supressão de ruído**: a opção fica em Configurações → Funcionalidade (saiu do topo e da barra da chamada).
+- **Configurações**: a janela ocupa no máximo 70% da altura da tela e não muda de tamanho ao trocar de aba.
+
 ## 1.18.0 — 16/11/2026
 
 ### Correções

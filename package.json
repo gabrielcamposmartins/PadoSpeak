@@ -1,7 +1,7 @@
 {
   "name": "padospeak",
   "private": true,
-  "version": "1.18.0",
+  "version": "1.19.0",
   "description": "PadoSpeak: chat, voz, vídeo e tela em 1080p self-hosted em Rust, com Turso (libSQL) como banco.",
   "workspaces": [
     "client"
@@ -15,6 +15,7 @@
     "desktop:dev": "cd desktop && tauri dev",
     "desktop:build": "cd desktop && tauri build",
     "installer": "cd desktop && tauri build --bundles nsis",
+    "android": "cd android && gradlew assembleRelease",
     "version:set": "node scripts/version.mjs",
     "models": "node scripts/fetch-models.mjs models",
     "test": "cargo test -p padospeak-server"
