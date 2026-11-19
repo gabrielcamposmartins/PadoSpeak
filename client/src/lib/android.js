@@ -4,6 +4,7 @@
 //  - a chamada que continua com a tela apagada (serviço com a notificação "Em chamada" e "Sair da chamada");
 //  - downloads (anexos pelo gerenciador de downloads; arquivos gerados aqui, em pedaços);
 //  - cores das barras do sistema (systemBars.js) e links de fora no navegador (env.js).
+import { useSyncExternalStore } from 'react';
 import { isAndroidApp } from './env.js';
 
 let visible = true;
@@ -66,6 +67,33 @@ if (isAndroidApp && typeof window !== 'undefined') {
   // Links com `download` que a página não tratou (o app pede os bytes de volta por aqui).
   window.__padospeakSaveBlob = (blob, name) => androidSaveBlob(blob, name).catch((err) => console.warn('[download]', err));
 }
+
+// ---------- Diagnóstico: o que pode estar impedindo os avisos ----------
+let status = null;
+const statusSubs = new Set();
+if (isAndroidApp && typeof window !== 'undefined') {
+  window.addEventListener('padospeak:android', (e) => {
+    if (e.detail?.type !== 'status') return;
+    status = e.detail;
+    statusSubs.forEach((f) => f());
+  });
+}
+
+/** Estado das permissões do app ({ notifications, battery, fullScreen, connected, version } ou null). */
+export function useAndroidStatus() {
+  return useSyncExternalStore(
+    (f) => {
+      statusSubs.add(f);
+      androidPost('status');
+      return () => statusSubs.delete(f);
+    },
+    () => status,
+    () => null,
+  );
+}
+
+/** Abre a tela do Android que libera o que falta (`notifications`, `battery`, `fullScreen`). */
+export const androidFix = (what) => androidPost('fix', { what });
 
 const KEEP_KEY = 'padospeak.androidKeepAlive';
 

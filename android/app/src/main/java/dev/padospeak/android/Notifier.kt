@@ -25,6 +25,8 @@ object Notifier {
     private const val CH_CALL = "chamada"
     private const val CH_CONN = "conexao"
     private const val CH_UPDATE = "atualizacao"
+    private const val CH_NUDGE = "chamar_atencao"
+    private val VIBRATE_NUDGE = longArrayOf(0, 90, 50, 90, 50, 90, 50, 260, 120, 90, 50, 90, 50, 260)
     private const val UPDATE_ID = 4
     const val CALL_ID = 1
     private const val RING_ID = 2
@@ -77,6 +79,17 @@ object Notifier {
             NotificationChannel(CH_CONN, ctx.getString(R.string.channel_conn), NotificationManager.IMPORTANCE_MIN).apply {
                 description = ctx.getString(R.string.channel_conn_desc)
                 setShowBadge(false)
+                lockscreenVisibility = Notification.VISIBILITY_SECRET
+            },
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(CH_NUDGE, ctx.getString(R.string.channel_nudge), NotificationManager.IMPORTANCE_HIGH).apply {
+                description = ctx.getString(R.string.channel_nudge_desc)
+                enableVibration(true)
+                vibrationPattern = VIBRATE_NUDGE
+                enableLights(true)
+                lightColor = COLOR
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             },
         )
         nm.createNotificationChannel(
@@ -157,6 +170,7 @@ object Notifier {
             .addAction(replyAction)
             .build()
         post(ctx, id, n)
+        if (alert) wakeScreen(ctx)
     }
 
     /** Resposta pela notificação: entrou (aparece como "Você") ou não deu (a notificação volta como estava). */
@@ -236,6 +250,41 @@ object Notifier {
             .build()
     }
 
+    /**
+     * "Chamar atenção" recebido com o app fora da tela: vibra forte, toca o som de notificação e acende a tela
+     * (aparece também na tela bloqueada).
+     */
+    fun nudge(ctx: Context, name: String, url: String) {
+        val id = idOf("nudge:$url")
+        val text = ctx.getString(R.string.nudge_text, name.ifEmpty { ctx.getString(R.string.app_name) })
+        val n = NotificationCompat.Builder(ctx, CH_NUDGE)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setColor(COLOR)
+            .setContentTitle(name.ifEmpty { ctx.getString(R.string.app_name) })
+            .setContentText(text)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setVibrate(VIBRATE_NUDGE)
+            .setDefaults(NotificationCompat.DEFAULT_SOUND or NotificationCompat.DEFAULT_LIGHTS)
+            .setAutoCancel(true)
+            .setContentIntent(openIntent(ctx, url.ifEmpty { "/" }, id))
+            .build()
+        post(ctx, id, n)
+        wakeScreen(ctx)
+    }
+
+    /** Acende a tela por alguns segundos (a notificação aparece na tela bloqueada). */
+    @Suppress("DEPRECATION")
+    private fun wakeScreen(ctx: Context) {
+        val power = ctx.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        if (power.isInteractive) return
+        power.newWakeLock(
+            android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP or android.os.PowerManager.ON_AFTER_RELEASE,
+            "PadoSpeak:aviso",
+        ).acquire(5_000)
+    }
+
     /** Atualização baixada que precisa da confirmação do sistema (a primeira, ou no Android 11-). */
     fun updateReady(ctx: Context, confirm: Intent) {
         val n = NotificationCompat.Builder(ctx, CH_UPDATE)
@@ -258,6 +307,7 @@ object Notifier {
             .setContentTitle(ctx.getString(R.string.conn_title))
             .setContentText(ctx.getString(R.string.conn_text))
             .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
             .setOngoing(true)
             .setSilent(true)
             .setShowWhen(false)

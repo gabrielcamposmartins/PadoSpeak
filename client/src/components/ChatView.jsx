@@ -6,6 +6,7 @@ import {
   Send,
   PenLine,
   Vibrate,
+  PhoneMissed,
   Sticker,
   CornerUpLeft,
   Paperclip,
@@ -23,7 +24,7 @@ import {
   Star,
   ChartBar,
 } from 'lucide-react';
-import { useStore, sendSticker, sendFile, sendVoice, usePerms, parsePoll } from '../store.js';
+import { useStore, sendSticker, sendFile, sendVoice, usePerms, parsePoll, MISSED_CALL } from '../store.js';
 import { FileView, UploadList, parseFile, parseVoice, isBlockedFile, VoiceNote, ExpiresTag } from './Files.jsx';
 import { StickerPicker, MessageSticker, parseSticker } from './Stickers.jsx';
 import FormatTools from './FormatTools.jsx';
@@ -84,6 +85,28 @@ function Notice({ n, dm, name }) {
       <Vibrate size={14} />
       <span>{text}</span>
       <span className="time">{hhmm(n.createdAt)}</span>
+    </div>
+  );
+}
+
+/** Aviso de chamada 1 a 1 não atendida: "Você ligou para Ana" / "Chamada não atendida de Ana". */
+function CallNotice({ m, me, name }) {
+  const mine = m.author.id === me.id;
+  return (
+    <div className="chat-notice call" role="status">
+      <PhoneMissed size={14} />
+      <span>
+        {mine ? (
+          <>
+            Você ligou para <FormattedText text={name} />.
+          </>
+        ) : (
+          <>
+            Chamada não atendida de <UserName user={m.author} className="author" />.
+          </>
+        )}
+      </span>
+      <span className="time">{hhmm(m.createdAt)}</span>
     </div>
   );
 }
@@ -1242,8 +1265,23 @@ export default function ChatView({ channel, variant = 'channel' }) {
               <Notice n={m} dm={dm} name={channel.name} />
             </Fragment>
           );
+        if (m.content === MISSED_CALL)
+          return (
+            <Fragment key={m.id}>
+              {newDay && (
+                <div className="day-sep" role="separator">
+                  <span>{dayLabel(m.createdAt)}</span>
+                </div>
+              )}
+              <CallNotice m={m} me={me} name={channel.name} />
+            </Fragment>
+          );
         const head =
-          newDay || prev.notice || prev.author.id !== m.author.id || m.createdAt - prev.createdAt > GROUP_MS;
+          newDay ||
+          prev.notice ||
+          prev.content === MISSED_CALL ||
+          prev.author.id !== m.author.id ||
+          m.createdAt - prev.createdAt > GROUP_MS;
         return (
           <Fragment key={m.id}>
             {newDay && (

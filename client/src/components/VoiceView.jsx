@@ -76,16 +76,23 @@ function useDraggable(enabled) {
   };
 }
 
+/** Safari (iPhone, iPad e Mac): precisa reatribuir o stream ao trocar a trilha. */
+const SAFARI = typeof navigator !== 'undefined' && /^((?!chrome|android|crios|fxios).)*safari/i.test(navigator.userAgent);
+
 /** <video> que acompanha o MediaStream e mede o que é de fato desenhado (resolução/fps). */
 function StreamVideo({ stream, mirror, onStats }) {
   const ref = useRef(null);
   // Trocar de câmera troca a trilha dentro do mesmo stream: o Safari só mostra a nova com o stream
-  // reatribuído (senão a sua imagem fica preta).
+  // reatribuído (senão a sua imagem fica preta). No Chromium (Android) a trilha nova aparece sozinha, e
+  // reatribuir tiraria o vídeo da tela cheia.
   const trackId = stream?.getVideoTracks()[0]?.id;
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    if (el.srcObject === stream) el.srcObject = null;
+    if (el.srcObject === stream) {
+      if (!SAFARI) return;
+      el.srcObject = null;
+    }
     el.srcObject = stream;
     el.play?.().catch(() => {});
   }, [stream, trackId]);

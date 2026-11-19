@@ -146,7 +146,8 @@ function saveCached(kind, value) {
   }
 }
 
-export default function AgentPopover() {
+/** `page`: a aba do assistente no celular (ocupa a tela; não fecha com Esc nem com toque fora). */
+export default function AgentPopover({ page = false }) {
   const [data, setDataState] = useState(() => loadCached('Cache'));
   // aceita uma função (o estado mais novo), para dois ajustes seguidos não desfazerem um ao outro
   const setData = (d) =>
@@ -169,7 +170,7 @@ export default function AgentPopover() {
   const phone = useLayout() === 'phone';
   const place = useStore((s) => (s.prefs?.agentPlace === 'float' ? 'float' : 'rail'));
   const focusTick = useStore((s) => s.agentFocus);
-  const pos = useAnchor(phone, place);
+  const pos = useAnchor(phone || page, place);
   const boxRef = useRef(null);
   const resize = useResize(boxRef, pos?.float ? 'left' : 'right');
   const listRef = useRef(null);
@@ -206,8 +207,9 @@ export default function AgentPopover() {
     if (data?.ready) inputRef.current?.focus();
   }, [data?.ready, focusTick]);
 
-  // Fecha como uma dica: Esc, ou um clique fora (o ícone do trilho abre e fecha sozinho).
+  // Fecha como uma dica: Esc, ou um clique fora (o ícone do trilho abre e fecha sozinho). A página não fecha.
   useEffect(() => {
+    if (page) return undefined;
     const onKey = (e) => e.key === 'Escape' && !e.defaultPrevented && close();
     const onDown = (e) => {
       if (boxRef.current?.contains(e.target) || e.target.closest?.('[data-agent-toggle]')) return;
@@ -285,7 +287,9 @@ export default function AgentPopover() {
   const working = sending || data?.busy;
   // o tamanho escolhido, sem passar da tela (no celular, só a altura)
   const sz = resize.size;
-  const style = pos
+  const style = page
+    ? undefined
+    : pos
     ? {
         ...(pos.float ? { right: pos.right } : { left: pos.left }),
         bottom: pos.bottom,
@@ -313,14 +317,14 @@ export default function AgentPopover() {
   return (
     <div
       ref={boxRef}
-      className={`agent-pop${pos ? ` anchored${pos.float ? ' float' : ''}` : ' sheet'}`}
+      className={page ? 'agent-pop agent-page' : `agent-pop${pos ? ` anchored${pos.float ? ' float' : ''}` : ' sheet'}`}
       style={style}
-      role="dialog"
+      role={page ? 'region' : 'dialog'}
       aria-label="Assistente"
     >
-      {grip('y', 'Arraste para mudar a altura')}
-      {pos && grip('x', 'Arraste para mudar a largura')}
-      {pos && grip('xy', 'Arraste para mudar o tamanho')}
+      {!page && grip('y', 'Arraste para mudar a altura')}
+      {!page && pos && grip('x', 'Arraste para mudar a largura')}
+      {!page && pos && grip('xy', 'Arraste para mudar o tamanho')}
       <header className="agent-head">
         <span className="agent-avatar" aria-hidden="true">
           <Sparkles size={18} />
@@ -360,9 +364,11 @@ export default function AgentPopover() {
         <button className="gloss round mini" onClick={openKeys} title="Configurações do assistente (sua chave e modelo)" aria-label="Configurações do assistente">
           <Settings size={15} className="ico-purple" />
         </button>
-        <button className="gloss round mini" onClick={close} title="Fechar (Esc)" aria-label="Fechar o assistente">
-          <X size={15} />
-        </button>
+        {!page && (
+          <button className="gloss round mini" onClick={close} title="Fechar (Esc)" aria-label="Fechar o assistente">
+            <X size={15} />
+          </button>
+        )}
       </header>
       {scope && (
         <div className="agent-scope" title="O que vai junto do seu pedido">

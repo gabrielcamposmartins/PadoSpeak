@@ -22,7 +22,7 @@ if (isTauri) {
 }
 
 /** A pessoa está olhando o PadoSpeak agora (janela em foco e visível)? */
-export const appHasFocus = () => !document.hidden && (isTauri ? windowFocused : document.hasFocus());
+export const appHasFocus = () => !document.hidden && (isTauri ? windowFocused : isAndroidApp ? androidVisible() : document.hasFocus());
 
 /**
  * A pessoa não está olhando o PadoSpeak: janela na bandeja, minimizada ou atrás de outro programa

@@ -21,8 +21,8 @@
     <string name="no_app_to_open">Nenhum app para abrir este endereço</string>
     <string name="channel_conn">Conectado em segundo plano</string>
     <string name="channel_conn_desc">Aviso discreto enquanto o app fica conectado para receber chamadas e mensagens</string>
-    <string name="conn_title">PadoSpeak conectado</string>
-    <string name="conn_text">Pronto para receber chamadas e mensagens</string>
+    <string name="conn_title">PadoSpeak</string>
+    <string name="conn_text">Recebendo chamadas e mensagens</string>
     <string name="me">Você</string>
     <string name="reply">Responder</string>
     <string name="reply_hint">Mensagem</string>
@@ -33,6 +33,9 @@
     <string name="channel_update_desc">Versão nova do PadoSpeak pronta para instalar</string>
     <string name="update_title">Atualização do PadoSpeak pronta</string>
     <string name="update_text">Toque para instalar a versão nova</string>
+    <string name="channel_nudge">Chamar atenção</string>
+    <string name="channel_nudge_desc">Quando alguém chama a sua atenção (vibra forte, também com a tela bloqueada)</string>
+    <string name="nudge_text">%1$s chamou a sua atenção!</string>
     <string name="camera_title">Câmera</string>
     <string name="camera_photo">Tirar foto</string>
     <string name="camera_video">Gravar vídeo</string>

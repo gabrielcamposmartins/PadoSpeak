@@ -201,7 +201,7 @@ export default function App() {
       {loggedIn && !isPanel && <FloatingMiniCall />}
       {loggedIn && !isPanel && <CallFxCorner />}
       {loggedIn && !isPanel && phase === 'app' && !updating && agentFab && <AgentFab />}
-      {loggedIn && !isPanel && phase === 'app' && !updating && agentOpen && (
+      {loggedIn && !isPanel && phase === 'app' && !updating && agentOpen && !phoneLayout && (
         <Suspense fallback={null}>
           <AgentPopover />
         </Suspense>

@@ -260,7 +260,13 @@ export class VoiceClient {
     on('voice:signal', ({ from, data }) => this.handleSignal(from, data));
     // Uma chamada por conta: entrar por outro aparelho tira este da chamada.
     on('voice:kicked', ({ reason } = {}) =>
-      this.cleanup(reason === 'elsewhere' ? 'Você entrou na chamada por outro aparelho' : 'Você foi removido do canal de voz'),
+      this.cleanup(
+        reason === 'elsewhere'
+          ? 'Você entrou na chamada por outro aparelho'
+          : reason === 'ended'
+            ? 'A chamada terminou: a outra pessoa saiu'
+            : 'Você foi removido do canal de voz',
+      ),
     );
     // Um moderador me silenciou (ou tirou o silêncio) para todos.
     on('voice:server-mute', ({ muted, by }) => {

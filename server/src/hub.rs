@@ -202,6 +202,9 @@ struct HubState {
     /// Quem está sendo chamado agora → as chamadas tocando para ele. Quem conecta durante o toque (o celular
     /// que estava com a conexão parada, o app aberto pela notificação) recebe o `call:ring` de novo.
     rings: HashMap<String, Vec<PendingRing>>,
+    /// Chamadas 1 a 1 que ninguém atendeu (quem ligou desistiu ou foi recusado): viram um aviso na conversa
+    /// ("Você ligou para…" / "Chamada não atendida de…"), gravado fora do lock (`spawn_call_notices`).
+    missed_tx: Option<UnboundedSender<MissedCall>>,
     /// Os módulos ligados (veja `crate::modules`): o que for de um módulo desligado é recusado aqui.
     modules: crate::modules::Modules,
 }
@@ -216,6 +219,16 @@ struct PendingRing {
 
 /// Por quanto tempo uma chamada toca (quem liga desiste sozinho depois de 1 minuto).
 const RING_FOR: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Uma chamada 1 a 1 que ninguém atendeu.
+pub struct MissedCall {
+    dm_id: String,
+    caller: User,
+    callee: String,
+}
+
+/// O conteúdo da mensagem de aviso de chamada não atendida (o app mostra como aviso, não como mensagem).
+pub const MISSED_CALL: &str = "[chamada:perdida]";
 
 /// Quantas pessoas cabem numa chamada de conversa privada (os dois da conversa e os convidados).
 pub const CALL_MAX: usize = 10;
@@ -673,6 +686,11 @@ impl Hub {
         }
     }
 
+    /// Liga o canal dos avisos de chamada não atendida (a tarefa de `spawn_call_notices` grava cada um).
+    pub fn set_missed_calls(&self, tx: UnboundedSender<MissedCall>) {
+        self.state.lock().unwrap().missed_tx = Some(tx);
+    }
+
     /// Guarda a chamada que está tocando para `user_id` (e manda agora para as conexões dele).
     fn ring(s: &mut HubState, user_id: &str, dm_id: &str, from: &str, msg: String) {
         Self::send_to_user(s, user_id, &msg);
@@ -1023,6 +1041,19 @@ impl Hub {
             s.voice.remove(&channel_id);
             s.voice_since.remove(&channel_id);
             s.voice_route.remove(&channel_id);
+            // Chamada 1 a 1 que ainda tocava para o outro lado: ninguém atendeu.
+            if let Some(users) = me.dm_users.as_ref().filter(|u| u.contains(&me.user.id)) {
+                let other = users.iter().find(|u| **u != me.user.id).cloned().unwrap_or_default();
+                let rang = s.rings.get(&other).is_some_and(|l| {
+                    l.iter().any(|r| r.dm_id == channel_id && r.from == me.user.id && r.at.elapsed() < std::time::Duration::from_secs(300))
+                });
+                if rang {
+                    Self::stop_ring(s, &other, &channel_id);
+                    if let Some(tx) = &s.missed_tx {
+                        let _ = tx.send(MissedCall { dm_id: channel_id.clone(), caller: me.user.clone(), callee: other.clone() });
+                    }
+                }
+            }
             // A chamada acabou: os convites para ela também (o aviso de que esvaziou ainda chega a eles).
             let guests = s.call_guests.remove(&channel_id);
             if let Some(guests) = guests.filter(|_| me.dm_users.is_some()) {
@@ -1040,6 +1071,21 @@ impl Hub {
             Self::send_to(s, &peer, msg.clone());
         }
         Self::broadcast_voice_channel(s, &me, &channel_id);
+    }
+
+    /// Saiu da chamada (de vez: pelo botão, ou a conexão não voltou). Chamada de conversa privada que fica com
+    /// uma pessoa só acaba para ela também (a que espera, sozinha, alguém atender continua tocando).
+    fn leave_voice(s: &mut HubState, conn_id: &str) {
+        let channel = s.conn_voice.get(conn_id).cloned();
+        let before = channel.as_ref().and_then(|c| s.voice.get(c)).map_or(0, |l| l.len());
+        Self::leave_voice_locked(s, conn_id);
+        let Some(channel) = channel else { return };
+        let last = match s.voice.get(&channel) {
+            Some(l) if before >= 2 && l.len() == 1 && l[0].dm_users.is_some() => l[0].peer_id.clone(),
+            _ => return,
+        };
+        Self::leave_voice_locked(s, &last);
+        Self::send_to(s, &last, event("voice:kicked", json!({ "channelId": channel, "reason": "ended" })));
     }
 
     /// A conexão caiu no meio da chamada: o lugar fica guardado (os outros continuam ouvindo, porque a
@@ -1338,7 +1384,7 @@ impl Hub {
             } else if !closed_by_app && Self::mark_away(&mut s, &conn_id) {
                 hold_voice = true;
             } else {
-                Self::leave_voice_locked(&mut s, &conn_id);
+                Self::leave_voice(&mut s, &conn_id);
             }
             if let Some(c) = s.conns.remove(&conn_id) {
                 let now_offline = match s.user_conns.get_mut(&user.id) {
@@ -1383,7 +1429,7 @@ impl Hub {
                     .and_then(|ch| s.voice.get(ch))
                     .is_some_and(|l| l.iter().any(|p| p.peer_id == conn_id && p.away));
                 if still_away {
-                    Self::leave_voice_locked(&mut s, &conn_id);
+                    Self::leave_voice(&mut s, &conn_id);
                 }
             });
         }
@@ -1549,6 +1595,9 @@ impl Hub {
                 let mut content = str_field("content").trim().to_string();
                 if content.is_empty() || content.chars().count() > 4000 {
                     return err("Mensagem vazia ou longa demais");
+                }
+                if content == MISSED_CALL {
+                    return err("Mensagem inválida");
                 }
                 // Enquete: confere a pergunta e as opções e guarda do jeito certo (o prazo vira a hora do fim).
                 let is_poll = crate::polls::is_poll(&content);
@@ -1982,6 +2031,20 @@ impl Hub {
                 let dm_id = str_field("dmId");
                 Self::stop_ring(&mut self.state.lock().unwrap(), &user.id, &dm_id);
                 if let Some(dm) = crate::social::dm_with_access(app, &dm_id, &user.id).await {
+                    // Quem ligou ainda está na chamada, sozinho: fica o aviso de chamada não atendida.
+                    let caller = {
+                        let s = self.state.lock().unwrap();
+                        s.voice
+                            .get(&dm.id)
+                            .filter(|l| l.len() == 1 && l[0].user.id == dm.other(&user.id))
+                            .map(|l| l[0].user.clone())
+                    };
+                    if let Some(caller) = caller {
+                        let tx = self.state.lock().unwrap().missed_tx.clone();
+                        if let Some(tx) = tx {
+                            let _ = tx.send(MissedCall { dm_id: dm.id.clone(), caller, callee: user.id.clone() });
+                        }
+                    }
                     self.to_user(dm.other(&user.id), "call:declined", json!({ "dmId": dm.id, "by": user }));
                 } else {
                     // Convidado que recusou: sai da lista e quem está na chamada fica sabendo.
@@ -2357,7 +2420,7 @@ impl Hub {
 
             "voice:leave" => {
                 let mut s = self.state.lock().unwrap();
-                Self::leave_voice_locked(&mut s, conn_id);
+                Self::leave_voice(&mut s, conn_id);
                 Some(json!({ "ok": true }))
             }
 
@@ -2814,6 +2877,60 @@ async fn channel_name(app: &App, channel_id: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Grava os avisos de chamada 1 a 1 não atendida na conversa (uma mensagem de quem ligou com `MISSED_CALL`, que
+/// o app mostra como "Você ligou para…" / "Chamada não atendida de…") e avisa quem foi chamado.
+pub fn spawn_call_notices(app: Arc<App>) {
+    let (tx, mut rx) = unbounded_channel::<MissedCall>();
+    app.hub.set_missed_calls(tx);
+    tokio::spawn(async move {
+        while let Some(m) = rx.recv().await {
+            let Some(dm) = crate::social::dm_with_access(&app, &m.dm_id, &m.caller.id).await else { continue };
+            let msg = Message {
+                id: uuid::Uuid::new_v4().to_string(),
+                channel_id: dm.id.clone(),
+                content: MISSED_CALL.to_string(),
+                created_at: crate::now_ms(),
+                edited_at: None,
+                author: m.caller.clone(),
+                reply_to: None,
+                reply: None,
+                reactions: Vec::new(),
+                expires_at: None,
+                pinned: false,
+                poll: None,
+            };
+            let saved = app
+                .db
+                .execute(
+                    "INSERT INTO dm_messages (id, dm_id, author_id, content, created_at, reply_to) VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
+                    libsql::params![msg.id.as_str(), dm.id.as_str(), m.caller.id.as_str(), app.db.cipher.seal(&msg.content), msg.created_at],
+                )
+                .await;
+            if let Err(e) = saved {
+                app.logs.error(format!("aviso de chamada não atendida: {e}"));
+                continue;
+            }
+            let _ = app
+                .db
+                .execute("UPDATE dm_channels SET last_message_at = ?1 WHERE id = ?2", libsql::params![msg.created_at, dm.id.as_str()])
+                .await;
+            app.hub.to_users(&dm.users(), "message:new", &msg);
+            // A notificação de "está chamando você" (mesma etiqueta) vira a de chamada não atendida.
+            app.push_to(
+                &m.callee,
+                crate::push::Note {
+                    title: plain_text(&m.caller.display_name),
+                    body: "Chamada não atendida".into(),
+                    tag: format!("call:{}", dm.id),
+                    url: format!("/?dm={}", dm.id),
+                    kind: "message",
+                    from: crate::push::Sender::of(&m.caller),
+                },
+            );
+        }
+    });
+}
+
 /// Push para os membros do servidor que querem saber disto (`wants(usuário, configuração)`), que
 /// veem o canal (se houver) e não estão com o app aberto na tela.
 #[allow(clippy::too_many_arguments)]
@@ -2883,6 +3000,56 @@ pub async fn notify_guild(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chamada_privada_acaba_com_uma_pessoa_e_avisa_a_nao_atendida() {
+        let user = |id: &str| -> User {
+            serde_json::from_value(json!({
+                "id": id, "username": id, "displayName": id, "avatarColor": "#000000", "avatarUrl": null, "bio": "",
+                "nameColor": null, "bioColor": null, "bannerColor": null
+            }))
+            .unwrap()
+        };
+        let seat = |who: &str| Participant {
+            peer_id: format!("conn-{who}"),
+            user: user(who),
+            guild_id: String::new(),
+            dm_users: Some(["ana".into(), "bia".into()]),
+            muted: false,
+            deafened: false,
+            video: false,
+            screen: false,
+            camera_stream_id: None,
+            screen_stream_id: None,
+            server_muted: false,
+            joined_at: 1,
+            was: None,
+            away: false,
+            route: "mesh".into(),
+            e2e: None,
+            sfu_ok: false,
+            hand: false,
+        };
+        let (tx, mut rx) = unbounded_channel();
+        let mut s = HubState { missed_tx: Some(tx), ..Default::default() };
+        // As duas na chamada: a Bia sai, a chamada acaba para a Ana também
+        s.voice.insert("dm1".into(), vec![seat("ana"), seat("bia")]);
+        s.conn_voice.insert("conn-ana".into(), "dm1".into());
+        s.conn_voice.insert("conn-bia".into(), "dm1".into());
+        Hub::leave_voice(&mut s, "conn-bia");
+        assert!(s.voice.get("dm1").is_none(), "ninguém fica sozinho na chamada privada");
+        assert!(!s.conn_voice.contains_key("conn-ana"));
+        assert!(rx.try_recv().is_err(), "atendida: sem aviso de não atendida");
+        // A Ana liga e espera sozinha: continua tocando
+        s.voice.insert("dm1".into(), vec![seat("ana")]);
+        s.conn_voice.insert("conn-ana".into(), "dm1".into());
+        Hub::ring(&mut s, "bia", "dm1", "ana", "toque".into());
+        // Desiste antes de a Bia atender: aviso de chamada não atendida
+        Hub::leave_voice(&mut s, "conn-ana");
+        let m = rx.try_recv().expect("aviso de chamada não atendida");
+        assert_eq!((m.dm_id.as_str(), m.caller.id.as_str(), m.callee.as_str()), ("dm1", "ana", "bia"));
+        assert!(Hub::pending_rings(&mut s, "bia").is_empty(), "parou de tocar");
+    }
 
     #[test]
     fn chamada_tocando_volta_para_quem_conecta_depois() {

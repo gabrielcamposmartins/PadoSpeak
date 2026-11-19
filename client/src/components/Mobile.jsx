@@ -1,6 +1,6 @@
 // Celular: uma tela por vez. Abas embaixo (Conversas, Amigos, Servidores, Eu); conversa, canal, chamada
 // e música abrem em tela cheia com "voltar". Também o convite para instalar e as notificações push.
-import { useEffect } from 'react';
+import { useEffect, lazy, Suspense } from 'react';
 import {
   MessageCircle,
   Users,
@@ -39,6 +39,9 @@ import {
   disablePush,
 } from '../lib/pwa.js';
 
+/** A página do assistente (a mesma tela do balão do computador, ocupando a aba). */
+const AgentPage = lazy(() => import('./Agent.jsx'));
+
 /** "Voltar" da tela cheia (só aparece no celular). */
 export function MobileBack({ label = 'Voltar' }) {
   return (
@@ -55,9 +58,11 @@ function TabBar() {
   const pending = useStore((s) => Object.values(s.friends).filter((f) => f.status === 'incoming').length);
   // Avisos dos servidores ainda não vistos (mensagens que avisaram, menções, entradas na voz…).
   const serverAlerts = useStore((s) => Object.values(s.alerts).reduce((n, a) => n + (a?.n || 0), 0));
+  const agent = useStore(agentOn);
   const tabs = [
     ['chats', 'Conversas', MessageCircle, unread],
     ['friends', 'Amigos', Users, pending],
+    ...(agent ? [['agent', 'Assistente', Sparkles, 0]] : []),
     ['servers', 'Servidores', LayoutGrid, serverAlerts],
     ['me', 'Eu', UserRound, 0],
   ];
@@ -199,7 +204,7 @@ function MePage() {
             <Sparkles size={20} className="ico-purple" />
             <span>
               <b>Assistente</b>
-              <small>Abre por cima da tela: resume canais, analisa a chamada, pesquisa na internet…</small>
+              <small>Na aba Assistente: resume canais, analisa a chamada, pesquisa na internet…</small>
             </span>
           </button>
         )}
@@ -262,7 +267,10 @@ function ServersPane() {
 }
 
 export default function MobileShell() {
-  const tab = useStore((s) => s.mobileTab);
+  const agent = useStore(agentOn);
+  const chosen = useStore((s) => s.mobileTab);
+  // Assistente desligado ou não liberado: a aba dele some e volta para Conversas.
+  const tab = chosen === 'agent' && !agent ? 'chats' : chosen;
   const pane = useStore((s) => s.mobilePane);
   const view = useStore((s) => s.view);
   const music = useStore((s) => s.sidebarView === 'music' && s.currentGuildId != null);
@@ -295,6 +303,12 @@ export default function MobileShell() {
           </div>
         ) : tab === 'servers' ? (
           <ServersPane />
+        ) : tab === 'agent' ? (
+          <div className="m-agent">
+            <Suspense fallback={null}>
+              <AgentPage page />
+            </Suspense>
+          </div>
         ) : (
           <MePage />
         )}

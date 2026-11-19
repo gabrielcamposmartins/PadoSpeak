@@ -134,7 +134,41 @@ object Bridge {
             "download" -> Downloads.http(app, m.optString("url"), m.optString("name"), null, web?.settings?.userAgentString)
             "blob" -> Downloads.blobChunk(app, m)
             "replied" -> Notifier.replied(app, m.optString("url"), m.optBoolean("ok"), m.optString("text"))
+            "vibrate" -> vibrate(m.optJSONArray("pattern"))
+            "nudge" -> if (!visible()) Notifier.nudge(app, m.optString("name"), m.optString("url"))
+            "status" -> sendStatus()
+            "fix" -> activity()?.fix(m.optString("what"))
         }
+    }
+
+    /** Vibra com o padrão da página (ms: espera, vibra, espera…); vazio para a vibração em andamento. */
+    @Suppress("DEPRECATION")
+    private fun vibrate(pattern: org.json.JSONArray?) {
+        val vibrator = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            app.getSystemService(android.os.VibratorManager::class.java)?.defaultVibrator
+        } else {
+            app.getSystemService(android.os.Vibrator::class.java)
+        } ?: return
+        val ms = LongArray(pattern?.length() ?: 0) { pattern!!.optLong(it) }
+        if (ms.isEmpty()) return vibrator.cancel()
+        // a página manda vibra/pausa/vibra…; o Android começa com uma espera
+        val timings = longArrayOf(0) + ms
+        vibrator.vibrate(android.os.VibrationEffect.createWaveform(timings, -1))
+    }
+
+    /** O que pode estar impedindo os avisos (Configurações → Notificações, no app). */
+    fun sendStatus() {
+        val nm = app.getSystemService(android.app.NotificationManager::class.java)
+        val power = app.getSystemService(android.os.PowerManager::class.java)
+        val obj = JSONObject()
+            .put("type", "status")
+            .put("version", BuildConfig.VERSION_NAME)
+            .put("notifications", androidx.core.app.NotificationManagerCompat.from(app).areNotificationsEnabled())
+            .put("battery", power.isIgnoringBatteryOptimizations(app.packageName))
+            .put("fullScreen", android.os.Build.VERSION.SDK_INT < 34 || nm.canUseFullScreenIntent())
+            .put("connected", session)
+            .put("bridge", if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) "listener" else "legacy")
+        send(obj)
     }
 
     /** Abre um lugar do app (conversa, canal, atender a chamada) sem recarregar a página. */

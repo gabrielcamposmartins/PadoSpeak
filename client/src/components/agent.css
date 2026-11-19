@@ -982,3 +982,23 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* Celular: a aba Assistente (Mobile.jsx) — a mesma tela do balão, ocupando a aba inteira. */
+.m-agent {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.agent-pop.agent-page {
+  position: relative;
+  z-index: auto;
+  inset: auto;
+  flex: 1;
+  width: auto;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  animation: none;
+  box-shadow: none;
+  border-radius: 12px;
+}

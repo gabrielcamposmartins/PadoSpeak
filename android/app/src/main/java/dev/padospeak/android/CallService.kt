@@ -26,6 +26,8 @@ class CallService : Service() {
     }
 
     private var wake: PowerManager.WakeLock? = null
+    /** Sensor de proximidade: o rosto perto do celular apaga a tela (só numa chamada sem câmera). */
+    private var proximity: PowerManager.WakeLock? = null
     private var wifi: WifiManager.WifiLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -46,6 +48,7 @@ class CallService : Service() {
             }
         }
         hold()
+        setProximity(!camera)
         return START_NOT_STICKY
     }
 
@@ -81,7 +84,21 @@ class CallService : Service() {
         }
     }
 
+    private fun setProximity(on: Boolean) {
+        val power = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (on && proximity == null && power.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK)) {
+            proximity = power.newWakeLock(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK, "PadoSpeak:proximidade").apply {
+                setReferenceCounted(false)
+                acquire(MAX_HOLD_MS)
+            }
+        } else if (!on) {
+            proximity?.takeIf { it.isHeld }?.release()
+            proximity = null
+        }
+    }
+
     override fun onDestroy() {
+        setProximity(false)
         wake?.takeIf { it.isHeld }?.release()
         wifi?.takeIf { it.isHeld }?.release()
         wake = null

@@ -1,4 +1,5 @@
-import { Phone, PhoneOff, MessageCircle } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { Phone, PhoneOff, MessageCircle, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useStore } from '../store.js';
 import Avatar, { Orb, useUser } from './Avatar.jsx';
 import { FormattedText } from './Emotes.jsx';
@@ -12,6 +13,84 @@ function groupText(call, short = false) {
   const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} e ${names.at(-1)}` : names[0];
   if (short) return list ? `Chamada com ${list}` : 'Chamada em grupo';
   return list ? `chamou você para uma chamada com ${list}` : 'chamou você para uma chamada';
+}
+
+/** A partir de quanto do caminho soltar o botão atende ou recusa. */
+const SWIPE_DONE = 0.6;
+
+/**
+ * Celular: arrastar o botão do meio para a direita atende e para a esquerda recusa (como nas outras ligações).
+ * Os botões escondidos continuam para leitores de tela.
+ */
+function SwipeCall({ onAnswer, onDecline }) {
+  const track = useRef(null);
+  const drag = useRef(null);
+  const [x, setX] = useState(0);
+  const [moving, setMoving] = useState(false);
+  const max = () => {
+    const t = track.current;
+    return t ? t.clientWidth / 2 - 36 : 120;
+  };
+  const down = (e) => {
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    drag.current = { start: e.clientX - x };
+    setMoving(true);
+  };
+  const move = (e) => {
+    if (!drag.current) return;
+    const m = max();
+    setX(Math.max(-m, Math.min(m, e.clientX - drag.current.start)));
+  };
+  const up = () => {
+    if (!drag.current) return;
+    drag.current = null;
+    setMoving(false);
+    const m = max();
+    if (x > m * SWIPE_DONE) {
+      setX(m);
+      onAnswer();
+    } else if (x < -m * SWIPE_DONE) {
+      setX(-m);
+      onDecline();
+    } else {
+      setX(0);
+    }
+  };
+  const side = x > 8 ? 'answer' : x < -8 ? 'decline' : '';
+  return (
+    <div className={`if-swipe${side ? ` to-${side}` : ''}`} ref={track}>
+      <span className="if-swipe-end decline" aria-hidden="true">
+        <PhoneOff size={20} />
+        Recusar
+      </span>
+      <span className="if-swipe-hint" aria-hidden="true">
+        <ChevronLeft size={16} />
+        arraste
+        <ChevronRight size={16} />
+      </span>
+      <span className="if-swipe-end answer" aria-hidden="true">
+        Atender
+        <Phone size={20} />
+      </span>
+      <span
+        className={`if-swipe-knob${moving ? ' moving' : ''}`}
+        style={{ transform: `translateX(${x}px)` }}
+        onPointerDown={down}
+        onPointerMove={move}
+        onPointerUp={up}
+        onPointerCancel={up}
+        aria-hidden="true"
+      >
+        {side === 'decline' ? <PhoneOff /> : <Phone />}
+      </span>
+      <button type="button" className="sr-only" onClick={onAnswer}>
+        Atender
+      </button>
+      <button type="button" className="sr-only" onClick={onDecline}>
+        Recusar
+      </button>
+    </div>
+  );
 }
 
 /** Janela de chamada recebida numa conexão (o toque e a vibração são controlados pelo store). */
@@ -41,18 +120,7 @@ function IncomingCall() {
           <span>{call.group ? groupText(call) : 'está chamando você…'}</span>
         </div>
         <div className="if-actions">
-          <button type="button" className="if-btn decline" onClick={() => declineCall()}>
-            <span className="b">
-              <PhoneOff />
-            </span>
-            Recusar
-          </button>
-          <button type="button" className="if-btn answer" onClick={() => answerCall()}>
-            <span className="b">
-              <Phone />
-            </span>
-            Atender
-          </button>
+          <SwipeCall onAnswer={() => answerCall()} onDecline={() => declineCall()} />
         </div>
         {!call.group && <button
           type="button"

@@ -257,6 +257,7 @@ impl HostManager {
         // Arquivos e áudios vencidos somem (com a mensagem que os mostrava).
         crate::files::spawn_sweeper(app.clone());
         crate::audit::spawn_writer(app.clone(), audit_rx);
+        crate::hub::spawn_call_notices(app.clone());
         // Canais privados: o hub precisa saber quem vê cada um antes da primeira conexão.
         if crate::api::refresh_audiences(&app, None).await.is_err() {
             self.logs.warn("Não foi possível carregar os canais privados");

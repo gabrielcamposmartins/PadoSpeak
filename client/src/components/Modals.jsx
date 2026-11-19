@@ -87,7 +87,7 @@ import { SoundsModal, UserSoundsModal, SoundSettings } from './SoundLibrary.jsx'
 import { GoogleButton, useAuthOptions, AccountSettings } from './AccountAuth.jsx';
 import VolumeSlider from './Volume.jsx';
 import { isDesktop, isTauri, isAndroidApp, androidAppVersion, DOWNLOAD_URL, ANDROID_URL, DEFAULT_SERVER, openExternal } from '../lib/env.js';
-import { androidKeepAlive, setAndroidKeepAlive } from '../lib/android.js';
+import { androidKeepAlive, setAndroidKeepAlive, useAndroidStatus, androidFix } from '../lib/android.js';
 import { usePwa, installState, install, pushStatus, enablePush, disablePush } from '../lib/pwa.js';
 import { ConnProvider, useConn } from './conn.jsx';
 import { PollModal } from './Polls.jsx';
@@ -914,6 +914,36 @@ function BlockedUsers() {
 }
 
 /** Notificações com o PadoSpeak fechado (app instalado / navegador com push). */
+/** App do Android: o que pode estar impedindo os avisos, com o botão que libera cada coisa. */
+function AndroidChecks() {
+  const st = useAndroidStatus();
+  if (!st) return null;
+  const items = [
+    ['notifications', st.notifications, 'Notificações', 'Liberadas: mensagens, chamadas e chamar atenção aparecem, com som e vibração.', 'Bloqueadas: nada aparece com o app fora da tela.'],
+    ['battery', st.battery, 'Economia de bateria', 'Sem restrição: as chamadas tocam com o celular parado.', 'Restrita: com o celular parado, o Android pode cortar a internet do app e as chamadas não tocam.'],
+    ['fullScreen', st.fullScreen, 'Chamada em tela cheia', 'Liberada: a chamada aparece por cima da tela bloqueada.', 'Bloqueada: a chamada aparece só como notificação.'],
+  ];
+  return (
+    <div className="android-checks" role="list">
+      {items.map(([id, ok, title, good, bad]) => (
+        <div key={id} className={`android-check${ok ? ' ok' : ' bad'}`} role="listitem">
+          {ok ? <CircleCheck size={18} aria-hidden="true" /> : <TriangleAlert size={18} aria-hidden="true" />}
+          <span>
+            <b>{title}</b>
+            <small>{ok ? good : bad}</small>
+          </span>
+          {!ok && (
+            <button type="button" className="btn small-btn" onClick={() => androidFix(id)}>
+              Liberar
+            </button>
+          )}
+        </div>
+      ))}
+      <small className="check-hint">App do Android {st.version}</small>
+    </div>
+  );
+}
+
 /** App do Android: ficar conectado em segundo plano para tocar e avisar com o app fora da tela. */
 function AndroidBackground() {
   const [on, setOn] = useState(androidKeepAlive);
@@ -921,6 +951,7 @@ function AndroidBackground() {
   return (
     <>
       <div className="settings-sec">Neste celular</div>
+      <AndroidChecks />
       <label className="checkbox">
         <input
           type="checkbox"
@@ -933,8 +964,9 @@ function AndroidBackground() {
         <span>
           Receber chamadas e mensagens com o app em segundo plano
           <small className="check-hint">
-            O app fica conectado (com a notificação discreta “PadoSpeak conectado”): as chamadas tocam com a tela bloqueada, como
-            nas outras ligações, e as mensagens chegam como notificação. Gasta um pouco mais de bateria.
+            O app fica conectado (com uma notificação discreta, que não aparece na tela bloqueada e pode ser arrastada para o lado): as
+            chamadas tocam com a tela bloqueada, como nas outras ligações, e as mensagens chegam como notificação. Gasta um pouco mais de
+            bateria.
           </small>
         </span>
       </label>

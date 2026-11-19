@@ -305,10 +305,39 @@ class MainActivity : ComponentActivity() {
         return true
     }
 
+    /** Sem as notificações liberadas, pede (uma vez cada vez que o app abre; o Android para de mostrar se negar duas vezes). */
+    private var askedThisRun = false
+
     private fun askNotificationsOnce() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
-        if (granted(Manifest.permission.POST_NOTIFICATIONS) || !once("askedNotifications")) return
+        if (granted(Manifest.permission.POST_NOTIFICATIONS) || askedThisRun) return
+        askedThisRun = true
         askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
+    /** Botões do diagnóstico (Configurações → Notificações): libera o que está faltando. */
+    @SuppressLint("BatteryLife")
+    fun fix(what: String) {
+        val pkg = Uri.parse("package:$packageName")
+        val intent = when (what) {
+            "notifications" ->
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !granted(Manifest.permission.POST_NOTIFICATIONS) &&
+                    shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS)
+                ) {
+                    askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    null
+                } else {
+                    Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                }
+            "battery" -> Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, pkg)
+            "fullScreen" -> if (Build.VERSION.SDK_INT >= 34) Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, pkg) else null
+            else -> Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkg)
+        } ?: return
+        try {
+            startActivity(intent)
+        } catch (_: ActivityNotFoundException) {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkg))
+        }
     }
 
     /**
@@ -342,6 +371,7 @@ class MainActivity : ComponentActivity() {
         resumed = true
         web.onResume()
         Bridge.send("visible", true)
+        Bridge.sendStatus()
         Notifier.clearMessages(this)
     }
 

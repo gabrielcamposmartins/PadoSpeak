@@ -7,7 +7,7 @@ import { MusicPlayer } from './lib/music.js';
 import { isPanel, isDesktop, isTauri, isAndroidApp, localNodeUrl } from './lib/env.js';
 import { playSound, loopSound, setSoundsEnabled } from './lib/sounds.js';
 import { haptic, stopHaptic } from './lib/haptics.js';
-import { androidVisible } from './lib/android.js';
+import { androidVisible, androidPost } from './lib/android.js';
 import { playSoundboard, preloadSound, stopSoundboard, setSoundboardOutput } from './lib/soundboard.js';
 import { shakeWindow, flashTaskbar } from './lib/attention.js';
 import { systemNotify, showAppWindow, appHasFocus } from './lib/background.js';
@@ -121,7 +121,11 @@ export function parsePoll(content) {
   }
 }
 
+/** Aviso de chamada 1 a 1 não atendida (o servidor grava como mensagem de quem ligou; veja `hub::MISSED_CALL`). */
+export const MISSED_CALL = '[chamada:perdida]';
+
 export function messageSummary(content) {
+  if (content === MISSED_CALL) return { verb: 'ligou (chamada não atendida)', text: '' };
   const poll = parsePoll(content);
   if (poll) return { verb: 'criou uma enquete', text: poll.question };
   const file = FILE_RE.exec(content);
@@ -139,6 +143,7 @@ export function messageSummary(content) {
 
 /** Texto do aviso de uma mensagem: "Ana diz: oi" / "Ana enviou uma foto: legenda". */
 export function messageNotice(author, content) {
+  if (content === MISSED_CALL) return `Chamada não atendida de ${author.displayName}`;
   const { verb, text } = messageSummary(content);
   const t = plain(text).trim();
   const cut = t.length > 80 ? `${t.slice(0, 80)}…` : t;
@@ -842,8 +847,15 @@ export function createConnStore({ key, kind, base, primary = false }) {
           ding('nudge');
           shakeWindow();
           flashTaskbar();
+          haptic('nudge');
         }
-        notify(`${from.displayName} chamou a sua atenção!`, 'presence', from, dm ? `/?dm=${channelId}` : `/?channel=${channelId}`);
+        const nudgeUrl = dm ? `/?dm=${channelId}` : `/?channel=${channelId}`;
+        // App do Android fora da tela: notificação de chamar atenção (vibra forte e acende a tela bloqueada).
+        if (isAndroidApp && !androidVisible() && !busy() && androidPost('nudge', { name: from.displayName || from.username, url: nudgeUrl })) {
+          ui().getState().notify(`${from.displayName} chamou a sua atenção!`, 'info');
+          return;
+        }
+        notify(`${from.displayName} chamou a sua atenção!`, 'presence', from, nudgeUrl);
       });
       rt.on('user:updated', (u) =>
         set((s) => {
@@ -1270,15 +1282,22 @@ export function createConnStore({ key, kind, base, primary = false }) {
      */
     openAgent(on = true) {
       if (!primary || (on && !agentOn(get()))) return;
+      // Celular: o assistente é uma aba com a página dele (ao lado de Conversas e Amigos), não um balão.
+      if (currentLayout() === 'phone') {
+        if (on) get().setMobileTab('agent');
+        return;
+      }
       ui().setState({ agentOpen: Boolean(on) });
     },
     toggleAgent() {
+      if (currentLayout() === 'phone') return get().openAgent(true);
       get().openAgent(!ui().getState().agentOpen);
     },
     /** Abre o balão (se não estiver aberto) com o cursor na caixa de mensagem, para já digitar. */
     focusAgent() {
       if (!primary || !agentOn(get())) return;
-      ui().setState((st) => ({ agentOpen: true, agentFocus: (st.agentFocus || 0) + 1 }));
+      if (currentLayout() === 'phone') get().setMobileTab('agent');
+      ui().setState((st) => ({ agentOpen: currentLayout() !== 'phone', agentFocus: (st.agentFocus || 0) + 1 }));
     },
 
     async loadFriends() {

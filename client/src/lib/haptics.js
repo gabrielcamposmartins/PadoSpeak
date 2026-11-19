@@ -1,7 +1,8 @@
 // Vibração dos avisos no celular com o PadoSpeak aberto (com o app fechado, quem vibra é a notificação
 // do sistema — ver public/sw.js). Android: Vibration API. iPhone (iOS 18+): o Safari não tem a API,
 // mas dá o "toque" do sistema ao ligar um interruptor nativo (<input type="checkbox" switch>).
-import { isTauri } from './env.js';
+import { isTauri, isAndroidApp } from './env.js';
+import { androidPost } from './android.js';
 import { isTouch } from './layout.js';
 
 export const PATTERNS = {
@@ -33,6 +34,8 @@ function iosTap() {
 export function haptic(kind = 'message') {
   if (!isTouch || isTauri || typeof document === 'undefined' || document.hidden) return;
   const pattern = Array.isArray(kind) ? kind : PATTERNS[kind] || PATTERNS.message;
+  // App do Android: vibra pelo próprio Android (o navegador só deixa vibrar logo depois de um toque na tela).
+  if (isAndroidApp && androidPost('vibrate', { pattern })) return;
   try {
     if (canVibrate) {
       navigator.vibrate(pattern);
@@ -51,5 +54,6 @@ export function haptic(kind = 'message') {
 
 /** Para uma vibração em andamento (ex.: a chamada foi atendida). */
 export function stopHaptic() {
+  if (isAndroidApp && androidPost('vibrate', { pattern: [] })) return;
   if (canVibrate) navigator.vibrate(0);
 }

@@ -5728,6 +5728,9 @@ fieldset.plain {
   border: 1px solid var(--wait-border);
   background: var(--wait);
 }
+.chat-notice.call svg {
+  color: #d9534f;
+}
 .chat-notice .author {
   font-weight: 700;
 }
@@ -12000,6 +12003,84 @@ html .call-screen .tile .tile-tools {
   justify-content: space-around;
   align-items: flex-end;
 }
+/* Celular: arrastar para atender (direita) ou recusar (esquerda). */
+.if-swipe {
+  position: relative;
+  width: 100%;
+  height: 72px;
+  border-radius: 36px;
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 22px;
+  color: #fff;
+  user-select: none;
+  touch-action: none;
+  transition: background 0.2s;
+}
+.if-swipe.to-answer {
+  background: rgba(60, 190, 80, 0.32);
+}
+.if-swipe.to-decline {
+  background: rgba(220, 60, 60, 0.32);
+}
+.if-swipe-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 14px;
+  opacity: 0.9;
+}
+.if-swipe-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 12px;
+  opacity: 0.7;
+  animation: if-swipe-hint 1.6s ease-in-out infinite;
+}
+@keyframes if-swipe-hint {
+  50% {
+    opacity: 0.25;
+  }
+}
+.if-swipe-knob {
+  position: absolute;
+  left: calc(50% - 30px);
+  top: 5px;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(180deg, #7ee06a, #2f9e1f);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+  cursor: grab;
+  transition: transform 0.25s ease, background 0.2s;
+  animation: if-knob-pulse 1.6s ease-in-out infinite;
+}
+.if-swipe-knob.moving {
+  transition: background 0.2s;
+  animation: none;
+  cursor: grabbing;
+}
+.if-swipe.to-decline .if-swipe-knob {
+  background: linear-gradient(180deg, #ff7a6e, #d93f3a);
+}
+.if-swipe-knob svg {
+  width: 28px;
+  height: 28px;
+  color: #fff;
+}
+@keyframes if-knob-pulse {
+  50% {
+    box-shadow: 0 0 0 10px rgba(126, 224, 106, 0.25), 0 6px 18px rgba(0, 0, 0, 0.3);
+  }
+}
 .if-btn {
   display: flex;
   flex-direction: column;
@@ -14218,4 +14299,40 @@ button.tile-hand {
   100% {
     opacity: 0;
   }
+}
+
+/* App do Android: o que pode estar impedindo os avisos (Configurações → Notificações). */
+.android-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 0 10px;
+}
+.android-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--row-hover);
+}
+.android-check > span {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+.android-check small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.android-check.ok > svg {
+  color: #2f9e1f;
+}
+.android-check.bad > svg {
+  color: #d9534f;
+}
+.android-check.bad {
+  border-color: rgba(217, 83, 79, 0.45);
 }
